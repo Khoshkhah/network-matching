@@ -42,9 +42,7 @@ class DuckDBMapMatcher:
         self.utm_srid = None
         
         # Default thresholds
-        self.max_distance = 25.0       # meters
-        self.max_angle = 30.0          # degrees
-        self.min_overlap = 0.50        # ratio (50%)
+        self.max_distance = 25.0       # search radius in meters to find candidate segments
         
     def configure_sources(self, 
                           source_a: str, id_col_a: str, geom_col_a: str,
@@ -68,17 +66,10 @@ class DuckDBMapMatcher:
         self.columns_b = {"id": id_col_b, "geom": geom_col_b}
         self.utm_srid = utm_srid
         
-    def set_parameters(self, 
-                       max_distance: Optional[float] = None, 
-                       max_angle: Optional[float] = None, 
-                       min_overlap: Optional[float] = None):
-        """Allows overriding standard matching thresholds."""
+    def set_parameters(self, max_distance: Optional[float] = None):
+        """Allows overriding standard candidate search radius."""
         if max_distance is not None:
             self.max_distance = max_distance
-        if max_angle is not None:
-            self.max_angle = max_angle
-        if min_overlap is not None:
-            self.min_overlap = min_overlap
             
     def generate_candidate_pairs(self) -> pd.DataFrame:
         """
@@ -188,14 +179,7 @@ class DuckDBMapMatcher:
 
         self.conn.register("evaluated_pairs", evaluated_df)
         query = f"""
-            WITH FilteredPairs AS (
-                -- Absolute cutoffs: drop poor candidate pairs (also "missing road" detection)
-                SELECT * FROM evaluated_pairs
-                WHERE dtw_distance <= {self.max_distance}
-                  AND bearing_diff <= {self.max_angle}
-                  AND overlap_pct  >= {self.min_overlap * 100.0}
-            ),
-            Ranked AS (
+            WITH Ranked AS (
                 -- Rank each source's qualifying destinations by alignment (closest first)
                 SELECT
                     id_a AS source_id,
@@ -203,7 +187,7 @@ class DuckDBMapMatcher:
                     dtw_distance, max_dtw_distance, min_dtw_distance,
                     bearing_diff, overlap_pct,
                     ROW_NUMBER() OVER (PARTITION BY id_a ORDER BY dtw_distance ASC) AS rnk
-                FROM FilteredPairs
+                FROM evaluated_pairs
             )
             SELECT
                 source_id, dest_id,
@@ -214,8 +198,7 @@ class DuckDBMapMatcher:
                 -- Backwards-compatible match_type classification for legacy scripts/visualizers
                 CASE
                     WHEN COUNT(dest_id) OVER (PARTITION BY source_id) > 1 THEN '1:N_SPLIT'
-                    WHEN rnk = 1 AND overlap_pct >= 80.0 AND bearing_diff <= 15.0 THEN '1:1_SYMMETRIC'
-                    WHEN bearing_diff > 25.0 OR overlap_pct < 60.0 THEN 'CONFLICT'
+                    WHEN rnk = 1 THEN '1:1_SYMMETRIC'
                     ELSE 'UNIDIRECTIONAL_PARTIAL'
                 END AS match_type
             FROM Ranked

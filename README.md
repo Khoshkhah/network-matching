@@ -8,9 +8,11 @@ The engine leverages **Dynamic Time Warping (DTW)** and **DuckDB Spatial** to pe
 
 ## 🚀 Features
 
-- **Direction-Aware (Directed) Matching**: Uses travel bearings and coordinate sequences to prevent matching against opposite lanes or incorrect travel directions.
-- **Progressive Overlap-Based DTW Shape Alignment**: Identifies natural overlap starts and boundaries dynamically, ignoring pre-overlap and post-overlap tails without relying on arbitrary length classification or segment swapping.
-- **Ranked Match Selection**: Evaluates all qualifying candidate matches, sorting and ranking them by alignment quality. Handles split parallel roads cleanly, flagging the absolute best matching target (`is_best = True`) while preserving all qualifying alternatives.
+- **Direction-Aware (Directed) Matching**: Uses travel bearings and coordinate sequences to evaluate physical and directional alignments.
+- **Progressive Overlap-Based DTW Shape Alignment**: Identifies natural overlap starts and boundaries dynamically, ignoring pre-overlap and post-overlap tails without relying on segment swapping or length assumptions.
+- **Zero-Filtering Reconciliation**: The algorithm evaluates all candidate pairs generated within the search radius without discarding matches based on arbitrary bearing, overlap, or distance thresholds.
+- **Single-Parameter Candidate Search**: Configured using only a single parameter (`max_distance`), representing the spatial search radius in meters to query closest candidate segments.
+- **Ranked Match Selection**: Evaluates all qualifying candidate matches, sorting and ranking them by alignment quality. Handles split parallel roads cleanly, flagging the absolute best matching target (`is_best = True`) while preserving all candidate alternatives.
 - **Optional Bidirectional Reconstruction**: Run matching independently in both directions ($A \to B$ and $B \to A$) and obtain a unified, reciprocal network-to-network conflation table.
 - **Extremely Flexible Input Sources**: Connects seamlessly to CSV files, DuckDB tables, Pandas/GeoPandas DataFrames, and standard GIS files (GeoPackage, Shapefile, GeoJSON).
 
@@ -71,10 +73,13 @@ matcher.configure_sources(
     utm_srid=3006  # Local projected metric system (e.g., SWEREF99 TM for Sweden)
 )
 
-# 4. Run Map Matching (directed match A -> B)
+# 4. (Optional) Set candidate search radius parameter (default is 25m)
+matcher.set_parameters(max_distance=20.0)
+
+# 5. Run Map Matching (directed match A -> B)
 results = matcher.match(bidirectional=False)
 
-# 5. Export matching results directly to a local CSV file!
+# 6. Export matching results directly to a local CSV file!
 matcher.conn.register("final_matches", results)
 matcher.conn.execute("COPY final_matches TO 'data/conflation_results.csv' (HEADER, DELIMITER ',');")
 ```
@@ -165,12 +170,16 @@ results = matcher.match(bidirectional=False)
 ## 📈 Match Result Fields Explained
 
 The output table contains the following columns:
-- **`source_id`**: Identifier of the Source segment (A if directed, A or B if bidirectional).
-- **`dest_id`**: Identifier of the matched Destination segment (B if directed, B or A if bidirectional).
+- **`source_id`**: Identifier of the Source segment.
+- **`dest_id`**: Identifier of the matched Destination candidate segment.
 - **`dtw_distance`**: Average physical offset (drift) in meters calculated along the progressive DTW warping path.
 - **`max_dtw_distance` / `min_dtw_distance`**: Maximum and minimum alignment offsets (meters).
 - **`bearing_diff`**: Absolute difference in travel direction (0 - 180 degrees).
 - **`overlap_pct`**: The coverage percentage representing what proportion of the Source segment's length was aligned.
-- **`rank`**: The rank of this destination for the respective source (rank 1 is the closest).
-- **`is_best`**: Boolean flag indicating whether this is the absolute closest qualifying destination (rank == 1).
+- **`rank`**: The rank of this destination candidate for the respective source (rank 1 is the closest).
+- **`is_best`**: Boolean flag indicating whether this is the absolute closest qualifying candidate (rank == 1).
+- **`match_type`**:
+  - **`1:1_SYMMETRIC`**: Primary/Best match (`rank == 1`).
+  - **`1:N_SPLIT`**: Multi-matching split road parts (when a source has multiple candidates).
+  - **`UNIDIRECTIONAL_PARTIAL`**: Standard candidate match with a higher rank.
 - **`direction`** *(only when `bidirectional=True`)*: Indicates matching direction (`A_to_B` or `B_to_A`).

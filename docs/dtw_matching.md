@@ -129,7 +129,7 @@ The matching framework supports two top-level matching strategies via the `DuckD
 When running `match(bidirectional=False)`:
 - Computes directed mapping from **Source Network A** to **Destination Network B**.
 - For each segment in A, it evaluates candidate segments in B, computes the progressive DTW alignment from A to B, and ranks candidate segments by proximity and directional alignment.
-- **Result Columns**: `[source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance, bearing_diff, overlap_pct, rank, is_best]`.
+- **Result Columns**: `[source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance, bearing_diff, overlap_pct, rank, is_best, match_type]`.
 - *Use Case*: Ideal when you have a defined trajectory/GPS track (Source A) and want to find its corresponding segments on a base map road network (Destination B).
 
 ### 5.2 Bidirectional Map-Matching
@@ -138,6 +138,6 @@ When running `match(bidirectional=True)`:
   1. **Direction 1 ($A \to B$)**: Evaluates segment coverage and alignment with A acting as the source and B acting as the destination.
   2. **Direction 2 ($B \to A$)**: Swaps the roles, evaluating segment coverage and alignment with B acting as the source and A acting as the destination.
 - Unions both tables into a single output, adding a `direction` metadata column.
-- **Result Columns**: `[source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance, bearing_diff, overlap_pct, rank, is_best, direction]` where `direction` is either `'A_to_B'` or `'B_to_A'`.
+- **Result Columns**: `[source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance, bearing_diff, overlap_pct, rank, is_best, match_type, direction]` where `direction` is either `'A_to_B'` or `'B_to_A'`.
 - *Use Case*: Essential for reciprocal shape matches, map conflation (merging two road networks A and B), and reconciling nested road splits (e.g. mapping a long road in A to split parallel roads in B, and mapping those split roads back to the main road in A).
 

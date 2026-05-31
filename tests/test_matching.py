@@ -72,8 +72,8 @@ def run_automated_test_suite():
         utm_srid=32639
     )
     
-    # Use typical thresholds: 20 meters radius, 30 degrees heading limit
-    matcher.set_parameters(max_distance=20.0, max_angle=30.0, min_overlap=0.50)
+    # Use only one parameter: 20 meters candidate search radius
+    matcher.set_parameters(max_distance=20.0)
     
     print("\n[Step 2] Executing Tier 1 Candidate Generation...")
     candidates = matcher.generate_candidate_pairs()
@@ -95,21 +95,21 @@ def run_automated_test_suite():
     print("          VERIFICATION & CORRECTNESS CHECKS")
     print("==================================================")
 
-    # Check 1: Does the long source 'A1' match BOTH destinations 'B1' and 'B2'
-    # (all qualifying destinations are kept within one directional run), with exactly one is_best?
+    # Check 1: Does the long source 'A1' match ALL 3 candidate destinations 'B1', 'B2', 'B3'
+    # (since no cutoff filters are applied), with exactly one is_best (the closest)?
     a1 = results[results["source_id"] == "A1"]
     a1_dests = sorted(a1["dest_id"].tolist())
-    if a1_dests == ["B1", "B2"] and int(a1["is_best"].sum()) == 1:
-        print("✅ [PASS] Source 'A1' → both destinations 'B1','B2' kept; exactly one is_best.")
+    if a1_dests == ["B1", "B2", "B3"] and int(a1["is_best"].sum()) == 1:
+        print("✅ [PASS] Source 'A1' → all candidate destinations 'B1','B2','B3' kept; exactly one is_best.")
     else:
         print("❌ [FAIL] A1 destinations wrong. Got:", a1_dests, "| is_best sum:", int(a1["is_best"].sum()))
 
-    # Check 2: Was B3 (opposite direction) filtered out?
-    # B3 should NOT appear as a destination because its bearing difference is 180 degrees.
-    if results[results["dest_id"] == "B3"].empty:
-        print("✅ [PASS] Opposite direction road 'B3' successfully filtered out (Direction mismatch).")
+    # Check 2: Was B3 (opposite direction) kept as a candidate but not flagged as best?
+    b3_match = results[results["dest_id"] == "B3"]
+    if not b3_match.empty and b3_match.iloc[0]["is_best"] == False:
+        print("✅ [PASS] Opposite direction road 'B3' kept as candidate but correctly not marked as best.")
     else:
-        print("❌ [FAIL] Opposite direction road 'B3' was incorrectly matched!")
+        print("❌ [FAIL] Opposite direction road 'B3' was incorrectly ranked or missing!")
 
     # Check 3: Were unmatched roads (A2 as source, B4 as destination) successfully ignored?
     a2_matches = results[results["source_id"] == "A2"]

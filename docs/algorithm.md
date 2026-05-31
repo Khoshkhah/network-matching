@@ -102,10 +102,10 @@ Once the Tiers 1 and 2 metrics (average DTW distance, bearing difference, and al
 
 ### 5.1 Directed Strategy (Default)
 When executing directional matching:
-- Pairs are filtered by baseline thresholds:
-  $$\text{dtw\_distance} \le \text{max\_distance}, \quad \text{bearing\_diff} \le \text{max\_angle}, \quad \text{overlap\_pct} \ge \text{min\_overlap} \times 100.0$$
-- For each source segment A, qualifying destination segments B are ranked by alignment quality (`dtw_distance` ascending).
-- The closest segment is flagged as `is_best = True` (rank 1), and other parallel qualifying segments are kept with `is_best = False`. This handles split roads naturally while providing full directional matching data.
+- **No Cutoff Filtering**: The algorithm does not filter or discard matches based on arbitrary bearing, overlap, or distance thresholds. All spatial candidates generated in Tier 1 are kept and evaluated.
+- **One Parameter Candidate Search**: The single parameter `max_distance` serves as the search radius to query the closest road segments as candidates.
+- **Topological Ranking**: For each source segment A, all qualifying candidate destination segments B are ranked by alignment quality (`dtw_distance` ascending).
+- **Match Flagging**: The closest segment is flagged as `is_best = True` (rank 1), and other parallel qualifying segments are kept with `is_best = False`. This handles split roads naturally while providing complete candidate alignment data.
 
 ### 5.2 Bidirectional Strategy
 When executing bidirectional matching:
