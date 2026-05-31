@@ -96,17 +96,17 @@ def run_automated_test_suite():
     print("==================================================")
 
     # Check 1: Does the long source 'A1' match ALL 3 candidate destinations 'B1', 'B2', 'B3'
-    # (since no cutoff filters are applied), with exactly one is_best (the closest)?
+    # (since no cutoff filters are applied), with exactly one rank 1 match (the closest)?
     a1 = results[results["source_id"] == "A1"]
     a1_dests = sorted(a1["dest_id"].tolist())
-    if a1_dests == ["B1", "B2", "B3"] and int(a1["is_best"].sum()) == 1:
-        print("✅ [PASS] Source 'A1' → all candidate destinations 'B1','B2','B3' kept; exactly one is_best.")
+    if a1_dests == ["B1", "B2", "B3"] and int((a1["rank"] == 1).sum()) == 1:
+        print("✅ [PASS] Source 'A1' → all candidate destinations 'B1','B2','B3' kept; exactly one rank 1 match.")
     else:
-        print("❌ [FAIL] A1 destinations wrong. Got:", a1_dests, "| is_best sum:", int(a1["is_best"].sum()))
+        print("❌ [FAIL] A1 destinations wrong. Got:", a1_dests, "| rank 1 sum:", int((a1["rank"] == 1).sum()))
 
     # Check 2: Was B3 (opposite direction) kept as a candidate but not flagged as best?
     b3_match = results[results["dest_id"] == "B3"]
-    if not b3_match.empty and b3_match.iloc[0]["is_best"] == False:
+    if not b3_match.empty and b3_match.iloc[0]["rank"] != 1:
         print("✅ [PASS] Opposite direction road 'B3' kept as candidate but correctly not marked as best.")
     else:
         print("❌ [FAIL] Opposite direction road 'B3' was incorrectly ranked or missing!")

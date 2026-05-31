@@ -158,9 +158,9 @@ class DuckDBMapMatcher:
 
         Each surviving row is a match FROM a source edge (A) TO a destination edge (B): candidate
         pairs are filtered by the distance / bearing / overlap thresholds, then for every source
-        its qualifying destinations are ranked by alignment quality (``rank`` = 1 is the closest;
-        ``is_best`` flags it). **All** qualifying destinations are kept, so a source that is split
-        across several destinations yields several rows.
+        its qualifying destinations are ranked by alignment quality (``rank`` = 1 is the closest).
+        **All** qualifying destinations are kept, so a source that is split across several
+        destinations yields several rows.
 
         This is intentionally one-directional, mapping Source A to Destination B.
         Swapping the sources gives a different table since all projections and overlap
@@ -170,10 +170,10 @@ class DuckDBMapMatcher:
         performed here.
 
         Returns columns: ``source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
-        bearing_diff, overlap_pct, rank, is_best, match_type``.
+        bearing_diff, overlap_pct, rank, match_type``.
         """
         cols = ["source_id", "dest_id", "dtw_distance", "max_dtw_distance",
-                "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best", "match_type"]
+                "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "match_type"]
         if evaluated_df.empty:
             return pd.DataFrame(columns=cols)
 
@@ -194,7 +194,6 @@ class DuckDBMapMatcher:
                 dtw_distance, max_dtw_distance, min_dtw_distance,
                 bearing_diff, overlap_pct,
                 rnk AS rank,
-                (rnk = 1) AS is_best,
                 -- Backwards-compatible match_type classification for legacy scripts/visualizers
                 CASE
                     WHEN COUNT(dest_id) OVER (PARTITION BY source_id) > 1 THEN '1:N_SPLIT'
@@ -216,21 +215,21 @@ class DuckDBMapMatcher:
             Performs directed matching from Source A to Destination B.
             Returns a DataFrame with columns: 
             [source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
-             bearing_diff, overlap_pct, rank, is_best, match_type]
+             bearing_diff, overlap_pct, rank, match_type]
              
         If bidirectional=True:
             Runs matching in both directions (Source A -> Destination B AND Destination B -> Source A)
             and returns the UNION of the two reconciled directional matching tables.
             Returns a DataFrame with columns:
             [source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
-             bearing_diff, overlap_pct, rank, is_best, match_type, direction]
+             bearing_diff, overlap_pct, rank, match_type, direction]
              where `direction` is either 'A_to_B' or 'B_to_A'.
         """
         candidates_df = self.generate_candidate_pairs()
         
         if candidates_df.empty:
             cols = ["source_id", "dest_id", "dtw_distance", "max_dtw_distance",
-                    "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best", "match_type"]
+                    "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "match_type"]
             if bidirectional:
                 cols.append("direction")
             return pd.DataFrame(columns=cols)

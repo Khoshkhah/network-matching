@@ -49,8 +49,7 @@ To build a general and reusable tool, we decouple the **storage format** from th
   |                  IN-MEMORY DUCKDB ENGINE                          |
   |                                                                   |
   |  3. TIER 3: Directional Ranking & Reconciliation                  |
-  |     - Ranks qualifying destination edges for each source edge     |
-  |     - Flags best match (is_best) and supports bidirectional union  |
+  |     - Ranks candidate matches and supports bidirectional union    |
   |                                                                   |
   +-------------------------------------------------------------------+
                                      |

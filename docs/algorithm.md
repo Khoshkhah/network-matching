@@ -105,7 +105,7 @@ When executing directional matching:
 - **No Cutoff Filtering**: The algorithm does not filter or discard matches based on arbitrary bearing, overlap, or distance thresholds. All spatial candidates generated in Tier 1 are kept and evaluated.
 - **One Parameter Candidate Search**: The single parameter `max_distance` serves as the search radius to query the closest road segments as candidates.
 - **Topological Ranking**: For each source segment A, all qualifying candidate destination segments B are ranked by alignment quality (`dtw_distance` ascending).
-- **Match Flagging**: The closest segment is flagged as `is_best = True` (rank 1), and other parallel qualifying segments are kept with `is_best = False`. This handles split roads naturally while providing complete candidate alignment data.
+- **Match Flagging**: The closest segment is flagged with `rank = 1`, and other parallel qualifying segments are kept with a higher `rank` value. This handles split roads naturally while providing complete candidate alignment data.
 
 ### 5.2 Bidirectional Strategy
 When executing bidirectional matching:
