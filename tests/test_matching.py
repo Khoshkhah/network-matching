@@ -85,35 +85,35 @@ def run_automated_test_suite():
     print("Evaluation Metrics:")
     print(evaluated.to_string(index=False))
     
-    print("\n[Step 4] Executing Post-Processing & Bidirectional Reconciliation...")
+    print("\n[Step 4] Executing Directional source→destination matching...")
     results = matcher.reconcile_matches(evaluated)
-    print("\nReconciliation Matches Results:")
+    print("\nDirectional Match Results (source A → destination B):")
     print(results.to_string(index=False))
-    
+
     # 4. Verify Correctness Assertion
     print("\n==================================================")
     print("          VERIFICATION & CORRECTNESS CHECKS")
     print("==================================================")
-    
-    # Check 1: Did B1 and B2 successfully trigger a 1:N Split match with A1?
-    split_matches = results[results["match_type"] == "1:N_SPLIT"]
-    split_ids = sorted(split_matches["id_b"].tolist())
-    if split_ids == ["B1", "B2"]:
-        print("✅ [PASS] 1:N Split detected perfectly! Coarse road 'A1' matched fine parts 'B1' and 'B2'.")
+
+    # Check 1: Does the long source 'A1' match BOTH fine destinations 'B1' and 'B2'
+    # (all qualifying destinations are kept within one directional run), with exactly one is_best?
+    a1 = results[results["source_id"] == "A1"]
+    a1_dests = sorted(a1["dest_id"].tolist())
+    if a1_dests == ["B1", "B2"] and int(a1["is_best"].sum()) == 1:
+        print("✅ [PASS] Source 'A1' → both fine destinations 'B1','B2' kept; exactly one is_best.")
     else:
-        print("❌ [FAIL] 1:N Split failed detection. Got:", split_ids)
-        
+        print("❌ [FAIL] A1 destinations wrong. Got:", a1_dests, "| is_best sum:", int(a1["is_best"].sum()))
+
     # Check 2: Was B3 (opposite direction) filtered out?
-    # B3 should NOT have any approved match in results because its bearing difference is 180 degrees.
-    b3_matches = results[results["id_b"] == "B3"]
-    if b3_matches.empty:
+    # B3 should NOT appear as a destination because its bearing difference is 180 degrees.
+    if results[results["dest_id"] == "B3"].empty:
         print("✅ [PASS] Opposite direction road 'B3' successfully filtered out (Direction mismatch).")
     else:
         print("❌ [FAIL] Opposite direction road 'B3' was incorrectly matched!")
-        
-    # Check 3: Were unmatched roads (A2, B4) successfully ignored?
-    a2_matches = results[results["id_a"] == "A2"]
-    b4_matches = results[results["id_b"] == "B4"]
+
+    # Check 3: Were unmatched roads (A2 as source, B4 as destination) successfully ignored?
+    a2_matches = results[results["source_id"] == "A2"]
+    b4_matches = results[results["dest_id"] == "B4"]
     if a2_matches.empty and b4_matches.empty:
         print("✅ [PASS] Missing/Unmatched roads ('A2', 'B4') successfully ignored (No Match).")
     else:

@@ -4,25 +4,37 @@ This document provides a deep, conceptual dive into the **Dynamic Time Warping (
 
 ---
 
-## 1. Concept: Shape Alignment via Time Series
+## 1. Aligned Terminology
+
+To prevent any ambiguity during design and implementation, we define and adhere to the following precise terminology:
+
+1. **Node**: A raw, discrete coordinate vertex of the road geometry (from the input coordinate lists `coords_a` or `coords_b`).
+2. **Link**: Each individual straight line segment connecting two sequential **Nodes** in a road geometry.
+3. **Segment**: The entire road geometry representing a sequence of Nodes and intermediate Links (e.g. Segment A or Segment B).
+4. **Node Projection**: The perpendicular projection of a **Node** of one Segment onto a **Link** of the other Segment.
+5. **Point**: Any general position/coordinate along a Segment (which can be a raw **Node** or an interpolated **Node Projection**).
+
+---
+
+## 2. Concept: Shape Alignment via Time Series
 
 In geospatial analysis, a directed road segment is represented as a sequence of 2D coordinates:
-* **Curve A**: $A = [a_1, a_2, \dots, a_N]$
-* **Curve B**: $B = [b_1, b_2, \dots, b_M]$
+* **Source Segment A**: $A = [a_1, a_2, \dots, a_N]$ (composed of sequential Links $[a_i, a_{i+1}]$)
+* **Destination Segment B**: $B = [b_1, b_2, \dots, b_M]$ (composed of sequential Links $[b_j, b_{j+1}]$)
 
 If we want to compare their shapes, a direct point-to-point comparison (matching $a_i$ directly to $b_i$) fails because:
-1. **Vertex Mismatch**: Curve A might have $3$ vertices (e.g. simplified straight line), while Curve B has $20$ vertices (representing a detailed curve along the exact same path).
+1. **Vertex Mismatch**: Source Segment A might have $3$ nodes (e.g. simplified straight line), while Destination Segment B has $20$ nodes (representing a detailed curve along the exact same path).
 2. **Phase Shifts**: The vertices might be offset even if the curves are geometrically identical.
 
-**Dynamic Time Warping (DTW)** solves this by calculating an optimal **warping path** that maps points on Curve A to points on Curve B in a non-linear, flexible way.
+**Dynamic Time Warping (DTW)** solves this by calculating an optimal **warping path** that maps points on Source Segment A to points on Destination Segment B in a non-linear, flexible way.
 
 ```
-       Curve A (3 vertices)
+       Source Segment A (3 nodes)
        a1--------------a2--------------a3
        |  \          / | \            /|
        |    \      /   |   \        /  |
        b1----b2--b3----b4----b5--b6----b7
-       Curve B (7 vertices)
+       Destination Segment B (7 nodes)
 ```
 
 In this alignment:
@@ -30,107 +42,79 @@ In this alignment:
 * $a_2$ matches $\{b_3, b_4, b_5\}$
 * $a_3$ matches $\{b_6, b_7\}$
 
-This is a **many-to-many vertex mapping** that captures shape similarity regardless of sampling density.
+This is a **many-to-many point mapping** that captures shape similarity regardless of sampling density.
 
 ---
 
-## 2. The Mathematical Steps
+## 3. The Endpoint Stretch Constraint (Partial Overlap Problem)
 
-### Step 1: The Local Cost Matrix
-First, we build a local distance matrix $M$ of size $N \times M$, where each cell $(i, j)$ represents the flat projected Euclidean distance (in meters) between point $a_i$ and point $b_j$:
+The **Standard DTW** algorithm enforces strict **boundary conditions**: the warping path *must* start at the very first nodes $(0, 0)$ and end at the very last nodes $(N-1, M-1)$. 
 
-$$d(a_i, b_j) = \sqrt{(x_{a_i} - x_{b_j})^2 + (y_{a_i} - y_{b_j})^2}$$
-
-### Step 2: The Accumulated Cost Matrix (Dynamic Programming)
-We calculate the accumulated cost matrix $D(i, j)$ using the following recurrence relation:
-
-$$D(i, j) = d(a_i, b_j) + \min \begin{cases} 
-      D(i-1, j) & \text{(Deletion / Skip A)} \\
-      D(i, j-1) & \text{(Insertion / Skip B)} \\
-      D(i-1, j-1) & \text{(Match)}
-   \end{cases}$$
-
-#### Boundary Conditions of Standard DTW:
-* Start cell: $D(0, 0) = d(a_1, b_1)$
-* First row: $D(0, j) = D(0, j-1) + d(a_1, b_j)$
-* First column: $D(i, 0) = D(i-1, 0) + d(a_i, b_1)$
-
-### Step 3: Backtracking the Warping Path
-Starting from the top-right corner $(N-1, M-1)$, we backtrack through the accumulated cost matrix by choosing the adjacent cell with the lowest cost until we reach $(0, 0)$. This gives us the **Optimal Warping Path $P$**:
-
-$$P = [p_1, p_2, \dots, p_K] \quad \text{where } p_k = (i_k, j_k)$$
-
----
-
-## 3. The Endpoint Stretch Constraint (Split Road Problem)
-
-The **Standard DTW** algorithm enforces strict **boundary conditions**: the warping path *must* start at $(0, 0)$ and end at $(N-1, M-1)$. 
-
-While this is perfect for matching whole curves of similar lengths, it creates a major issue for **divided roads** (where a short road B matches a sub-section of a long road A).
+While this is perfect for matching whole curves of similar lengths, it creates a major issue when road segments only partially overlap. For example, if Source Segment A extends far beyond Destination Segment B, or vice versa, the standard boundary conditions force the unmatched ends of the segments to map to each other.
 
 ```
-  A1 (Start)                                 Segment A (Map A: Coarse)                                A_N (End)
+  A1 (Start)                         Segment A (Source)                                      A_N (End)
   =======================================================================================================>
-  B1 (Start)                  B_M (End)
-  ---------------------------->
-  Segment B (Map B: Fine Split)
+                      B1 (Start)                  B_M (End)
+                      ---------------------------->
+                      Segment B (Destination)
 ```
 
 In Standard DTW:
-1. The start points are close, so $d(a_1, b_1)$ is small.
-2. But the end of B ($b_M$) **is forced** to match the end of A ($a_N$).
-3. Because $a_N$ is hundreds of meters away, the distance $d(a_N, b_M)$ is extremely large.
-4. This endpoint stretch inflates the cumulative cost, causing the match to be **rejected**.
+1. The warping path is forced to start at $(a_1, b_1)$ and end at $(a_N, b_M)$.
+2. If the segments only partially overlap, the standard boundary conditions force the unmatched ends to map to each other (e.g. mapping $a_1$ to $b_1$ and $a_N$ to $b_M$, even if they are hundreds of meters apart).
+3. This creates massive endpoint stretches, inflating the cumulative cost and causing correct matches to be rejected.
 
 ---
 
-## 4. Reconciling the Page: Two Ways to Handle Splits in DTW
+## 4. Progressive Source-to-Destination DTW DP
 
-To resolve the split-road issue while preserving DTW's benefits, we have two distinct choices:
+To handle partially overlapping segments while preserving DTW's shape-alignment benefits, we implement the **Progressive Node-and-Projection DTW** algorithm. The algorithm runs natively on the raw **Nodes** and **Node Projections** of the **Source A** and **Destination B** segments, with **strictly no length comparisons**.
 
-## 4. Continuous Piecewise Order-Preserving Projection Alignment
+### The Alignment Constraints & Monotonicity Rules
 
-To combine the precision of continuous spatial projection with the strict directed-flow ordering of DTW, we define the **Continuous Piecewise Order-Preserving Alignment** framework.
+1. **Source-to-Destination Directional Matching**:
+   - The first parameter to `dtw_align` is strictly the **Source (`coords_a`)** segment, and the second parameter is strictly the **Destination (`coords_b`)** segment.
+   - The match ALWAYS starts at the beginning node of Source A ($a_0$, i.e. `coords_a[0]`) projected onto Destination B at distance $s_{b\_start}$.
+   - We find the closest index $j_{start}$ of Destination's points corresponding to this projection.
+   - The match starts at distance $0.0$ on Source A and $s_{b\_start}$ on Destination B.
 
-### The Alignment Constraints
+2. **High-Resolution Node Pool Construction**:
+   - **Source Points ($pts_a$)**: The sorted union of Source A's raw **Nodes** and the **Node Projections** of Destination B's nodes onto Source A.
+   - **Destination Points ($pts_b$)**: The sorted union of Destination B's raw **Nodes** and the **Node Projections** of Source A's nodes onto Destination B (starting from $s_{b\_start}$).
 
-Let Segment $A$ have vertices $a_i \to a_{i+1}$ (in Map A), and Segment $B$ have vertices $b_j \to b_{j+1}$ (in Map B). 
-If the point $a_i$ projects continuously onto Segment $B$ at the location $proj(a_i)$, the alignment path must evolve according to **Three Fundamental Rules**:
+3. **Dynamic Programming Step Transitions & Bounded Projection Areas**:
+   At each step $(i, j)$ in the dynamic programming table, where the last matched node of Source A is $a_{i-1}$ and Destination B is $b_{j-1}$, we have three transition options for the next step:
 
-```
-  Road A:       a_i -----------------------------------------> a_{i+1}
-                 |                                             /
-                 | (projected)                               / (next projection)
-                 v                                         v
-  Road B:  b_j --[ proj(a_i) ]------------------------------> b_{j+1}
-```
+   - **Vertical Step (Option A - Matching the next Node of Source A)**:
+     - *Action*: We move to the next Node $a_i$ of Source A and project it onto Destination Segment B to get the matched distance $s_b$.
+     - *Projection Area*: Restricted strictly to the active interval $[proj(a_{i-1}), b_j]$ along Destination Segment B. The projected position $s_b$ is mathematically bounded by:
+       $$s_b = \max\left(proj(a_{i-1}), \min\left(s_{b,cand}, \text{dist}(b_j)\right)\right)$$
+       where $s_{b,cand}$ is the full projection distance of $a_i$ on Segment B, and $\text{dist}(b_j)$ is the distance of Node $b_j$ along B.
+     
+   - **Horizontal Step (Option B - Matching the next Node of Destination B)**:
+     - *Action*: We move to the next Node $b_j$ of Destination B and project it onto Source Segment A to get the matched distance $s_a$.
+     - *Projection Area*: Restricted strictly to the interval $[proj(b_{j-1}), a_i]$ along Source Segment A. The projected position $s_a$ is mathematically bounded by:
+       $$s_a = \max\left(proj(b_{j-1}), \min\left(s_{a,cand}, \text{dist}(a_i)\right)\right)$$
+       where $s_{a,cand}$ is the full projection distance of $b_j$ on Segment A, and $\text{dist}(a_i)$ is the distance of Node $a_i$ along A.
+     
+   - **Diagonal Step (Option C - Direct Node-to-Node Match)**:
+     - *Action*: We move to both the next Node $a_i$ of Source A and Node $b_j$ of Destination B, matching them directly to each other ($a_i \longleftrightarrow b_j$).
+     - *Projection Area*: No continuous projection is performed; the transition cost is simply the Euclidean physical distance between raw Node $a_i$ and raw Node $b_j$.
 
-#### Rule 1: A-Projections Advance (Monotonicity along B)
-If the next vertex $a_{i+1}$ projects onto Segment $B$, the new projection $proj(a_{i+1})$ **must lie at or ahead** of $proj(a_i)$ (closer to $b_{j+1}$). It is mathematically forbidden from sliding backward toward $b_j$:
-$$\text{Distance}(b_j, proj(a_{i+1})) \ge \text{Distance}(b_j, proj(a_i))$$
+    $$D(i, j) = d(pts_a[i], pts_b[j]) + \min \begin{cases} 
+          D(i-1, j) & \text{(Vertical step - Node of Source A matches to Destination B)} \\
+          D(i, j-1) & \text{(Horizontal step - Node of Destination B matches to Source A)} \\
+          D(i-1, j-1) & \text{(Diagonal step - Node matches to Node)}
+       \end{cases}$$
 
-#### Rule 2: B-Vertices Interleave (Monotonicity along A)
-If Road B is more detailed and has an intermediate vertex $b_{j+1}$ before $a_{i+1}$ is reached, then $b_{j+1}$ must project backward onto Segment $A$ at a location $proj(b_{j+1})$ that lies **strictly between** $a_i$ and $a_{i+1}$:
-$$proj(b_{j+1}) \in [a_i, a_{i+1}]$$
+5. **Boundary-Based Stopping & Backtracking**:
+   - The algorithm stops when either segment is completed. This corresponds to the boundaries of the dynamic table: the last row $i = N'-1$ or the last column $j = M'-1$.
+   - We search these boundary cells to find the cell $(i_{end}, j_{end})$ that minimizes the cumulative cost $D(i, j)$, preferring more progress along the segments if costs are equal.
+   - We backtrack from $(i_{end}, j_{end})$ to the initial start cell $(0, j_{start})$ to extract the optimal warping path.
 
-#### Rule 3: Exact Vertex Match
-The vertices of both roads align perfectly at their next junctions:
-$$a_{i+1} \longleftrightarrow b_{j+1}$$
-
----
-
-## 5. Implementation: The Continuous Subsequence DTW Engine
-
-To implement this continuous piecewise alignment in Python efficiently without complex geometric solvers, we use the **Continuous Subsequence DTW** algorithm:
-
-1. **High-Density Spatial Sampling**:
-   We project both coordinate lists into flat UTM meters, and sample points along both lines at a **high-density, fixed spatial interval** (e.g. every $5\text{m}$).
-   * This transforms a discrete vertex list into a dense, continuous sequence: $A_{\text{dense}} = [p_1, \dots, p_{N'}]$ and $B_{\text{dense}} = [q_1, \dots, q_{M'}]$.
-2. **Determine Query vs. Target (Asymmetry)**:
-   * Let the shorter road be the **Query** ($Q$) and the longer road be the **Target** ($T$).
-3. **Open-Ended Boundary Conditions**:
-   * We run Subsequence DTW on the dense point lists, allowing $Q$ to match *anywhere* along $T$ without start or end penalties on $T$.
-4. **Calculated Match Metrics**:
-   * The resulting warping path $P$ represents your **Continuous Piecewise Order-Preserving Alignment**, satisfying all three rules.
-   * The final distance is the normalized sum of the projection distances along this optimal path.
-
+6. **Alignment-Based Overlap Percentage**:
+   - We measure what percentage of **Source Segment A** is matched, from the start ($0.0$) to the furthest matched point $pts_a[i_{end}]$:
+     $$\text{matched\_len} = pts_a[i_{end}]$$
+     $$\text{overlap\_pct} = \min\left(100.0, \max\left(0.0, \text{round}\left(\frac{\text{matched\_len}}{\text{len\_source\_a}} \times 100.0, 2\right)\right)\right)$$
+   - This coverage-based metric completely replaces the old corridor box-matching calculations.

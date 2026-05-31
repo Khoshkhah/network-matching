@@ -145,21 +145,15 @@ class DuckDBMapMatcher:
             bearing_diff = abs(bearing_a - bearing_b)
             bearing_diff = min(bearing_diff, 360 - bearing_diff)
             
-            # 4. Compute Parallel Corridor Overlap Percentage
-            # How much of segment B falls inside Segment A's search buffer
-            corridor_a = geom_a.buffer(self.max_distance)
-            try:
-                overlap_geom = geom_b.intersection(corridor_a)
-                overlap_pct = (overlap_geom.length / geom_b.length) * 100.0
-            except Exception:
-                overlap_pct = 0.0
+            # 4. Retrieve Parallel Alignment Overlap Percentage
+            overlap_pct = dtw_metrics.get("overlap_pct", 0.0)
                 
             evaluated_records.append({
                 "id_a": id_a,
                 "id_b": id_b,
                 "dtw_distance": dtw_dist,
-                "max_dtw_distance": dtw_metrics["max"],
-                "min_dtw_distance": dtw_metrics["min"],
+                "max_dtw_distance": dtw_metrics.get("max", float('inf')),
+                "min_dtw_distance": dtw_metrics.get("min", float('inf')),
                 "bearing_diff": bearing_diff,
                 "overlap_pct": overlap_pct
             })
@@ -168,74 +162,58 @@ class DuckDBMapMatcher:
 
     def reconcile_matches(self, evaluated_df: pd.DataFrame) -> pd.DataFrame:
         """
-        TIER 3: Reconciles bidirectional matches and classifies them.
-        Uses Window functions inside DuckDB for fast sorting and matching.
+        TIER 3: Resolve evaluated candidate pairs into a **directional** source->destination
+        match table.
+
+        Each surviving row is a match FROM a source edge (A) TO a destination edge (B): candidate
+        pairs are filtered by the distance / bearing / overlap thresholds, then for every source
+        its qualifying destinations are ranked by alignment quality (``rank`` = 1 is the closest;
+        ``is_best`` flags it). **All** qualifying destinations are kept, so a source that is split
+        across several destinations yields several rows.
+
+        This is intentionally one-directional, mapping Source A to Destination B.
+        Swapping the sources gives a different table since all projections and overlap
+        metrics are evaluated relative to Source A (e.g., ``overlap_pct`` is the aligned
+        coverage of Source A's length). To obtain a symmetric result, run the matcher
+        both ways and UNION the two outputs -- no reciprocal A<->B reconciliation is
+        performed here.
+
+        Returns columns: ``source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
+        bearing_diff, overlap_pct, rank, is_best``.
         """
+        cols = ["source_id", "dest_id", "dtw_distance", "max_dtw_distance",
+                "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best"]
         if evaluated_df.empty:
-            return pd.DataFrame(columns=["id_a", "id_b", "dtw_distance", "max_dtw_distance", "min_dtw_distance", "bearing_diff", "overlap_pct", "match_type"])
-            
-        # Register the Pandas DataFrame as a virtual table in DuckDB
+            return pd.DataFrame(columns=cols)
+
         self.conn.register("evaluated_pairs", evaluated_df)
-        
-        # Reconciliation SQL query implementing:
-        # - Distance & Bearing threshold cutoffs (missing road detection)
-        # - Reciprocal minimum matching (Symmetric 1:1)
-        # - Multiple-matched reverse groupings (1:N Splits)
-        reconciliation_query = f"""
-            WITH 
-            -- 1. Apply absolute cutoff thresholds to eliminate poor candidate pairs early
-            FilteredPairs AS (
+        query = f"""
+            WITH FilteredPairs AS (
+                -- Absolute cutoffs: drop poor candidate pairs (also "missing road" detection)
                 SELECT * FROM evaluated_pairs
                 WHERE dtw_distance <= {self.max_distance}
                   AND bearing_diff <= {self.max_angle}
-                  AND overlap_pct >= {self.min_overlap * 100.0}
+                  AND overlap_pct  >= {self.min_overlap * 100.0}
             ),
-            
-            -- 2. Determine best choice from A to B (Argmin)
-            BestAB AS (
-                SELECT 
-                    id_a, id_b, dtw_distance,
-                    ROW_NUMBER() OVER(PARTITION BY id_a ORDER BY dtw_distance ASC) as rnk
-                FROM FilteredPairs
-            ),
-            
-            -- 3. Determine best choice from B to A (Argmin)
-            BestBA AS (
-                SELECT 
-                    id_b, id_a, dtw_distance,
-                    ROW_NUMBER() OVER(PARTITION BY id_b ORDER BY dtw_distance ASC) as rnk
+            Ranked AS (
+                -- Rank each source's qualifying destinations by alignment (closest first)
+                SELECT
+                    id_a AS source_id,
+                    id_b AS dest_id,
+                    dtw_distance, max_dtw_distance, min_dtw_distance,
+                    bearing_diff, overlap_pct,
+                    ROW_NUMBER() OVER (PARTITION BY id_a ORDER BY dtw_distance ASC) AS rnk
                 FROM FilteredPairs
             )
-            
-            -- 4. Reconcile matching decisions
-            SELECT 
-                F.id_a, 
-                F.id_b,
-                F.dtw_distance,
-                F.max_dtw_distance,
-                F.min_dtw_distance,
-                F.bearing_diff,
-                F.overlap_pct,
-                CASE 
-                    -- Multiple fines match the same coarse: 1:N Split
-                    WHEN BA.rnk = 1 AND COUNT(F.id_b) OVER(PARTITION BY F.id_a) > 1 THEN '1:N_SPLIT'
-                    
-                    -- Reciprocal minimum matches: Symmetric 1:1
-                    WHEN AB.rnk = 1 AND BA.rnk = 1 THEN '1:1_SYMMETRIC'
-                    
-                    -- A matches B, but B matches a different segment in reverse: Conflict
-                    WHEN AB.rnk = 1 AND BA.rnk IS NULL THEN 'CONFLICT'
-                    
-                    ELSE 'UNIDIRECTIONAL_PARTIAL'
-                END AS match_type
-            FROM FilteredPairs F
-            LEFT JOIN BestAB AB ON F.id_a = AB.id_a AND F.id_b = AB.id_b AND AB.rnk = 1
-            LEFT JOIN BestBA BA ON F.id_b = BA.id_b AND F.id_a = BA.id_a AND BA.rnk = 1
-            ORDER BY F.id_a, F.dtw_distance ASC;
+            SELECT
+                source_id, dest_id,
+                dtw_distance, max_dtw_distance, min_dtw_distance,
+                bearing_diff, overlap_pct,
+                rnk AS rank,
+                (rnk = 1) AS is_best
+            FROM Ranked
+            ORDER BY source_id, rnk;
         """
-        results_df = self.conn.execute(reconciliation_query).df()
-        
-        # Clean up registered table
+        results_df = self.conn.execute(query).df()
         self.conn.unregister("evaluated_pairs")
-        
         return results_df
