@@ -179,10 +179,10 @@ class DuckDBMapMatcher:
         performed here.
 
         Returns columns: ``source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
-        bearing_diff, overlap_pct, rank, is_best``.
+        bearing_diff, overlap_pct, rank, is_best, match_type``.
         """
         cols = ["source_id", "dest_id", "dtw_distance", "max_dtw_distance",
-                "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best"]
+                "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best", "match_type"]
         if evaluated_df.empty:
             return pd.DataFrame(columns=cols)
 
@@ -210,7 +210,14 @@ class DuckDBMapMatcher:
                 dtw_distance, max_dtw_distance, min_dtw_distance,
                 bearing_diff, overlap_pct,
                 rnk AS rank,
-                (rnk = 1) AS is_best
+                (rnk = 1) AS is_best,
+                -- Backwards-compatible match_type classification for legacy scripts/visualizers
+                CASE
+                    WHEN COUNT(dest_id) OVER (PARTITION BY source_id) > 1 THEN '1:N_SPLIT'
+                    WHEN rnk = 1 AND overlap_pct >= 80.0 AND bearing_diff <= 15.0 THEN '1:1_SYMMETRIC'
+                    WHEN bearing_diff > 25.0 OR overlap_pct < 60.0 THEN 'CONFLICT'
+                    ELSE 'UNIDIRECTIONAL_PARTIAL'
+                END AS match_type
             FROM Ranked
             ORDER BY source_id, rnk;
         """
@@ -226,21 +233,21 @@ class DuckDBMapMatcher:
             Performs directed matching from Source A to Destination B.
             Returns a DataFrame with columns: 
             [source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
-             bearing_diff, overlap_pct, rank, is_best]
+             bearing_diff, overlap_pct, rank, is_best, match_type]
              
         If bidirectional=True:
             Runs matching in both directions (Source A -> Destination B AND Destination B -> Source A)
             and returns the UNION of the two reconciled directional matching tables.
             Returns a DataFrame with columns:
             [source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
-             bearing_diff, overlap_pct, rank, is_best, direction]
+             bearing_diff, overlap_pct, rank, is_best, match_type, direction]
              where `direction` is either 'A_to_B' or 'B_to_A'.
         """
         candidates_df = self.generate_candidate_pairs()
         
         if candidates_df.empty:
             cols = ["source_id", "dest_id", "dtw_distance", "max_dtw_distance",
-                    "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best"]
+                    "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best", "match_type"]
             if bidirectional:
                 cols.append("direction")
             return pd.DataFrame(columns=cols)
@@ -267,4 +274,5 @@ class DuckDBMapMatcher:
         reconciled_b_to_a["direction"] = "B_to_A"
         
         return pd.concat([reconciled_a_to_b, reconciled_b_to_a], ignore_index=True)
+
 
