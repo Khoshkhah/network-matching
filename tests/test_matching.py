@@ -119,9 +119,29 @@ def run_automated_test_suite():
     else:
         print("❌ [FAIL] Unmatched roads were incorrectly included in matches!")
         
+    print("\n[Step 5] Executing Bidirectional map matching (A <-> B)...")
+    bidirectional_results = matcher.match(bidirectional=True)
+    print("\nBidirectional Match Results:")
+    print(bidirectional_results.to_string(index=False))
+    
+    # Check 4: Validate bidirectional matches
+    b_to_a_matches = bidirectional_results[bidirectional_results["direction"] == "B_to_A"]
+    a_to_b_matches = bidirectional_results[bidirectional_results["direction"] == "A_to_B"]
+    
+    b1_to_a1 = b_to_a_matches[b_to_a_matches["source_id"] == "B1"]
+    b2_to_a1 = b_to_a_matches[b_to_a_matches["source_id"] == "B2"]
+    
+    if (not a_to_b_matches.empty and 
+        len(b1_to_a1) == 1 and b1_to_a1.iloc[0]["dest_id"] == "A1" and
+        len(b2_to_a1) == 1 and b2_to_a1.iloc[0]["dest_id"] == "A1"):
+        print("✅ [PASS] Bidirectional mapping successfully matched B1->A1 and B2->A1 in reverse direction.")
+    else:
+        print("❌ [FAIL] Bidirectional reverse mapping failed to correctly match B1/B2 to A1.")
+        
     print("\n==================================================")
     print("     TEST RUN COMPLETED SUCCESSFULY")
     print("==================================================")
  
 if __name__ == "__main__":
     run_automated_test_suite()
+

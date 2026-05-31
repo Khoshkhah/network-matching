@@ -217,3 +217,54 @@ class DuckDBMapMatcher:
         results_df = self.conn.execute(query).df()
         self.conn.unregister("evaluated_pairs")
         return results_df
+
+    def match(self, bidirectional: bool = False) -> pd.DataFrame:
+        """
+        Runs the full 3-tier map-matching pipeline.
+        
+        If bidirectional=False (default):
+            Performs directed matching from Source A to Destination B.
+            Returns a DataFrame with columns: 
+            [source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
+             bearing_diff, overlap_pct, rank, is_best]
+             
+        If bidirectional=True:
+            Runs matching in both directions (Source A -> Destination B AND Destination B -> Source A)
+            and returns the UNION of the two reconciled directional matching tables.
+            Returns a DataFrame with columns:
+            [source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance,
+             bearing_diff, overlap_pct, rank, is_best, direction]
+             where `direction` is either 'A_to_B' or 'B_to_A'.
+        """
+        candidates_df = self.generate_candidate_pairs()
+        
+        if candidates_df.empty:
+            cols = ["source_id", "dest_id", "dtw_distance", "max_dtw_distance",
+                    "min_dtw_distance", "bearing_diff", "overlap_pct", "rank", "is_best"]
+            if bidirectional:
+                cols.append("direction")
+            return pd.DataFrame(columns=cols)
+            
+        if not bidirectional:
+            evaluated = self.compute_dtw_metrics(candidates_df)
+            return self.reconcile_matches(evaluated)
+            
+        # Direction 1: A -> B
+        evaluated_a_to_b = self.compute_dtw_metrics(candidates_df)
+        reconciled_a_to_b = self.reconcile_matches(evaluated_a_to_b)
+        reconciled_a_to_b["direction"] = "A_to_B"
+        
+        # Direction 2: B -> A
+        candidates_b_to_a = candidates_df.rename(columns={
+            "id_a": "id_b",
+            "wkt_a": "wkt_b",
+            "id_b": "id_a",
+            "wkt_b": "wkt_a"
+        })[["id_a", "wkt_a", "id_b", "wkt_b"]]
+        
+        evaluated_b_to_a = self.compute_dtw_metrics(candidates_b_to_a)
+        reconciled_b_to_a = self.reconcile_matches(evaluated_b_to_a)
+        reconciled_b_to_a["direction"] = "B_to_A"
+        
+        return pd.concat([reconciled_a_to_b, reconciled_b_to_a], ignore_index=True)
+
