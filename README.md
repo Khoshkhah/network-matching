@@ -2,18 +2,16 @@
 
 Welcome to the **`network-matching`** Python library! This is a high-performance, reusable, and general-purpose map conflation engine designed to align and merge directed road networks (such as OpenStreetMap and Sweden's NVDB network).
 
-The engine leverages **Dynamic Time Warping (DTW)** and **DuckDB Spatial** to perform direction-aware, high-fidelity geometry matching—even when road networks have different segmentations (e.g., $1:N$ coarse-to-fine splits).
+The engine leverages **Dynamic Time Warping (DTW)** and **DuckDB Spatial** to perform direction-aware, high-fidelity geometry matching—even when road networks have different segmentations (e.g., $1:N$ split roads).
 
 ---
 
 ## 🚀 Features
 
-- **Direction-Aware (Directed) Matching**: Uses segment travel bearings and coordinate sequences to prevent matching against opposite lanes or incorrect travel directions.
-- **Continuous Subsequence DTW**: Matches a shorter curve (Query) to any subsequence of a longer curve (Target) without endpoint stretching or start/end alignment penalties.
-- **Auto-Reconciliation (SQL Window Functions)**: Dynamically groups and classifies matches into:
-  - `1:1_SYMMETRIC`: Exact mutual matches.
-  - `1:N_SPLIT`: Multiple fine road segments matching a single coarse segment (split roads).
-  - `CONFLICT`: Overlap conflicts (e.g., matching a different reverse segment).
+- **Direction-Aware (Directed) Matching**: Uses travel bearings and coordinate sequences to prevent matching against opposite lanes or incorrect travel directions.
+- **Progressive Overlap-Based DTW Shape Alignment**: Identifies natural overlap starts and boundaries dynamically, ignoring pre-overlap and post-overlap tails without relying on arbitrary length classification or segment swapping.
+- **Ranked Match Selection**: Evaluates all qualifying candidate matches, sorting and ranking them by alignment quality. Handles split parallel roads cleanly, flagging the absolute best matching target (`is_best = True`) while preserving all qualifying alternatives.
+- **Optional Bidirectional Reconstruction**: Run matching independently in both directions ($A \to B$ and $B \to A$) and obtain a unified, reciprocal network-to-network conflation table.
 - **Extremely Flexible Input Sources**: Connects seamlessly to CSV files, DuckDB tables, Pandas/GeoPandas DataFrames, and standard GIS files (GeoPackage, Shapefile, GeoJSON).
 
 ---
@@ -38,7 +36,7 @@ The library requires standard, lightweight Python numerical and spatial packages
 
 ## 🛠️ Usage Guides for Different Input Types
 
-The core class is `DuckDBMapMatcher`. It uses a Tier 1 spatial R-Tree join, Tier 2 Python DTW alignment, and Tier 3 SQL window-function reconciliation.
+The core class is `DuckDBMapMatcher`. It unifies Tier 1 spatial R-Tree filtering, Tier 2 Python DTW alignment, and Tier 3 SQL window-function reconciliation under a single method call: `match()`.
 
 ### Case 1: Matching Local CSV Files (WKT Geometries)
 If your datasets are stored as flat CSV files with coordinate sequences represented as Well-Known Text (WKT) (e.g. `LINESTRING (312345 6123456, ...)`), you can load them directly into an in-memory database:
@@ -73,10 +71,8 @@ matcher.configure_sources(
     utm_srid=3006  # Local projected metric system (e.g., SWEREF99 TM for Sweden)
 )
 
-# 4. Run Map Matching
-candidates = matcher.generate_candidate_pairs()
-evaluated = matcher.compute_dtw_metrics(candidates)
-results = matcher.reconcile_matches(evaluated)
+# 4. Run Map Matching (directed match A -> B)
+results = matcher.match(bidirectional=False)
 
 # 5. Export matching results directly to a local CSV file!
 matcher.conn.register("final_matches", results)
@@ -86,7 +82,7 @@ matcher.conn.execute("COPY final_matches TO 'data/conflation_results.csv' (HEADE
 ---
 
 ### Case 2: Matching Direct DuckDB Tables (Multi-Database Connection)
-If your datasets are stored inside physical `.duckdb` files, you can connect to one and ATTACH the other read-only to avoid any file locking conflicts:
+If your datasets are stored inside physical `.duckdb` files, you can connect to one and ATTACH the other read-only to avoid file locking:
 
 ```python
 from network_matching import DuckDBMapMatcher
@@ -104,10 +100,8 @@ matcher.configure_sources(
     utm_srid=3006
 )
 
-# Run conflation pipeline
-candidates = matcher.generate_candidate_pairs()
-evaluated = matcher.compute_dtw_metrics(candidates)
-results = matcher.reconcile_matches(evaluated)
+# Run full bidirectional map conflation
+results = matcher.match(bidirectional=True)
 
 # Save results directly to a permanent table in the attached database B
 matcher.conn.register("final_matches", results)
@@ -131,11 +125,10 @@ gdf_nvdb = gpd.read_file("nvdb_network.shp")
 matcher = DuckDBMapMatcher()
 
 # Register GeoDataFrames directly inside DuckDB
-# (DuckDB natively queries Pandas/GeoPandas objects!)
 matcher.conn.register("osm_layer", gdf_osm)
 matcher.conn.register("nvdb_layer", gdf_nvdb)
 
-# Configure matcher (note: GeoPandas uses 'geometry' as column name by default)
+# Configure matcher
 matcher.configure_sources(
     source_a="osm_layer", id_col_a="edge_id", geom_col_a="geometry",
     source_b="nvdb_layer", id_col_b="edge_id", geom_col_b="geometry",
@@ -143,9 +136,7 @@ matcher.configure_sources(
 )
 
 # Execute matching and retrieve a standard Pandas DataFrame
-candidates = matcher.generate_candidate_pairs()
-evaluated = matcher.compute_dtw_metrics(candidates)
-results_df = matcher.reconcile_matches(evaluated)
+results_df = matcher.match(bidirectional=True)
 ```
 
 ---
@@ -166,9 +157,7 @@ matcher.configure_sources(
 )
 
 # Run map matching pipeline
-candidates = matcher.generate_candidate_pairs()
-evaluated = matcher.compute_dtw_metrics(candidates)
-results = matcher.reconcile_matches(evaluated)
+results = matcher.match(bidirectional=False)
 ```
 
 ---
@@ -176,13 +165,12 @@ results = matcher.reconcile_matches(evaluated)
 ## 📈 Match Result Fields Explained
 
 The output table contains the following columns:
-- `id_a` / `id_b`: Identifiers of the matched segments.
-- `dtw_distance`: Average physical offset (drift) in meters calculated along the continuous subsequence DTW warping path.
-- `max_dtw_distance` / `min_dtw_distance`: Maximum and minimum alignment offsets (meters).
-- `bearing_diff`: Absolute difference in travel direction (0 - 180 degrees).
-- `overlap_pct`: Percentage of segment B that falls inside segment A's buffer corridor (0 - 100%).
-- `match_type`:
-  - **`1:1_SYMMETRIC`**: Bidirectionally agreed match (Standard 1:1 segment).
-  - **`1:N_SPLIT`**: Multi-matching coarse-to-fine segment split (e.g. 1 long road in A = 3 short segments in B).
-  - **`CONFLICT`**: Directional or selection conflict.
-  - **`UNIDIRECTIONAL_PARTIAL`**: Partial one-way alignment.
+- **`source_id`**: Identifier of the Source segment (A if directed, A or B if bidirectional).
+- **`dest_id`**: Identifier of the matched Destination segment (B if directed, B or A if bidirectional).
+- **`dtw_distance`**: Average physical offset (drift) in meters calculated along the progressive DTW warping path.
+- **`max_dtw_distance` / `min_dtw_distance`**: Maximum and minimum alignment offsets (meters).
+- **`bearing_diff`**: Absolute difference in travel direction (0 - 180 degrees).
+- **`overlap_pct`**: The coverage percentage representing what proportion of the Source segment's length was aligned.
+- **`rank`**: The rank of this destination for the respective source (rank 1 is the closest).
+- **`is_best`**: Boolean flag indicating whether this is the absolute closest qualifying destination (rank == 1).
+- **`direction`** *(only when `bidirectional=True`)*: Indicates matching direction (`A_to_B` or `B_to_A`).

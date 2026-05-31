@@ -10,10 +10,10 @@ To build a general and reusable tool, we decouple the **storage format** from th
 
 1. **In-Memory DuckDB Engine**: Rather than binding the software to static database files, the framework uses an in-memory DuckDB connection (`duckdb.connect(':memory:')`) loaded with the `spatial` extension as its core computation engine.
 2. **File-Format Agnostic**: DuckDB's ability to query raw files directly allows the framework to support **DuckDB tables, CSV files (WKT geometries), Parquet files, and Shapefiles** as inputs without altering the SQL logic.
-3. **Hybrid Processing (Tier 1 SQL + Tier 2 Python)**:
+3. **Hybrid Processing (Tier 1 SQL + Tier 2 Python + Tier 3 SQL)**:
    * **SQL** is used for spatial indices and joins (Tier 1) because it is highly parallel and optimized in C++.
-   * **Python** is used for DTW shape-alignment (Tier 2) because recursive time-series matrix algorithms are best expressed in Python/NumPy.
-   * **SQL** is used again for reconciliation and groupings (post-processing).
+   * **Python** is used for progressive DTW shape-alignment (Tier 2) because recursive time-series matrix algorithms are best expressed in Python/NumPy.
+   * **SQL** is used again for directional ranking and post-processing (Tier 3).
 
 ---
 
@@ -37,8 +37,9 @@ To build a general and reusable tool, we decouple the **storage format** from th
   +-------------------------------------------------------------------+
   |                       PYTHON MATH ENGINE                          |
   |                                                                   |
-  |  2. TIER 2: De-duplicated DTW Distance calculation                |
-  |     - Normalized DTW Proximity                                    |
+  |  2. TIER 2: Progressive DTW Shape Alignment                       |
+  |     - Bounded Projection Dynamic Programming                      |
+  |     - Aligned Overlap Percentage                                  |
   |     - Direction Alignment & Heading Checks                        |
   |                                                                   |
   +-------------------------------------------------------------------+
@@ -47,15 +48,16 @@ To build a general and reusable tool, we decouple the **storage format** from th
   +-------------------------------------------------------------------+
   |                  IN-MEMORY DUCKDB ENGINE                          |
   |                                                                   |
-  |  3. RECONCILIATION: Grouping & Argmin SQL queries                 |
-  |     - Identifies Symmetric 1:1, 1:N Splits, Conflicts             |
+  |  3. TIER 3: Directional Ranking & Reconciliation                  |
+  |     - Ranks qualifying destination edges for each source edge     |
+  |     - Flags best match (is_best) and supports bidirectional union  |
   |                                                                   |
   +-------------------------------------------------------------------+
                                      |
                                      v
-                       +---------------------------+
-                       | Output Matches (CSV/GPKG) |
-                       +---------------------------+
+                        +---------------------------+
+                        | Output Matches (CSV/GPKG) |
+                        +---------------------------+
 ```
 
 ---
@@ -69,7 +71,7 @@ import duckdb
 import pandas as pd
 
 class DuckDBMapMatcher:
-    def __init__(self):
+    def __init__(self, db_path_a: Optional[str] = None, db_path_b: Optional[str] = None):
         """
         Initializes an in-memory DuckDB instance and installs/loads 
         the spatial extension.
@@ -82,24 +84,19 @@ class DuckDBMapMatcher:
         self.source_b = None
         self.columns_a = {}
         self.columns_b = {}
+        self.utm_srid = None
         
         # Thresholds
-        self.max_distance = 20.0
-        self.max_angle = 30.0
-        self.min_overlap = 0.50
+        self.max_distance = 25.0       # meters
+        self.max_angle = 30.0          # degrees
+        self.min_overlap = 0.50        # ratio (50%)
         
     def configure_sources(self, 
                           source_a: str, id_col_a: str, geom_col_a: str,
                           source_b: str, id_col_b: str, geom_col_b: str,
                           utm_srid: int):
         """
-        Sets the data sources and maps their columns.
-        
-        Parameters:
-        - source_a: SQL representation of Source A (e.g. 'table_name' or "'file.csv'")
-        - id_col_a: ID column name in Source A
-        - geom_col_a: Geometry column representation (e.g. 'geom' or 'ST_GeomFromText(wkt_col)')
-        - utm_srid: Local projected coordinate system SRID in meters (e.g. 32639)
+        Sets the tables or files to match and configures column mappings.
         """
         self.source_a = source_a
         self.source_b = source_b
@@ -125,16 +122,18 @@ Using DuckDB's spatial index, the engine queries the unique candidates. This que
     def generate_candidate_pairs(self) -> pd.DataFrame:
         """
         Runs an in-memory spatial join to retrieve unique candidate pairs.
-        Returns a Pandas DataFrame of [id_a, id_b] pairs.
+        Returns a Pandas DataFrame of [id_a, wkt_a, id_b, wkt_b] pairs.
         """
         query = f"""
             SELECT DISTINCT
                 A.{self.columns_a['id']} AS id_a,
-                B.{self.columns_b['id']} AS id_b
+                ST_AsText(ST_Transform(A.{self.columns_a['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}')) AS wkt_a,
+                B.{self.columns_b['id']} AS id_b,
+                ST_AsText(ST_Transform(B.{self.columns_b['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}')) AS wkt_b
             FROM {self.source_a} AS A, {self.source_b} AS B
             WHERE ST_DWithin(
-                ST_Transform(A.{self.columns_a['geom']}, 4326, {self.utm_srid}),
-                ST_Transform(B.{self.columns_b['geom']}, 4326, {self.utm_srid}),
+                ST_Transform(A.{self.columns_a['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}'),
+                ST_Transform(B.{self.columns_b['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}'),
                 {self.max_distance}
             );
         """
@@ -142,73 +141,78 @@ Using DuckDB's spatial index, the engine queries the unique candidates. This que
 ```
 
 ### Stage 2: DTW Distance Calculation (Tier 2)
-The coordinate lists for each candidate pair are loaded into Python. The DTW algorithm computes the Normalized DTW distance exactly once per pair:
+The coordinate lists for each candidate pair are loaded into Python. The DTW algorithm computes the progressive DTW alignment and coverage percentage:
 
 ```python
-    def compute_dtw_metrics(self, pairs_df: pd.DataFrame) -> pd.DataFrame:
+    def compute_dtw_metrics(self, candidates_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Fetches geometries for the candidate pairs, runs the 2D DTW algorithm 
+        Fetches geometries for the candidate pairs, runs the 2D progressive DTW algorithm 
         in Python, and returns a DataFrame of evaluated metrics:
         [id_a, id_b, dtw_distance, bearing_diff, overlap_pct]
         """
-        # 1. Fetch exact geometries in UTM meters from DuckDB
-        # 2. Iterate over pairs and calculate DTW distance (Python/NumPy)
-        # 3. Return the populated metrics DataFrame
+        # 1. Parse WKT to Shapely LineString
+        # 2. Call dtw_align(coords_a, coords_b) to retrieve alignment distance and overlap_pct
+        # 3. Compute travel bearing mismatch
+        # 4. Return the populated metrics DataFrame
         pass
 ```
 
-### Stage 3: Reconciliation & Classification (Post-Processing)
-The evaluated metrics are pushed back to the in-memory DuckDB instance to classify matches using simple SQL aggregation:
+### Stage 3: Reconciliation & Classification (Tier 3)
+The evaluated metrics are pushed back to the in-memory DuckDB instance to rank candidate targets using SQL window functions:
 
 ```python
     def reconcile_matches(self, evaluated_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Pushes evaluated_df into DuckDB and runs reconciliation queries to 
-        identify Symmetric 1:1, 1:N Splits, and Conflicts.
+        Pushes evaluated_df into DuckDB and runs ranking queries to 
+        identify qualifying matches.
         """
-        # Register the DataFrame as a virtual table in DuckDB
         self.conn.register("evaluated_pairs", evaluated_df)
         
-        reconciliation_query = f"""
-            WITH 
-            -- 1. Apply baseline cutoff threshold
-            FilteredPairs AS (
-                SELECT * FROM evaluated_pairs 
+        query = f"""
+            WITH FilteredPairs AS (
+                -- Absolute cutoffs: drop poor candidate pairs
+                SELECT * FROM evaluated_pairs
                 WHERE dtw_distance <= {self.max_distance}
                   AND bearing_diff <= {self.max_angle}
+                  AND overlap_pct  >= {self.min_overlap * 100.0}
             ),
-            -- 2. Find the minimum distance (argmin) from A to B
-            BestAB AS (
-                SELECT id_a, id_b, dtw_distance,
-                       ROW_NUMBER() OVER(PARTITION BY id_a ORDER BY dtw_distance ASC) as rank
-                FROM FilteredPairs
-            ),
-            -- 3. Find the minimum distance (argmin) from B to A
-            BestBA AS (
-                SELECT id_b, id_a, dtw_distance,
-                       ROW_NUMBER() OVER(PARTITION BY id_b ORDER BY dtw_distance ASC) as rank
+            Ranked AS (
+                -- Rank each source's qualifying destinations by alignment (closest first)
+                SELECT
+                    id_a AS source_id,
+                    id_b AS dest_id,
+                    dtw_distance, max_dtw_distance, min_dtw_distance,
+                    bearing_diff, overlap_pct,
+                    ROW_NUMBER() OVER (PARTITION BY id_a ORDER BY dtw_distance ASC) AS rnk
                 FROM FilteredPairs
             )
-            -- 4. Reconcile and Classify Matches
-            SELECT 
-                F.id_a, 
-                F.id_b,
-                F.dtw_distance,
-                CASE 
-                    WHEN AB.rank = 1 AND BA.rank = 1 THEN '1:1_SYMMETRIC'
-                    WHEN BA.rank = 1 AND COUNT(F.id_b) OVER(PARTITION BY F.id_a) > 1 THEN '1:N_SPLIT'
-                    WHEN AB.rank = 1 AND BA.rank != 1 THEN 'CONFLICT'
-                    ELSE 'UNIDIRECTIONAL_PARTIAL'
-                END AS match_type
-            FROM FilteredPairs F
-            LEFT JOIN BestAB AB ON F.id_a = AB.id_a AND F.id_b = AB.id_b AND AB.rank = 1
-            LEFT JOIN BestBA BA ON F.id_b = BA.id_b AND F.id_a = BA.id_a AND BA.rank = 1;
+            SELECT
+                source_id, dest_id,
+                dtw_distance, max_dtw_distance, min_dtw_distance,
+                bearing_diff, overlap_pct,
+                rnk AS rank,
+                (rnk = 1) AS is_best
+            FROM Ranked
+            ORDER BY source_id, rnk;
         """
-        return self.conn.execute(reconciliation_query).df()
+        results_df = self.conn.execute(query).df()
+        self.conn.unregister("evaluated_pairs")
+        return results_df
 ```
 
-### Stage 4: Export Result
-Write the final table back to your desired destination (e.g. database table or a flat CSV file).
+### Stage 4: High-Level Directed/Bidirectional Matching
+The class provides a high-level `match` method to execute either a directed Source A -> Destination B match or run both directions independently and return their union:
+
+```python
+    def match(self, bidirectional: bool = False) -> pd.DataFrame:
+        """
+        Runs the full 3-tier map-matching pipeline in either directed or bidirectional mode.
+        """
+        # 1. Generate spatial candidate pairs
+        # 2. If bidirectional=False, run directional matching A -> B
+        # 3. If bidirectional=True, run A -> B and B -> A independently and return their union.
+        pass
+```
 
 ---
 
@@ -227,13 +231,12 @@ matcher.configure_sources(
     utm_srid=32639
 )
 
-# Run pipeline
-candidates = matcher.generate_candidate_pairs()
-evaluated = matcher.compute_dtw_metrics(candidates)
-results = matcher.reconcile_matches(evaluated)
+# Run bidirectional pipeline
+results = matcher.match(bidirectional=True)
 
 # Save result back to primary database
-matcher.conn.execute("CREATE TABLE main.conflation_results AS SELECT * FROM results")
+matcher.conn.register("final_results", results)
+matcher.conn.execute("CREATE TABLE main.conflation_results AS SELECT * FROM final_results")
 ```
 
 ### Case B: Conflating Two Flat CSV Files (Zero-Database Footprint)
@@ -252,10 +255,8 @@ matcher.configure_sources(
     utm_srid=32639
 )
 
-# Run pipeline in-memory
-candidates = matcher.generate_candidate_pairs()
-evaluated = matcher.compute_dtw_metrics(candidates)
-results = matcher.reconcile_matches(evaluated)
+# Run directional pipeline in-memory
+results = matcher.match(bidirectional=False)
 
 # Export directly to a new CSV file
 matcher.conn.register("final_results", results)

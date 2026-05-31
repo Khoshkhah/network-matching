@@ -14,7 +14,7 @@ def run_automated_test_suite():
     # 1. Create simulated datasets in Pandas (coordinates in Longitude, Latitude - EPSG:4326)
     # Target UTM SRID is 32639 (covers Iran/Tehran area, coords around 51.4E, 35.7N)
     
-    # Map A (Coarse Network)
+    # Map A (Source Network A)
     # - Road A1: 1 long road going straight North (approx 550m)
     # - Road A2: 1 road located very far away (unmatched)
     df_a = pd.DataFrame([
@@ -28,7 +28,7 @@ def run_automated_test_suite():
         }
     ])
     
-    # Map B (Fine Network)
+    # Map B (Destination Network B)
     # - Road B1: Short road (split part 1), parallel to A1, shifted 9 meters East
     # - Road B2: Short road (split part 2), parallel to A1, shifted 9 meters East
     # - Road B3: Road parallel to A1 but pointing in OPPOSITE direction (Southbound)
@@ -95,12 +95,12 @@ def run_automated_test_suite():
     print("          VERIFICATION & CORRECTNESS CHECKS")
     print("==================================================")
 
-    # Check 1: Does the long source 'A1' match BOTH fine destinations 'B1' and 'B2'
+    # Check 1: Does the long source 'A1' match BOTH destinations 'B1' and 'B2'
     # (all qualifying destinations are kept within one directional run), with exactly one is_best?
     a1 = results[results["source_id"] == "A1"]
     a1_dests = sorted(a1["dest_id"].tolist())
     if a1_dests == ["B1", "B2"] and int(a1["is_best"].sum()) == 1:
-        print("✅ [PASS] Source 'A1' → both fine destinations 'B1','B2' kept; exactly one is_best.")
+        print("✅ [PASS] Source 'A1' → both destinations 'B1','B2' kept; exactly one is_best.")
     else:
         print("❌ [FAIL] A1 destinations wrong. Got:", a1_dests, "| is_best sum:", int(a1["is_best"].sum()))
 
