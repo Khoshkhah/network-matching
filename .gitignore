@@ -1,0 +1,32 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Local Database runtime output / Locks
+*.duckdb.tmp
+*.duckdb.wal
+*~

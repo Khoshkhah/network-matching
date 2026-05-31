@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "network-matching"
+version = "0.1.0"
+description = "A general-purpose, reusable directed road map matching and conflation library using DuckDB and Python DTW."
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+    "duckdb>=0.9.0",
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "shapely>=2.0.0",
+    "geopandas>=0.10.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["network_matching*"]
