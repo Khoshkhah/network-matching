@@ -38,4 +38,5 @@ dist/
 
 # Generated matching outputs (regenerate by running the notebook / pipeline)
 data/conflation_map.html
+data/conflation_symmetric_map.html
 data/conflation_results.csv

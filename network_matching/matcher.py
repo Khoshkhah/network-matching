@@ -398,4 +398,149 @@ class DuckDBMapMatcher:
         decided = decided.sort_values(["source_id", "dtw_distance"]).reset_index(drop=True)
         return self._append_unmatched(decided, all_src)
 
+    # Columns returned by reconcile_symmetric()/match_symmetric().
+    SYMMETRIC_COLUMNS = ["a_id", "b_id", "dtw", "bearing_diff", "ov_ab", "ov_ba",
+                         "containment", "symmetry", "relation", "cardinality"]
+
+    def match_symmetric(self, max_dtw: float = 12.0, max_angle: float = 45.0,
+                        keep_overlap: int = 70, sym_overlap: int = 70) -> pd.DataFrame:
+        """
+        Run the directed matcher BOTH ways (A->B and B->A) and reconcile the two
+        evaluations into a single **symmetric**, split-aware match table.
+
+        Unlike ``match()``/``resolve()`` (which decide cardinality within one direction),
+        this preserves split roads (1:N) and merges (N:1) by using *both* overlap values
+        per pair. See ``docs/symmetric_matching.md`` for the full algorithm.
+
+        Returns a DataFrame with ``SYMMETRIC_COLUMNS``.
+        """
+        candidates = self.generate_candidate_pairs()
+        if candidates.empty:
+            return pd.DataFrame(columns=self.SYMMETRIC_COLUMNS)
+
+        # Candidate generation is symmetric, so the same pairs are evaluated both ways;
+        # the swapped run yields the overlap relative to B (ov_ba).
+        eval_ab = self.compute_dtw_metrics(candidates)
+        swapped = candidates.rename(columns={
+            "id_a": "id_b", "wkt_a": "wkt_b", "id_b": "id_a", "wkt_b": "wkt_a",
+        })[["id_a", "wkt_a", "id_b", "wkt_b"]]
+        eval_ba = self.compute_dtw_metrics(swapped)
+
+        return self.reconcile_symmetric(
+            eval_ab, eval_ba,
+            max_dtw=max_dtw, max_angle=max_angle,
+            keep_overlap=keep_overlap, sym_overlap=sym_overlap,
+        )
+
+    @classmethod
+    def reconcile_symmetric(cls, eval_ab: pd.DataFrame, eval_ba: pd.DataFrame,
+                            max_dtw: float = 12.0, max_angle: float = 45.0,
+                            keep_overlap: int = 70, sym_overlap: int = 70) -> pd.DataFrame:
+        """
+        Combine the two directed Tier-2 evaluation tables (A->B and B->A) into a single
+        symmetric, split-aware match table. See ``docs/symmetric_matching.md``.
+
+        Parameters
+        ----------
+        eval_ab, eval_ba:
+            Outputs of ``compute_dtw_metrics`` in each direction. ``eval_ba`` has the A and
+            B roles swapped (its ``id_a`` is a B id, its ``overlap_pct`` is overlap of B).
+        max_dtw, max_angle:
+            Feasibility gate (Step B): drop pairs with larger drift / direction difference.
+        keep_overlap:
+            Min ``containment = max(ov_ab, ov_ba)`` to keep an edge (Step C).
+        sym_overlap:
+            Min ``symmetry = min(ov_ab, ov_ba)`` to label an edge ``1:1`` (Step D).
+
+        Returns
+        -------
+        DataFrame with ``SYMMETRIC_COLUMNS``; ``relation`` in {1:1, split, merge} and
+        ``cardinality`` in {1:1, 1:N_SPLIT, N:1_MERGE, N:M_COMPLEX} (per connected component).
+        """
+        if eval_ab.empty or eval_ba.empty:
+            return pd.DataFrame(columns=cls.SYMMETRIC_COLUMNS)
+
+        # Step A: join the two directions on the unordered pair {a, b}.
+        ab = eval_ab.rename(columns={
+            "id_a": "a_id", "id_b": "b_id", "overlap_pct": "ov_ab", "dtw_distance": "dtw_ab",
+        })
+        ba = eval_ba.rename(columns={
+            "id_a": "b_id", "id_b": "a_id", "overlap_pct": "ov_ba", "dtw_distance": "dtw_ba",
+        })
+        U = ab[["a_id", "b_id", "ov_ab", "dtw_ab", "bearing_diff"]].merge(
+            ba[["a_id", "b_id", "ov_ba", "dtw_ba"]], on=["a_id", "b_id"], how="inner",
+        )
+        if U.empty:
+            return pd.DataFrame(columns=cls.SYMMETRIC_COLUMNS)
+
+        # Use the more favourable direction for drift; overlaps give containment/symmetry.
+        U["dtw"] = U[["dtw_ab", "dtw_ba"]].min(axis=1)
+        U["containment"] = U[["ov_ab", "ov_ba"]].max(axis=1)
+        U["symmetry"] = U[["ov_ab", "ov_ba"]].min(axis=1)
+
+        # Step B: feasibility gate (geometric "score").
+        U = U[(U["dtw"] <= max_dtw) & (U["bearing_diff"] <= max_angle)]
+        # Step C: containment keep-rule (drops incidental crossings / brush-bys).
+        U = U[U["containment"] >= keep_overlap].copy()
+        if U.empty:
+            return pd.DataFrame(columns=cls.SYMMETRIC_COLUMNS)
+
+        # Step D (relation): symmetric -> 1:1; else the contained side names split/merge.
+        U["relation"] = np.where(
+            U["symmetry"] >= sym_overlap, "1:1",
+            np.where(U["ov_ba"] >= U["ov_ab"], "split", "merge"),
+        )
+
+        # Step D (cardinality): label each bipartite connected component by its degrees.
+        U["cardinality"] = cls._component_cardinality(U["a_id"].tolist(), U["b_id"].tolist())
+
+        U["bearing_diff"] = U["bearing_diff"].round(1)
+        return U[cls.SYMMETRIC_COLUMNS].sort_values(["a_id", "b_id"]).reset_index(drop=True)
+
+    @staticmethod
+    def _component_cardinality(a_ids, b_ids):
+        """
+        Union-find over the bipartite edges (a_ids[i], b_ids[i]); returns a per-edge
+        cardinality label based on how many A and B nodes share its connected component.
+        """
+        from collections import defaultdict
+
+        parent = {}
+
+        def find(x):
+            parent.setdefault(x, x)
+            root = x
+            while parent[root] != root:
+                root = parent[root]
+            while parent[x] != root:        # path compression
+                parent[x], x = root, parent[x]
+            return root
+
+        def union(x, y):
+            parent[find(x)] = find(y)
+
+        edges = [(("A", a), ("B", b)) for a, b in zip(a_ids, b_ids)]
+        for na, nb in edges:
+            union(na, nb)
+
+        comp_a, comp_b = defaultdict(set), defaultdict(set)
+        for (na, nb) in edges:
+            r = find(na)
+            comp_a[r].add(na)
+            comp_b[r].add(nb)
+
+        labels = []
+        for (na, nb) in edges:
+            r = find(na)
+            ca, cb = len(comp_a[r]), len(comp_b[r])
+            if ca == 1 and cb == 1:
+                labels.append("1:1")
+            elif ca == 1 and cb > 1:
+                labels.append("1:N_SPLIT")
+            elif ca > 1 and cb == 1:
+                labels.append("N:1_MERGE")
+            else:
+                labels.append("N:M_COMPLEX")
+        return labels
+
 

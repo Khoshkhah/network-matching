@@ -168,7 +168,79 @@ def run_automated_test_suite():
     print("\n==================================================")
     print("     TEST RUN COMPLETED SUCCESSFULY")
     print("==================================================")
- 
+
+
+def run_symmetric_test_suite():
+    """Validate the symmetric (two-way) split-aware reconciliation (match_symmetric)."""
+    print("\n==================================================")
+    print("     SYMMETRIC (TWO-WAY) MATCHING TEST SUITE")
+    print("==================================================")
+
+    # Synthetic scenario (coords ~51.4E 35.7N; UTM 32639):
+    # - A_full <-> B_full : full mutual coverage         -> 1:1
+    # - A_long -> B_h1,B_h2: B pieces tile the long road -> 1:N_SPLIT
+    # - A_par   .. B_par   : only ~10% shared stretch    -> dropped by containment rule
+    df_a = pd.DataFrame([
+        {"id": "A_full", "geom_wkt": "LINESTRING(51.4000 35.7000, 51.4000 35.7050)"},
+        {"id": "A_long", "geom_wkt": "LINESTRING(51.4100 35.7000, 51.4100 35.7050)"},
+        {"id": "A_par",  "geom_wkt": "LINESTRING(51.4300 35.7000, 51.4300 35.7050)"},
+    ])
+    df_b = pd.DataFrame([
+        {"id": "B_full", "geom_wkt": "LINESTRING(51.4001 35.7000, 51.4001 35.7050)"},
+        {"id": "B_h1",   "geom_wkt": "LINESTRING(51.4101 35.7000, 51.4101 35.7025)"},
+        {"id": "B_h2",   "geom_wkt": "LINESTRING(51.4101 35.7025, 51.4101 35.7050)"},
+        {"id": "B_par",  "geom_wkt": "LINESTRING(51.4301 35.7045, 51.4301 35.7090)"},
+    ])
+
+    matcher = DuckDBMapMatcher()
+    matcher.conn.register("sym_raw_a", df_a)
+    matcher.conn.register("sym_raw_b", df_b)
+    matcher.conn.execute("CREATE TABLE sym_a AS SELECT id, ST_GeomFromText(geom_wkt) AS geom FROM sym_raw_a")
+    matcher.conn.execute("CREATE TABLE sym_b AS SELECT id, ST_GeomFromText(geom_wkt) AS geom FROM sym_raw_b")
+    matcher.configure_sources(
+        source_a="sym_a", id_col_a="id", geom_col_a="geom",
+        source_b="sym_b", id_col_b="id", geom_col_b="geom", utm_srid=32639,
+    )
+    matcher.set_parameters(max_distance=25.0)
+
+    sym = matcher.match_symmetric(max_dtw=12.0, max_angle=45.0, keep_overlap=70, sym_overlap=70)
+    print("\nSymmetric match table:")
+    print(sym.to_string(index=False))
+
+    # Check 1: A_full <-> B_full is a clean 1:1.
+    r = sym[(sym["a_id"] == "A_full") & (sym["b_id"] == "B_full")]
+    if len(r) == 1 and r.iloc[0]["relation"] == "1:1" and r.iloc[0]["cardinality"] == "1:1":
+        print("✅ [PASS] A_full <-> B_full classified as 1:1.")
+    else:
+        print("❌ [FAIL] A_full <-> B_full not classified as 1:1.")
+
+    # Check 2: A_long keeps BOTH pieces B_h1 and B_h2, labelled split / 1:N_SPLIT.
+    s = sym[sym["a_id"] == "A_long"]
+    if (set(s["b_id"]) == {"B_h1", "B_h2"}
+            and (s["relation"] == "split").all()
+            and (s["cardinality"] == "1:N_SPLIT").all()):
+        print("✅ [PASS] A_long preserved as a 1:N split across B_h1 and B_h2.")
+    else:
+        print("❌ [FAIL] A_long split not preserved.", set(s["b_id"]))
+
+    # Check 3: A_par / B_par share only a short stretch -> dropped by the containment rule.
+    if sym[sym["a_id"] == "A_par"].empty:
+        print("✅ [PASS] Incidental A_par/B_par pair dropped (containment < keep_overlap).")
+    else:
+        print("❌ [FAIL] Incidental A_par/B_par pair was not dropped.")
+
+    # Check 4: the containment keep-rule is never violated in the output.
+    if (sym["containment"] >= 70).all():
+        print("✅ [PASS] Every kept edge satisfies containment >= keep_overlap.")
+    else:
+        print("❌ [FAIL] An edge with containment < keep_overlap survived.")
+
+    print("\n==================================================")
+    print("     SYMMETRIC TEST RUN COMPLETED SUCCESSFULY")
+    print("==================================================")
+
+
 if __name__ == "__main__":
     run_automated_test_suite()
+    run_symmetric_test_suite()
 
