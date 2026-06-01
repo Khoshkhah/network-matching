@@ -39,7 +39,7 @@ For an ordered pair `(a, b)` with `a ∈ A`, `b ∈ B`, the directed Tier-2 eval
 | Symbol | Meaning | Symmetric? |
 |--------|---------|------------|
 | `dtw(a,b)` | average geometric drift in meters along the DTW warping path | ~yes |
-| `bearing_diff(a,b)` | absolute travel-direction difference, `0–180°` | yes |
+| `bearing_diff(a,b)` | direction difference over the **matched span** (first→last warping-path point on each side), `0–180°` | yes |
 | `ov_ab` | **integer % of `a`'s length** covered by the aligned section with `b` | **no** |
 | `ov_ba` | **integer % of `b`'s length** covered by the aligned section with `a` | **no** |
 

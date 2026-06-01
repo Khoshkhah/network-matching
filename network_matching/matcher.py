@@ -7,15 +7,19 @@ from typing import Optional
 
 from .dtw import dtw_align
 
+def bearing_between(start, end) -> float:
+    """Absolute bearing (0-360 degrees) of the vector from point ``start`` to point ``end``."""
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    return (np.degrees(np.arctan2(dx, dy)) + 360) % 360
+
+
 def calculate_bearing(line: LineString) -> float:
     """Calculate absolute bearing (0-360 degrees) of a LineString from start to end."""
     coords = list(line.coords)
     if len(coords) < 2:
         return 0.0
-    start, end = coords[0], coords[-1]
-    dx = end[0] - start[0]
-    dy = end[1] - start[1]
-    return (np.degrees(np.arctan2(dx, dy)) + 360) % 360
+    return bearing_between(coords[0], coords[-1])
 
 class DuckDBMapMatcher:
     def __init__(self, db_path_a: Optional[str] = None, db_path_b: Optional[str] = None):
@@ -155,12 +159,21 @@ class DuckDBMapMatcher:
             coords_a = list(geom_a.coords)
             coords_b = list(geom_b.coords)
             
-            # 2. Compute Normalized 2D DTW Distance (returns average, path, metrics)
-            dtw_dist, _, dtw_metrics = dtw_align(coords_a, coords_b)
-            
-            # 3. Compute Direction / Bearing Difference
-            bearing_a = calculate_bearing(geom_a)
-            bearing_b = calculate_bearing(geom_b)
+            # 2. Compute Normalized 2D DTW Distance (returns average, warping path, metrics)
+            dtw_dist, warping_path, dtw_metrics = dtw_align(coords_a, coords_b)
+
+            # 3. Compute Direction / Bearing Difference over the MATCHED span only.
+            #    Use the first and last matched points of the DTW warping path (the start
+            #    and end of the overlapping region) rather than each full segment's endpoints,
+            #    so partial overlaps and splits compare the direction of the aligned portion.
+            if len(warping_path) >= 2:
+                a_start, b_start = warping_path[0]
+                a_end, b_end = warping_path[-1]
+                bearing_a = bearing_between(a_start, a_end)
+                bearing_b = bearing_between(b_start, b_end)
+            else:
+                bearing_a = calculate_bearing(geom_a)
+                bearing_b = calculate_bearing(geom_b)
             bearing_diff = abs(bearing_a - bearing_b)
             bearing_diff = min(bearing_diff, 360 - bearing_diff)
             
