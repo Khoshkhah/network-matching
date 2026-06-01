@@ -117,8 +117,9 @@ def main() -> None:
     wa = _one(c, f"SELECT ST_AsText(ST_Transform(g,'EPSG:4326','EPSG:{UTM}')) FROM _a")[0]
     wb = _one(c, f"SELECT ST_AsText(ST_Transform(g,'EPSG:4326','EPSG:{UTM}')) FROM _b")[0]
     ga, gb = load_wkt(wa), load_wkt(wb)
-    dab, wp, mab = dtw_align(list(ga.coords), list(gb.coords))
-    dba, _, mba = dtw_align(list(gb.coords), list(ga.coords))
+    # undirected=True matches what match_symmetric does (orientation-robust).
+    dab, wp, mab = dtw_align(list(ga.coords), list(gb.coords), undirected=True)
+    dba, _, mba = dtw_align(list(gb.coords), list(ga.coords), undirected=True)
     a0, b0 = wp[0]; a1, b1 = wp[-1]
     bd = abs(bearing_between(a0, a1) - bearing_between(b0, b1)); bd = min(bd, 360 - bd)
     dtw = min(dab, dba)

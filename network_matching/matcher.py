@@ -131,7 +131,7 @@ class DuckDBMapMatcher:
         """
         return self.conn.execute(query).df()
 
-    def compute_dtw_metrics(self, candidates_df: pd.DataFrame) -> pd.DataFrame:
+    def compute_dtw_metrics(self, candidates_df: pd.DataFrame, undirected: bool = False) -> pd.DataFrame:
         """
         TIER 2: Performs shape-matching for candidate pairs in Python.
         Calculates DTW distance, bearing difference, and corridor overlap percentage.
@@ -159,8 +159,10 @@ class DuckDBMapMatcher:
             coords_a = list(geom_a.coords)
             coords_b = list(geom_b.coords)
             
-            # 2. Compute Normalized 2D DTW Distance (returns average, warping path, metrics)
-            dtw_dist, warping_path, dtw_metrics = dtw_align(coords_a, coords_b)
+            # 2. Compute Normalized 2D DTW Distance (returns average, warping path, metrics).
+            #    undirected=True aligns against the better orientation of B, so a road
+            #    digitized the opposite way still aligns instead of collapsing to 0 overlap.
+            dtw_dist, warping_path, dtw_metrics = dtw_align(coords_a, coords_b, undirected=undirected)
 
             # 3. Compute Direction / Bearing Difference over the MATCHED span only.
             #    Use the first and last matched points of the DTW warping path (the start
@@ -441,12 +443,13 @@ class DuckDBMapMatcher:
             return pd.DataFrame(columns=self.SYMMETRIC_COLUMNS)
 
         # Candidate generation is symmetric, so the same pairs are evaluated both ways;
-        # the swapped run yields the overlap relative to B (ov_ba).
-        eval_ab = self.compute_dtw_metrics(candidates)
+        # the swapped run yields the overlap relative to B (ov_ba). Use undirected alignment
+        # so a road digitized in opposite directions by the two networks still aligns.
+        eval_ab = self.compute_dtw_metrics(candidates, undirected=True)
         swapped = candidates.rename(columns={
             "id_a": "id_b", "wkt_a": "wkt_b", "id_b": "id_a", "wkt_b": "wkt_a",
         })[["id_a", "wkt_a", "id_b", "wkt_b"]]
-        eval_ba = self.compute_dtw_metrics(swapped)
+        eval_ba = self.compute_dtw_metrics(swapped, undirected=True)
 
         return self.reconcile_symmetric(
             eval_ab, eval_ba,

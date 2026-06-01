@@ -3,21 +3,40 @@ from shapely.geometry import LineString, Point
 from typing import List, Tuple, Dict
 
 def dtw_align(
-    coords_a: List[Tuple[float, float]], 
-    coords_b: List[Tuple[float, float]], 
-    step_meters: float = 5.0
+    coords_a: List[Tuple[float, float]],
+    coords_b: List[Tuple[float, float]],
+    step_meters: float = 5.0,
+    undirected: bool = False
 ) -> Tuple[float, List[Tuple[Tuple[float, float], Tuple[float, float]]], Dict[str, float]]:
     """
     Executes the progressive DP-based DTW alignment from Source Segment A to Destination Segment B.
-    
+
     The match starts at the beginning of the overlapping region (determined dynamically by projecting
     the beginning nodes of each segment onto the other with no length comparisons).
-    
+
+    The alignment assumes both segments are traversed in the same direction. When two networks
+    digitize the same road in OPPOSITE directions, that assumption breaks and the overlap collapses
+    to ~0. Pass ``undirected=True`` to align against both orientations of B and keep the better one
+    (most shared geometry, then least drift) -- correct when travel direction is irrelevant
+    (geometry-only conflation).
+
     Returns:
     - average_distance: Average physical alignment drift in meters (float).
     - warping_path: List of coordinate pairs [((xa, ya), (xb, yb)), ...] representing the alignment links.
     - metrics: Dictionary containing {'average': float, 'max': float, 'min': float, 'overlap_pct': float}.
     """
+    if undirected:
+        # Decide orientation ROBUSTLY from the endpoints, not from the (fragile) overlap
+        # detector -- feeding it an anti-parallel line can yield a bogus full-length overlap.
+        # Reverse B only if A and B run in opposite directions (A's ends are nearer B's
+        # opposite ends). Then align once in that orientation.
+        (ax0, ay0), (ax1, ay1) = coords_a[0][:2], coords_a[-1][:2]
+        (bx0, by0), (bx1, by1) = coords_b[0][:2], coords_b[-1][:2]
+        same = np.hypot(ax0 - bx0, ay0 - by0) + np.hypot(ax1 - bx1, ay1 - by1)
+        flip = np.hypot(ax0 - bx1, ay0 - by1) + np.hypot(ax1 - bx0, ay1 - by0)
+        cb = list(reversed(coords_b)) if flip < same else coords_b
+        return dtw_align(coords_a, cb, step_meters, undirected=False)
+
     if len(coords_a) < 2 or len(coords_b) < 2:
         return float('inf'), [], {
             "average": float('inf'), 
