@@ -177,9 +177,9 @@ def run_symmetric_test_suite():
     print("==================================================")
 
     # Synthetic scenario (coords ~51.4E 35.7N; UTM 32639):
-    # - A_full <-> B_full : full mutual coverage         -> 1:1
-    # - A_long -> B_h1,B_h2: B pieces tile the long road -> 1:N_SPLIT
-    # - A_par   .. B_par   : only ~10% shared stretch    -> dropped by containment rule
+    # - A_full <-> B_full : full mutual coverage              -> 1:1
+    # - A_long -> B_h1,B_h2: B pieces tile the long road      -> 1:N_SPLIT
+    # - A_par   .. B_par   : share only ~3 m of length        -> dropped by matched-length floor
     df_a = pd.DataFrame([
         {"id": "A_full", "geom_wkt": "LINESTRING(51.4000 35.7000, 51.4000 35.7050)"},
         {"id": "A_long", "geom_wkt": "LINESTRING(51.4100 35.7000, 51.4100 35.7050)"},
@@ -189,7 +189,8 @@ def run_symmetric_test_suite():
         {"id": "B_full", "geom_wkt": "LINESTRING(51.4001 35.7000, 51.4001 35.7050)"},
         {"id": "B_h1",   "geom_wkt": "LINESTRING(51.4101 35.7000, 51.4101 35.7025)"},
         {"id": "B_h2",   "geom_wkt": "LINESTRING(51.4101 35.7025, 51.4101 35.7050)"},
-        {"id": "B_par",  "geom_wkt": "LINESTRING(51.4301 35.7045, 51.4301 35.7090)"},
+        # overlaps A_par only from 35.70497..35.70500 (~3 m) -> below the 5 m floor
+        {"id": "B_par",  "geom_wkt": "LINESTRING(51.4301 35.70497, 51.4301 35.7090)"},
     ])
 
     matcher = DuckDBMapMatcher()
@@ -203,7 +204,7 @@ def run_symmetric_test_suite():
     )
     matcher.set_parameters(max_distance=25.0)
 
-    sym = matcher.match_symmetric(max_dtw=12.0, max_angle=45.0, keep_overlap=70, sym_overlap=70)
+    sym = matcher.match_symmetric(max_dtw=12.0, max_angle=45.0, min_overlap_m=5.0, sym_overlap=70)
     print("\nSymmetric match table:")
     print(sym.to_string(index=False))
 
@@ -223,17 +224,18 @@ def run_symmetric_test_suite():
     else:
         print("❌ [FAIL] A_long split not preserved.", set(s["b_id"]))
 
-    # Check 3: A_par / B_par share only a short stretch -> dropped by the containment rule.
+    # Check 3: A_par / B_par share only ~3 m -> dropped by the matched-length floor
+    #          (even though they are close and parallel; overlap-% is NOT used to drop).
     if sym[sym["a_id"] == "A_par"].empty:
-        print("✅ [PASS] Incidental A_par/B_par pair dropped (containment < keep_overlap).")
+        print("✅ [PASS] Incidental A_par/B_par pair dropped (matched length < min_overlap_m).")
     else:
         print("❌ [FAIL] Incidental A_par/B_par pair was not dropped.")
 
-    # Check 4: the containment keep-rule is never violated in the output.
-    if (sym["containment"] >= 70).all():
-        print("✅ [PASS] Every kept edge satisfies containment >= keep_overlap.")
+    # Check 4: every kept edge clears the matched-length floor.
+    if (sym["matched_len_m"] >= 5.0).all():
+        print("✅ [PASS] Every kept edge satisfies matched_len_m >= min_overlap_m.")
     else:
-        print("❌ [FAIL] An edge with containment < keep_overlap survived.")
+        print("❌ [FAIL] An edge below the matched-length floor survived.")
 
     print("\n==================================================")
     print("     SYMMETRIC TEST RUN COMPLETED SUCCESSFULY")

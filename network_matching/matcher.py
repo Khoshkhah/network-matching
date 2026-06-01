@@ -177,9 +177,10 @@ class DuckDBMapMatcher:
             bearing_diff = abs(bearing_a - bearing_b)
             bearing_diff = min(bearing_diff, 360 - bearing_diff)
             
-            # 4. Retrieve Parallel Alignment Overlap Percentage
+            # 4. Retrieve Parallel Alignment Overlap Percentage and absolute matched length
             overlap_pct = dtw_metrics.get("overlap_pct", 0.0)
-                
+            matched_len = dtw_metrics.get("matched_len", 0.0)
+
             evaluated_records.append({
                 "id_a": id_a,
                 "id_b": id_b,
@@ -187,7 +188,8 @@ class DuckDBMapMatcher:
                 "max_dtw_distance": dtw_metrics.get("max", float('inf')),
                 "min_dtw_distance": dtw_metrics.get("min", float('inf')),
                 "bearing_diff": bearing_diff,
-                "overlap_pct": overlap_pct
+                "overlap_pct": overlap_pct,
+                "matched_len": matched_len
             })
             
         return pd.DataFrame(evaluated_records)
@@ -413,10 +415,10 @@ class DuckDBMapMatcher:
 
     # Columns returned by reconcile_symmetric()/match_symmetric().
     SYMMETRIC_COLUMNS = ["a_id", "b_id", "dtw", "bearing_diff", "ov_ab", "ov_ba",
-                         "containment", "symmetry", "relation", "cardinality"]
+                         "matched_len_m", "containment", "symmetry", "relation", "cardinality"]
 
     def match_symmetric(self, max_dtw: Optional[float] = None, max_angle: float = 45.0,
-                        keep_overlap: int = 70, sym_overlap: int = 70) -> pd.DataFrame:
+                        min_overlap_m: float = 5.0, sym_overlap: int = 70) -> pd.DataFrame:
         """
         Run the directed matcher BOTH ways (A->B and B->A) and reconcile the two
         evaluations into a single **symmetric**, split-aware match table.
@@ -449,13 +451,13 @@ class DuckDBMapMatcher:
         return self.reconcile_symmetric(
             eval_ab, eval_ba,
             max_dtw=max_dtw, max_angle=max_angle,
-            keep_overlap=keep_overlap, sym_overlap=sym_overlap,
+            min_overlap_m=min_overlap_m, sym_overlap=sym_overlap,
         )
 
     @classmethod
     def reconcile_symmetric(cls, eval_ab: pd.DataFrame, eval_ba: pd.DataFrame,
                             max_dtw: float = 25.0, max_angle: float = 45.0,
-                            keep_overlap: int = 70, sym_overlap: int = 70) -> pd.DataFrame:
+                            min_overlap_m: float = 5.0, sym_overlap: int = 70) -> pd.DataFrame:
         """
         Combine the two directed Tier-2 evaluation tables (A->B and B->A) into a single
         symmetric, split-aware match table. See ``docs/symmetric_matching.md``.
@@ -467,10 +469,14 @@ class DuckDBMapMatcher:
             B roles swapped (its ``id_a`` is a B id, its ``overlap_pct`` is overlap of B).
         max_dtw, max_angle:
             Feasibility gate (Step B): drop pairs with larger drift / direction difference.
-        keep_overlap:
-            Min ``containment = max(ov_ab, ov_ba)`` to keep an edge (Step C).
+        min_overlap_m:
+            Minimum length (meters) of the shared co-linear stretch to keep an edge
+            (Step C). This is the absolute matched length -- derived from overlap but NOT a
+            raw overlap-% threshold -- so split/partial matches survive and only trivial
+            point-touches/crossings are dropped.
         sym_overlap:
-            Min ``symmetry = min(ov_ab, ov_ba)`` to label an edge ``1:1`` (Step D).
+            Min ``symmetry = min(ov_ab, ov_ba)`` overlap-% to *label* an edge ``1:1``
+            (Step D, classification only -- never drops a match).
 
         Returns
         -------
@@ -483,12 +489,14 @@ class DuckDBMapMatcher:
         # Step A: join the two directions on the unordered pair {a, b}.
         ab = eval_ab.rename(columns={
             "id_a": "a_id", "id_b": "b_id", "overlap_pct": "ov_ab", "dtw_distance": "dtw_ab",
+            "matched_len": "mlen_ab",
         })
         ba = eval_ba.rename(columns={
             "id_a": "b_id", "id_b": "a_id", "overlap_pct": "ov_ba", "dtw_distance": "dtw_ba",
+            "matched_len": "mlen_ba",
         })
-        U = ab[["a_id", "b_id", "ov_ab", "dtw_ab", "bearing_diff"]].merge(
-            ba[["a_id", "b_id", "ov_ba", "dtw_ba"]], on=["a_id", "b_id"], how="inner",
+        U = ab[["a_id", "b_id", "ov_ab", "dtw_ab", "bearing_diff", "mlen_ab"]].merge(
+            ba[["a_id", "b_id", "ov_ba", "dtw_ba", "mlen_ba"]], on=["a_id", "b_id"], how="inner",
         )
         if U.empty:
             return pd.DataFrame(columns=cls.SYMMETRIC_COLUMNS)
@@ -497,11 +505,16 @@ class DuckDBMapMatcher:
         U["dtw"] = U[["dtw_ab", "dtw_ba"]].min(axis=1)
         U["containment"] = U[["ov_ab", "ov_ba"]].max(axis=1)
         U["symmetry"] = U[["ov_ab", "ov_ba"]].min(axis=1)
+        # Absolute length (m) of the shared co-linear stretch. Derived from overlap but kept
+        # as a length, so a partial/split match is judged by how much real geometry it shares
+        # -- not by what fraction that is of either (differently-segmented) edge.
+        U["matched_len_m"] = U[["mlen_ab", "mlen_ba"]].max(axis=1).round(1)
 
-        # Step B: feasibility gate (geometric "score").
+        # Step B: feasibility gate (geometric "score": close + same direction).
         U = U[(U["dtw"] <= max_dtw) & (U["bearing_diff"] <= max_angle)]
-        # Step C: containment keep-rule (drops incidental crossings / brush-bys).
-        U = U[U["containment"] >= keep_overlap].copy()
+        # Step C: shared-length floor -- drops trivial point-touches/crossings (a few meters)
+        # while keeping genuine partial/split matches. NOT a raw overlap-% threshold.
+        U = U[U["matched_len_m"] >= min_overlap_m].copy()
         if U.empty:
             return pd.DataFrame(columns=cls.SYMMETRIC_COLUMNS)
 

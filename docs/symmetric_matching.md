@@ -76,7 +76,7 @@ in both runs** — so for every pair we can obtain *both* `ov_ab` and `ov_ba`.
                              v
                  ┌───────────────────────┐
                  │ STEP C: OVERLAP RULE   │  use (ov_ab, ov_ba) to keep/drop & classify
-                 │   (containment test)   │  -> keeps 1:1 AND splits, drops incidental
+                 │  (matched-length floor)│  -> keeps 1:1 AND splits, drops incidental
                  └───────────┬───────────┘
                              v
                  ┌───────────────────────┐
@@ -148,40 +148,43 @@ can reject them. This is the whole reason overlap is a *separate, second* gate.
 
 ---
 
-## 6. Step C — Overlap rule (containment test)
+## 6. Step C — Matched-length floor
 
-This is the core of the algorithm. The pair `(ov_ab, ov_ba)` is a **2-D signal** that encodes the
-*type* of relationship. With an overlap threshold `T` (e.g. `70–80`):
+This is the core of the algorithm. **Do NOT drop on the overlap *percentage*.** A raw `%` threshold
+conflates *"are these the same road?"* (a quality question — already answered by `dtw` + `bearing`)
+with *"how much do they coincide?"*, and it punishes legitimate matches whenever the two networks
+**segment a road differently**: a 23 m OSM roundabout arc that shares a real 7 m stretch with a 34 m
+Sweden segment has `containment` only ~32 % — a perfect partial match that a `%` gate wrongly kills.
 
-| `ov_ab` (a covered) | `ov_ba` (b covered) | Interpretation | Decision |
-|:---:|:---:|---|---|
-| **high** | **high** | a and b cover each other → **same road (1:1)** | **keep** (strongest) |
-| **low** | **high** | b fully covered by a, a only partly → **b is a piece of a (split, 1:N)** | **keep** |
-| **high** | **low** | a fully covered by b, b only partly → **a is a piece of b (merge, N:1)** | **keep** |
-| **low** | **low** | neither covers the other → **incidental crossing / brush-by** | **drop** |
+Instead, derive an **absolute length** from the overlap and gate on that:
 
-Define:
+$$\text{matched\_len\_m} = \max\big(\tfrac{\text{ov\_ab}}{100}\cdot\text{len}_a,\ \tfrac{\text{ov\_ba}}{100}\cdot\text{len}_b\big)
+  \quad\text{(meters of shared co-linear geometry)}$$
 
-$$\text{containment} = \max(\text{ov\_ab}, \text{ov\_ba}), \qquad
-  \text{symmetry} = \min(\text{ov\_ab}, \text{ov\_ba})$$
+**Keep rule:**
 
-**Keep rule** (the extra constraint that removes incidental matches):
+$$\boxed{\ \text{keep} \iff \text{matched\_len\_m} \ge \texttt{min\_overlap\_m}\ }$$
 
-$$\boxed{\ \text{keep} \iff \text{containment} \ge T\ }$$
+- A genuine partial/split match shares **meters** of co-linear geometry (the roundabout arc shares ~7 m) → **kept**.
+- A trivial crossing / point-touch shares ~0–2 m → **dropped**.
 
-- `containment ≥ T` admits 1:1 (both high) **and** splits/merges (one high) — i.e. any pair where
-  one road is substantially contained in the other.
-- `containment < T` (both low) rejects pairs that only share a small stretch.
+This keeps split and partial matches that a percentage gate would discard, while still removing
+incidental touches — and it never penalises a pair just because one segment happens to be long.
 
-This single rule is what preserves splits while filtering the gray-zone partials and crossings.
+### 6.1 Overlap-% is for *classification*, not dropping
 
-### 6.1 Optional: directional thresholds
+The `(ov_ab, ov_ba)` pair is still a useful **2-D signal of the relationship type** — but only to
+*label* a kept edge, never to drop it:
 
-Because a split is a *stronger* claim ("`b` is entirely a sub-piece of `a`"), you may demand a
-higher bar for the contained side than for a symmetric 1:1:
+| `ov_ab` (a covered) | `ov_ba` (b covered) | Label |
+|:---:|:---:|---|
+| **high** | **high** | **1:1** (same road) |
+| **low** | **high** | **split** (b is a piece of a) |
+| **high** | **low** | **merge** (a is a piece of b) |
 
-- accept **1:1** if `symmetry ≥ T_sym` (e.g. both ≥ `80`);
-- accept **split/merge** if `containment ≥ T_split` (e.g. contained side ≥ `90`).
+With `symmetry = min(ov_ab, ov_ba)`: `symmetry ≥ sym_overlap` → `1:1`, else `split`/`merge` by which
+side is the more contained. (`containment = max(ov_ab, ov_ba)` and `symmetry` remain in the output as
+metadata.)
 
 ---
 
@@ -224,13 +227,14 @@ A has one long road `a`. B splits it into `b1, b2, b3` (consecutive thirds), all
 
 **Step B — feasibility** (`max_dtw=12`, `max_angle=45`): all three pass.
 
-**Step C — overlap** (`T = 70`): `containment = max(ov_ab, ov_ba)` is `98, 99, 97` → all ≥ 70 → **all kept**.
-`symmetry = min(...)` is `33, 34, 33` → all `< 70` → each labelled **split**.
+**Step C — matched-length** (`min_overlap_m = 5`): each `bi` is ~fully covered, so the shared length
+is the full piece length (tens of meters) → all `≥ 5 m` → **all kept**. `symmetry = min(ov_ab, ov_ba)`
+is `33, 34, 33` → all `< sym_overlap` → each labelled **split**.
 
 **Step D — cardinality:** `a` has degree 3, each `bi` degree 1 → component is **`1:N_SPLIT`**.
 
 Contrast with the broken final step ("each `a` keeps its single best `b`"): that keeps only `a–b2`
-and discards `b1, b3` — the split is destroyed. The per-edge containment rule is what avoids this.
+and discards `b1, b3` — the split is destroyed. The per-edge matched-length rule is what avoids this.
 
 ---
 
@@ -239,7 +243,7 @@ and discards `b1, b3` — the split is destroyed. The per-edge containment rule 
 ```python
 def reconcile_symmetric(eval_ab, eval_ba,
                         max_dtw=25.0, max_angle=45.0,
-                        keep_overlap=70, sym_overlap=70):
+                        min_overlap_m=5.0, sym_overlap=70):
     # NB: the high-level match_symmetric() defaults max_dtw to max_distance (the
     # candidate radius), so the feasibility gate adds no hidden, tighter distance filter.
     """
@@ -249,14 +253,16 @@ def reconcile_symmetric(eval_ab, eval_ba,
     Parameters
     ----------
     eval_ab, eval_ba : DataFrames from compute_dtw_metrics() in each direction
-        (eval_ba has A and B roles swapped).
+        (eval_ba has A and B roles swapped; each carries overlap_pct AND matched_len).
     max_dtw, max_angle : feasibility gate (Step B).
-    keep_overlap (T)   : min containment = max(ov_ab, ov_ba) to keep an edge (Step C).
-    sym_overlap (T_sym): min symmetry = min(ov_ab, ov_ba) to label an edge 1:1 (Step D).
+    min_overlap_m      : min shared length in METERS to keep an edge (Step C). Derived
+                         from overlap, but absolute — NOT a raw overlap-% threshold.
+    sym_overlap        : min symmetry = min(ov_ab, ov_ba) overlap-% to LABEL an edge 1:1
+                         (Step D; classification only, never drops a match).
 
     Returns
     -------
-    DataFrame: [a_id, b_id, dtw, bearing_diff, ov_ab, ov_ba,
+    DataFrame: [a_id, b_id, dtw, bearing_diff, ov_ab, ov_ba, matched_len_m,
                 containment, symmetry, relation, cardinality]
         relation    in {1:1, split, merge}
         cardinality in {1:1, 1:N_SPLIT, N:1_MERGE, N:M_COMPLEX}  (per component)
@@ -280,10 +286,11 @@ U['ov_ab'], U['ov_ba'] = U['overlap_pct_ab'], U['overlap_pct_ba']
 # 3. Step B: feasibility gate
 U = U[(U['dtw'] <= max_dtw) & (U['bearing_diff_ab'] <= max_angle)]
 
-# 4. Step C: containment keep-rule
-U['containment'] = U[['ov_ab','ov_ba']].max(axis=1)
-U['symmetry']    = U[['ov_ab','ov_ba']].min(axis=1)
-U = U[U['containment'] >= keep_overlap]
+# 4. Step C: matched-length floor (overlap -> absolute meters, NOT a % threshold)
+U['containment']   = U[['ov_ab','ov_ba']].max(axis=1)     # kept as metadata / label input
+U['symmetry']      = U[['ov_ab','ov_ba']].min(axis=1)
+U['matched_len_m'] = U[['matched_len_ab','matched_len_ba']].max(axis=1)
+U = U[U['matched_len_m'] >= min_overlap_m]
 
 # 5. Step D: relation + per-component cardinality
 U['relation'] = np.where(U['symmetry'] >= sym_overlap, '1:1',
@@ -295,16 +302,16 @@ U['cardinality'] = label_components(U)     # bipartite connected-component degre
 
 ## 10. Caveats & Tuning
 
-- **Genuine partial matches are the gray zone.** A road that truly corresponds to only ~half of
-  another sits at *moderate overlap both ways* (e.g. `50/50`). No threshold classifies it perfectly;
-  `T` is exactly the knob that decides whether "covers half" counts. Pick `T` after eyeballing a few
-  such cases on the offset comparison map.
+- **`min_overlap_m` is the knob for short features.** Lowering it keeps shorter shared stretches
+  (short roundabout arcs, stubs); raising it demands more co-linear geometry before accepting a match.
+  Because it's an absolute length, it does **not** penalise a pair just because one segment is long —
+  which is exactly the failure mode of a raw overlap-% gate.
 - **`N:M_COMPLEX` tangles.** Per-edge keeping can leave clusters where several `a`s and several `b`s
   all interconnect. That is often the honest answer (the data really is many-to-many there). If you
   need them resolved, add a per-component rule (e.g. within a component drop edges dominated by a
   much stronger competing edge, or run an assignment on the component).
-- **Thresholds are unit-consistent with the library:** `dtw`/`max_dtw` in meters, `bearing`/`max_angle`
-  in degrees `0–180`, overlaps/`T` as integer percent `0–100` (matching `overlap_pct`).
+- **Units:** `dtw`/`max_dtw` and `matched_len_m`/`min_overlap_m` in meters, `bearing`/`max_angle`
+  in degrees `0–180`. `ov_ab`/`ov_ba` are integer percent `0–100` used only for the relation label.
 - **Reuses, does not replace, the directed core.** Everything above is built from
   `generate_candidate_pairs()` + `compute_dtw_metrics()`; the directed `match()`/`resolve()` API is
   unchanged.
