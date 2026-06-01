@@ -402,7 +402,7 @@ class DuckDBMapMatcher:
     SYMMETRIC_COLUMNS = ["a_id", "b_id", "dtw", "bearing_diff", "ov_ab", "ov_ba",
                          "containment", "symmetry", "relation", "cardinality"]
 
-    def match_symmetric(self, max_dtw: float = 12.0, max_angle: float = 45.0,
+    def match_symmetric(self, max_dtw: Optional[float] = None, max_angle: float = 45.0,
                         keep_overlap: int = 70, sym_overlap: int = 70) -> pd.DataFrame:
         """
         Run the directed matcher BOTH ways (A->B and B->A) and reconcile the two
@@ -412,8 +412,15 @@ class DuckDBMapMatcher:
         this preserves split roads (1:N) and merges (N:1) by using *both* overlap values
         per pair. See ``docs/symmetric_matching.md`` for the full algorithm.
 
+        ``max_dtw`` defaults to ``max_distance`` (the candidate search radius): a pair can
+        never be a candidate beyond that distance, so the feasibility gate does not impose
+        a hidden, tighter distance filter. Pass a smaller value to deliberately tighten it.
+
         Returns a DataFrame with ``SYMMETRIC_COLUMNS``.
         """
+        if max_dtw is None:
+            max_dtw = self.max_distance
+
         candidates = self.generate_candidate_pairs()
         if candidates.empty:
             return pd.DataFrame(columns=self.SYMMETRIC_COLUMNS)
@@ -434,7 +441,7 @@ class DuckDBMapMatcher:
 
     @classmethod
     def reconcile_symmetric(cls, eval_ab: pd.DataFrame, eval_ba: pd.DataFrame,
-                            max_dtw: float = 12.0, max_angle: float = 45.0,
+                            max_dtw: float = 25.0, max_angle: float = 45.0,
                             keep_overlap: int = 70, sym_overlap: int = 70) -> pd.DataFrame:
         """
         Combine the two directed Tier-2 evaluation tables (A->B and B->A) into a single

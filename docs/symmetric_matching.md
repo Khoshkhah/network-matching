@@ -130,7 +130,10 @@ Drop any pair that is not a plausible alignment:
 
 $$\text{keep}_\text{feasible} \iff \big(\text{dtw} \le \text{max\_dtw}\big)\ \wedge\ \big(\text{bearing\_diff} \le \text{max\_angle}\big)$$
 
-- `max_dtw` — maximum average drift in meters (e.g. lane/offset scale; ~`10–15 m`).
+- `max_dtw` — maximum average drift in meters. Defaults to `max_distance` (the candidate
+  radius) so it adds no hidden, tighter distance filter; lower it (e.g. `10–15 m`) only to
+  deliberately demand tighter alignment. If two networks are offset by ~20 m on some streets,
+  a `max_dtw` below that offset will wrongly reject otherwise-perfect matches.
 - `max_angle` — maximum travel-direction difference (e.g. `45°`).
 
 After this gate, **every surviving pair is feasible**; what remains is to decide which feasible
@@ -235,8 +238,10 @@ and discards `b1, b3` — the split is destroyed. The per-edge containment rule 
 
 ```python
 def reconcile_symmetric(eval_ab, eval_ba,
-                        max_dtw=12.0, max_angle=45.0,
+                        max_dtw=25.0, max_angle=45.0,
                         keep_overlap=70, sym_overlap=70):
+    # NB: the high-level match_symmetric() defaults max_dtw to max_distance (the
+    # candidate radius), so the feasibility gate adds no hidden, tighter distance filter.
     """
     Combine the two directed Tier-2 evaluation tables (A->B and B->A) into a single
     SYMMETRIC, split-aware match table.
