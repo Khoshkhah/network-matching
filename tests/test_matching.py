@@ -84,9 +84,9 @@ def run_automated_test_suite():
     evaluated = matcher.compute_dtw_metrics(candidates)
     print("Evaluation Metrics:")
     print(evaluated.to_string(index=False))
-    
-    print("\n[Step 4] Executing Directional source→destination matching...")
-    results = matcher.reconcile_matches(evaluated)
+
+    print("\n[Step 4] Executing full match() pipeline (includes NO_MATCH rows for unmatched sources)...")
+    results = matcher.match()   # uses all 3 tiers + appends NO_MATCH rows
     print("\nDirectional Match Results (source A → destination B):")
     print(results.to_string(index=False))
 
@@ -111,33 +111,60 @@ def run_automated_test_suite():
     else:
         print("❌ [FAIL] Opposite direction road 'B3' was incorrectly ranked or missing!")
 
-    # Check 3: Were unmatched roads (A2 as source, B4 as destination) successfully ignored?
-    a2_matches = results[results["source_id"] == "A2"]
+    # Check 3: Unmatched source 'A2' (no nearby B segments) must appear as a NO_MATCH row.
+    #           Unmatched destination 'B4' must NOT appear as a dest_id.
+    a2_rows = results[results["source_id"] == "A2"]
     b4_matches = results[results["dest_id"] == "B4"]
-    if a2_matches.empty and b4_matches.empty:
-        print("✅ [PASS] Missing/Unmatched roads ('A2', 'B4') successfully ignored (No Match).")
+    a2_is_no_match = (
+        len(a2_rows) == 1
+        and a2_rows.iloc[0]["match_type"] == "NO_MATCH"
+        and pd.isna(a2_rows.iloc[0]["dest_id"])
+        and pd.isna(a2_rows.iloc[0]["dtw_distance"])
+    )
+    if a2_is_no_match and b4_matches.empty:
+        print("✅ [PASS] Unmatched source 'A2' returned as NO_MATCH row; 'B4' not present as a dest.")
     else:
-        print("❌ [FAIL] Unmatched roads were incorrectly included in matches!")
+        print("❌ [FAIL] Unmatched road handling incorrect.",
+              f"a2_rows={a2_rows[['source_id','dest_id','match_type']].to_dict()}",
+              f"b4_present={not b4_matches.empty}")
         
-    print("\n[Step 5] Executing Bidirectional map matching (A <-> B)...")
-    bidirectional_results = matcher.match(bidirectional=True)
-    print("\nBidirectional Match Results:")
-    print(bidirectional_results.to_string(index=False))
-    
-    # Check 4: Validate bidirectional matches
-    b_to_a_matches = bidirectional_results[bidirectional_results["direction"] == "B_to_A"]
-    a_to_b_matches = bidirectional_results[bidirectional_results["direction"] == "A_to_B"]
-    
-    b1_to_a1 = b_to_a_matches[b_to_a_matches["source_id"] == "B1"]
-    b2_to_a1 = b_to_a_matches[b_to_a_matches["source_id"] == "B2"]
-    
-    if (not a_to_b_matches.empty and 
-        len(b1_to_a1) == 1 and b1_to_a1.iloc[0]["dest_id"] == "A1" and
-        len(b2_to_a1) == 1 and b2_to_a1.iloc[0]["dest_id"] == "A1"):
-        print("✅ [PASS] Bidirectional mapping successfully matched B1->A1 and B2->A1 in reverse direction.")
+    print("\n[Step 5] Applying resolve() decision strategies...")
+
+    # Check 4: best_per_source (MANY-TO-ONE) -> each source keeps exactly its closest dest,
+    #          sources are never reused, and unmatched 'A2' stays a NO_MATCH row.
+    bps = matcher.resolve(results, strategy="best_per_source")
+    print("\nbest_per_source assignment:")
+    print(bps.to_string(index=False))
+    a1_bps = bps[(bps["source_id"] == "A1") & (bps["match_type"] != "NO_MATCH")]
+    a2_bps = bps[bps["source_id"] == "A2"]
+    matched_bps = bps[bps["match_type"] != "NO_MATCH"]
+    if (len(a1_bps) == 1 and int(a1_bps.iloc[0]["rank"]) == 1
+            and not matched_bps["source_id"].duplicated().any()
+            and len(a2_bps) == 1 and a2_bps.iloc[0]["match_type"] == "NO_MATCH"):
+        print("✅ [PASS] best_per_source: 'A1' assigned its single closest dest; sources unique; 'A2' NO_MATCH.")
     else:
-        print("❌ [FAIL] Bidirectional reverse mapping failed to correctly match B1/B2 to A1.")
-        
+        print("❌ [FAIL] best_per_source produced an unexpected assignment.")
+
+    # Check 5: one_to_one (GLOBAL UNIQUE) -> no source AND no destination is reused.
+    o2o = matcher.resolve(results, strategy="one_to_one")
+    matched_o2o = o2o[o2o["match_type"] != "NO_MATCH"]
+    if (not matched_o2o["source_id"].duplicated().any()
+            and not matched_o2o["dest_id"].duplicated().any()):
+        print("✅ [PASS] one_to_one: every source and destination used at most once.")
+    else:
+        print("❌ [FAIL] one_to_one reused a source or destination.")
+
+    # Check 6: best_per_dest (ONE-TO-MANY) -> each of B1/B2/B3 (whose only nearby source is A1)
+    #          keeps its single best source 'A1'; destinations are unique, source 'A1' repeats.
+    bpd = matcher.resolve(results, strategy="best_per_dest")
+    matched_bpd = bpd[bpd["match_type"] != "NO_MATCH"]
+    if (not matched_bpd["dest_id"].duplicated().any()
+            and set(matched_bpd["dest_id"]) == {"B1", "B2", "B3"}
+            and (matched_bpd["source_id"] == "A1").all()):
+        print("✅ [PASS] best_per_dest: B1/B2/B3 each kept their single best source 'A1'.")
+    else:
+        print("❌ [FAIL] best_per_dest produced an unexpected assignment.")
+
     print("\n==================================================")
     print("     TEST RUN COMPLETED SUCCESSFULY")
     print("==================================================")

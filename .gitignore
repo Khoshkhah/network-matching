@@ -30,3 +30,12 @@ Thumbs.db
 *.duckdb.tmp
 *.duckdb.wal
 *~
+
+# Python packaging / build artifacts
+*.egg-info/
+build/
+dist/
+
+# Generated matching outputs (regenerate by running the notebook / pipeline)
+data/conflation_map.html
+data/conflation_results.csv

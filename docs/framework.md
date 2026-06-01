@@ -49,7 +49,7 @@ To build a general and reusable tool, we decouple the **storage format** from th
   |                  IN-MEMORY DUCKDB ENGINE                          |
   |                                                                   |
   |  3. TIER 3: Directional Ranking & Reconciliation                  |
-  |     - Ranks candidate matches and supports bidirectional union    |
+  |     - Filters & ranks candidates; emits NO_MATCH for unmatched    |
   |                                                                   |
   +-------------------------------------------------------------------+
                                      |
@@ -87,6 +87,8 @@ class DuckDBMapMatcher:
         
         # Default thresholds
         self.max_distance = 25.0       # search radius in meters to find candidate segments
+        self.max_angle = 180.0         # max bearing difference (deg); 180 = no angle filter
+        self.min_overlap = 0.0         # min overlap percent (0-100); 0 = no overlap filter
         
     def configure_sources(self, 
                           source_a: str, id_col_a: str, geom_col_a: str,
@@ -101,9 +103,19 @@ class DuckDBMapMatcher:
         self.columns_b = {"id": id_col_b, "geom": geom_col_b}
         self.utm_srid = utm_srid
 
-    def set_parameters(self, max_distance: float):
-        """Overrides the default candidate search radius."""
-        self.max_distance = max_distance
+    def set_parameters(self, max_distance=None, max_angle=None, min_overlap=None):
+        """
+        Override matching thresholds. Any argument left as None keeps its default.
+        - max_distance: Tier 1 candidate search radius (meters).
+        - max_angle:    Tier 3 max bearing difference (degrees, 0-180).
+        - min_overlap:  Tier 3 min aligned overlap (percent, 0-100).
+        """
+        if max_distance is not None:
+            self.max_distance = max_distance
+        if max_angle is not None:
+            self.max_angle = max_angle
+        if min_overlap is not None:
+            self.min_overlap = min_overlap
 ```
 
 ---
@@ -164,7 +176,14 @@ The evaluated metrics are pushed back to the in-memory DuckDB instance to rank c
         self.conn.register("evaluated_pairs", evaluated_df)
         
         query = f"""
-            WITH Ranked AS (
+            WITH Qualified AS (
+                -- Keep only pairs that pass the optional bearing / overlap thresholds
+                SELECT *
+                FROM evaluated_pairs
+                WHERE bearing_diff <= {self.max_angle}
+                  AND overlap_pct >= {self.min_overlap}
+            ),
+            Ranked AS (
                 -- Rank each source's qualifying destinations by alignment (closest first)
                 SELECT
                     id_a AS source_id,
@@ -172,14 +191,13 @@ The evaluated metrics are pushed back to the in-memory DuckDB instance to rank c
                     dtw_distance, max_dtw_distance, min_dtw_distance,
                     bearing_diff, overlap_pct,
                     ROW_NUMBER() OVER (PARTITION BY id_a ORDER BY dtw_distance ASC) AS rnk
-                FROM evaluated_pairs
+                FROM Qualified
             )
             SELECT
                 source_id, dest_id,
                 dtw_distance, max_dtw_distance, min_dtw_distance,
                 bearing_diff, overlap_pct,
                 rnk AS rank,
-                (rnk = 1) AS is_best,
                 CASE
                     WHEN COUNT(dest_id) OVER (PARTITION BY source_id) > 1 THEN '1:N_SPLIT'
                     WHEN rnk = 1 THEN '1:1_SYMMETRIC'
@@ -193,17 +211,35 @@ The evaluated metrics are pushed back to the in-memory DuckDB instance to rank c
         return results_df
 ```
 
-### Stage 4: High-Level Directed/Bidirectional Matching
-The class provides a high-level `match` method to execute either a directed Source A -> Destination B match or run both directions independently and return their union:
+### Stage 4: High-Level Directed Matching
+The class provides a high-level `match` method to run the full directed Source A -> Destination B pipeline. Source segments with no candidate are appended as `NO_MATCH` rows:
 
 ```python
-    def match(self, bidirectional: bool = False) -> pd.DataFrame:
+    def match(self) -> pd.DataFrame:
         """
-        Runs the full 3-tier map-matching pipeline in either directed or bidirectional mode.
+        Runs the full 3-tier directed map-matching pipeline (Source A -> Destination B).
+        Returns every ranked candidate plus a NO_MATCH row for each unmatched source.
         """
-        # 1. Generate spatial candidate pairs
-        # 2. If bidirectional=False, run directional matching A -> B
-        # 3. If bidirectional=True, run A -> B and B -> A independently and return their union.
+        # 1. Generate spatial candidate pairs (Tier 1)
+        # 2. Compute DTW metrics (Tier 2)
+        # 3. Reconcile & rank, then append NO_MATCH rows (Tier 3)
+        pass
+```
+
+### Stage 5: The Assignment Decision
+`match()` returns *all* ranked candidates. To commit to a final assignment whose cardinality
+fits the problem, pass the result through `resolve`:
+
+```python
+    def resolve(self, results: pd.DataFrame, strategy: str = "best_per_source") -> pd.DataFrame:
+        """
+        Apply a cardinality decision to the ranked candidates from match():
+        - "best_per_source" (many-to-one, default): each source -> its closest dest.
+        - "best_per_dest"   (one-to-many):          each dest   -> its closest source.
+        - "one_to_one"      (global unique):        each source and dest used at most once.
+        - "all":                                    keep every candidate (no decision).
+        Unassigned sources are returned as NO_MATCH rows.
+        """
         pass
 ```
 
@@ -224,11 +260,12 @@ matcher.configure_sources(
     utm_srid=32639
 )
 
-# Run bidirectional pipeline
-results = matcher.match(bidirectional=True)
+# Run directed pipeline, then decide a unique segment-to-segment assignment
+results = matcher.match()
+assignment = matcher.resolve(results, strategy="one_to_one")
 
 # Save result back to primary database
-matcher.conn.register("final_results", results)
+matcher.conn.register("final_results", assignment)
 matcher.conn.execute("CREATE TABLE main.conflation_results AS SELECT * FROM final_results")
 ```
 
@@ -248,10 +285,11 @@ matcher.configure_sources(
     utm_srid=32639
 )
 
-# Run directional pipeline in-memory
-results = matcher.match(bidirectional=False)
+# Run directed pipeline in-memory, then decide the assignment (many-to-one here)
+results = matcher.match()
+assignment = matcher.resolve(results, strategy="best_per_source")
 
 # Export directly to a new CSV file
-matcher.conn.register("final_results", results)
+matcher.conn.register("final_results", assignment)
 matcher.conn.execute("COPY final_results TO 'projects/network-matching/data/matches.csv' (HEADER, DELIMITER ',')")
 ```

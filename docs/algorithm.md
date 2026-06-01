@@ -100,17 +100,17 @@ $$\text{overlap\_pct} = \min\left(100.0, \max\left(0.0, \text{round}\left(\frac{
 
 Once the Tiers 1 and 2 metrics (average DTW distance, bearing difference, and aligned overlap percentage) are calculated, we resolve the relationships.
 
-### 5.1 Directed Strategy (Default)
-When executing directional matching:
-- **No Cutoff Filtering**: The algorithm does not filter or discard matches based on arbitrary bearing, overlap, or distance thresholds. All spatial candidates generated in Tier 1 are kept and evaluated.
-- **One Parameter Candidate Search**: The single parameter `max_distance` serves as the search radius to query the closest road segments as candidates.
-- **Topological Ranking**: For each source segment A, all qualifying candidate destination segments B are ranked by alignment quality (`dtw_distance` ascending).
-- **Match Flagging**: The closest segment is flagged with `rank = 1`, and other parallel qualifying segments are kept with a higher `rank` value. This handles split roads naturally while providing complete candidate alignment data.
+Matching is directed: Source Network A → Destination Network B.
 
-### 5.2 Bidirectional Strategy
-When executing bidirectional matching:
-- The directional matching pipeline is run twice independently:
-  1. **Direction 1 ($A \to B$)**: Evaluates alignment and coverage with Network A as the source and Network B as the destination.
-  2. **Direction 2 ($B \to A$)**: Swaps roles, evaluating alignment and coverage with Network B as the source and Network A as the destination.
-- The results of both runs are unified, and a `direction` column (valued `'A_to_B'` or `'B_to_A'`) is appended.
-- This strategy provides a symmetrical, reciprocal conflation table, enabling complete network-to-network reconciliation.
+### 5.1 Reconciliation (Tier 3)
+- **Optional Quality Filtering**: candidate pairs may be filtered by `max_angle` (maximum bearing difference, degrees `0–180`) and `min_overlap` (minimum aligned overlap, percent `0–100`). Both default to permissive values (`180.0` and `0.0`), so by default every Tier-1 candidate is kept and evaluated; tighten them to discard weak matches.
+- **Candidate Search Radius**: the `max_distance` parameter is the Tier-1 spatial search radius used to query candidate segments.
+- **Topological Ranking**: for each source segment A, the surviving candidate destination segments B are ranked by alignment quality (`dtw_distance` ascending). The closest is `rank = 1`; parallel/split candidates are retained at higher ranks, so split roads are handled naturally.
+- **Completeness**: source segments with no surviving candidate are emitted as `NO_MATCH` rows, so every source appears in the output.
+
+### 5.2 The Assignment Decision (`resolve`)
+Reconciliation produces *all* ranked candidates — it does **not** commit to a single pairing, because the correct cardinality depends on the problem. `resolve(results, strategy=...)` applies that decision:
+- **`best_per_source`** (many-to-one): each source keeps its single closest destination; a destination may be shared by many sources (e.g. assigning sensor locations to road segments).
+- **`best_per_dest`** (one-to-many): each destination keeps its single closest source.
+- **`one_to_one`** (global unique): greedy assignment in ascending `dtw_distance` order, where each source and each destination is used at most once.
+- **`all`**: keep every candidate (no decision).

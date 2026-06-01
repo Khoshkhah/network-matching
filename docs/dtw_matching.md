@@ -121,23 +121,27 @@ To handle partially overlapping segments while preserving DTW's shape-alignment 
 
 ---
 
-## 5. Map-Matching Strategies: Directed vs. Bidirectional
+## 5. Matching and the Assignment Decision
 
-The matching framework supports two top-level matching strategies via the `DuckDBMapMatcher.match` API:
+Matching is directed: **Source Network A → Destination Network B**, run via `DuckDBMapMatcher.match()`.
 
-### 5.1 Directed Map-Matching (Default)
-When running `match(bidirectional=False)`:
-- Computes directed mapping from **Source Network A** to **Destination Network B**.
-- For each segment in A, it evaluates candidate segments in B, computes the progressive DTW alignment from A to B, and ranks candidate segments by proximity and directional alignment.
+### 5.1 Directed Map-Matching
+`match()`:
+- Computes a directed mapping from **Source Network A** to **Destination Network B**.
+- For each segment in A, it evaluates candidate segments in B, computes the progressive DTW alignment from A to B, and ranks the candidates by proximity and directional alignment.
+- Source segments with no surviving candidate are returned as `NO_MATCH` rows.
 - **Result Columns**: `[source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance, bearing_diff, overlap_pct, rank, match_type]`.
-- *Use Case*: Ideal when you have a defined trajectory/GPS track (Source A) and want to find its corresponding segments on a base map road network (Destination B).
+- *Use Case*: when you have a source layer (a GPS track, a set of sensor locations, or one road network) and want to find its corresponding segments on a destination road network.
 
-### 5.2 Bidirectional Map-Matching
-When running `match(bidirectional=True)`:
-- Executes directional matching in **both directions** simultaneously:
-  1. **Direction 1 ($A \to B$)**: Evaluates segment coverage and alignment with A acting as the source and B acting as the destination.
-  2. **Direction 2 ($B \to A$)**: Swaps the roles, evaluating segment coverage and alignment with B acting as the source and A acting as the destination.
-- Unions both tables into a single output, adding a `direction` metadata column.
-- **Result Columns**: `[source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance, bearing_diff, overlap_pct, rank, match_type, direction]` where `direction` is either `'A_to_B'` or `'B_to_A'`.
-- *Use Case*: Essential for reciprocal shape matches, map conflation (merging two road networks A and B), and reconciling nested road splits (e.g. mapping a long road in A to split parallel roads in B, and mapping those split roads back to the main road in A).
+### 5.2 Committing to an Assignment (`resolve`)
+`match()` returns **all** ranked candidates; it does not pick "the" match, because the right cardinality depends on the problem. `resolve(results, strategy=...)` makes that decision:
+
+| `strategy` | Cardinality | Each source → | Each dest → |
+|------------|-------------|---------------|-------------|
+| `all` | none | all candidates | reused |
+| `best_per_source` *(default)* | many-to-one | 1 closest dest | may be shared |
+| `best_per_dest` | one-to-many | may be shared | 1 closest source |
+| `one_to_one` | global unique | 1 unique dest | 1 unique source |
+
+For example, assigning sensor locations (A) to road segments (B) uses `best_per_source`, so several sensors in different lanes all map to the same road. Unique segment-to-segment conflation uses `one_to_one`. Every source still appears exactly once; unassigned ones come back as `NO_MATCH`.
 
