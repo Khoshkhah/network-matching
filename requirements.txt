@@ -1,0 +1,19 @@
+# network-matching — runtime + tooling dependencies
+# Core library
+duckdb>=0.9.0
+numpy>=1.20.0
+pandas>=1.3.0
+shapely>=2.0.0
+geopandas>=0.10.0
+joblib>=1.0.0          # parallel route matching (match_routes n_jobs)
+scipy>=1.7.0           # optional: faster endpoint-gap validation (has a pure-numpy fallback)
+
+# Visualization (scripts + notebooks)
+folium>=0.14.0
+branca>=0.6.0
+matplotlib>=3.5.0
+
+# Notebooks / development
+ipykernel
+nbconvert
+pytest

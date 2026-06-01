@@ -6,6 +6,35 @@ The engine combines **Dynamic Time Warping (DTW)** for shape alignment with **Du
 
 ---
 
+## 🧭 Graph-DTW Route Matching (route-based)
+
+Beyond the pairwise edge-to-edge matcher, the library includes **graph-DTW**: instead of aligning
+an A-edge to a single B-edge, it aligns it to the **whole local directed graph** of nearby
+B-edges, returning the connected **route** of B-edges the A-edge maps to. This stitches
+differently-segmented roads into one clean match and can never pick a topologically-disconnected
+parallel road.
+
+```python
+from network_matching import DuckDBMapMatcher
+
+# one-call init (WKT CSVs; or .from_geofiles(...) for GeoPackage/GeoJSON/Shapefile)
+m = DuckDBMapMatcher.from_wkt_csv(
+    "data/osm_edges.csv", "data/sweden_edges.csv",
+    id_a="edge_id", id_b="directed_id", utm_srid=3006, max_distance=30)
+
+routes_long, routes_summary = m.match_routes(n_jobs=-1)   # parallel over A-edges
+```
+
+- **`routes_summary`** — one row per A-edge (route, avg match distance, coverage, `match_type`).
+- **`routes_long`** — one row per B-edge in each route (the result *divided per edge*: order `seq`,
+  % of A covered, % of the B-edge used, per-edge bearing Δ).
+
+📖 **Docs:** [end-to-end pipeline](docs/graph_dtw_pipeline.md) · [algorithm](docs/graph_dtw_matching.md).
+🗺️ **Maps:** `python scripts/graph_dtw_map.py` (whole network) ·
+`python scripts/graph_dtw_edge_detail.py --edge-id 3597` (single-edge deep dive). Outputs → `output/`.
+
+---
+
 ## 🚀 Features
 
 - **Direction-Aware (Directed) Matching** — uses travel bearings and coordinate sequences, so a road and its reverse-direction twin are not confused.
@@ -22,15 +51,16 @@ The engine combines **Dynamic Time Warping (DTW)** for shape alignment with **Du
 From the root of the project:
 
 ```bash
-pip install -e .
+pip install -e .                 # core library
+pip install -r requirements.txt  # core + visualization + notebook tooling
+# extras: pip install -e ".[viz]"  (maps)   /   pip install -e ".[dev]"  (tests, notebooks)
 ```
 
 ### Dependencies
-- `duckdb` (with the spatial extension — loaded automatically)
-- `numpy`
-- `pandas`
-- `shapely`
-- `geopandas` (optional, only for the GeoDataFrame workflow)
+- **Core:** `duckdb` (spatial extension auto-loaded), `numpy`, `pandas`, `shapely`, `geopandas`,
+  `joblib` (parallel route matching).
+- **Visualization** (scripts/notebooks): `folium`, `branca`, `matplotlib`.
+- **Optional:** `scipy` (faster endpoint-gap validation; pure-numpy fallback otherwise).
 
 ---
 
