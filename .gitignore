@@ -36,9 +36,10 @@ Thumbs.db
 build/
 dist/
 
-# Generated matching outputs (regenerate by running the notebook / pipeline)
-data/conflation_map.html
-data/conflation_symmetric_map.html
-data/conflation_results.csv
-data/conflation_oneway_map.html
-data/path_invalid_map.html
+# Generated outputs (maps, result CSVs) live in output/ — regenerate via the pipeline / notebooks.
+# data/ holds INPUT data only (osm_edges.csv, sweden_edges.csv, sundbyberg_boundary.geojson).
+output/*
+!output/.gitkeep
+
+# network_matching run logs
+logs/

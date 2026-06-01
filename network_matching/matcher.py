@@ -1,3 +1,6 @@
+import logging
+import time
+
 import duckdb
 import pandas as pd
 import numpy as np
@@ -6,6 +9,29 @@ from shapely.geometry import LineString
 from typing import Optional
 
 from .dtw import dtw_align
+from .graph_dtw import match_edge_to_bgraph
+
+logger = logging.getLogger("network_matching.matcher")
+
+
+def _graph_dtw_group(task, snap_tolerance_m, step_meters, oneway_ids, trim_ends_m):
+    """Pure, picklable worker: run graph-DTW for one A-edge group.
+
+    ``task`` is ``(id_a, coords_a, b_edges)`` where ``b_edges`` is a list of
+    ``(id_b, shapely LineString in UTM)``. Returns ``(id_a, result_or_None)``.
+    """
+    id_a, coords_a, b_edges = task
+    if len(coords_a) < 2 or not b_edges:
+        return id_a, None
+    res = match_edge_to_bgraph(
+        coords_a, b_edges,
+        snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
+        oneway_ids=oneway_ids, trim_ends_m=trim_ends_m,
+    )
+    if not res["route"]:
+        return id_a, None
+    return id_a, res
+
 
 def bearing_between(start, end) -> float:
     """Absolute bearing (0-360 degrees) of the vector from point ``start`` to point ``end``."""
@@ -50,7 +76,85 @@ class DuckDBMapMatcher:
         self.max_angle = 180.0         # max allowed bearing difference in degrees (180 = no angle filter)
         self.min_overlap = 0.0         # min required corridor overlap fraction (0-1; 0 = no overlap filter)
 
-    def configure_sources(self, 
+    @classmethod
+    def from_wkt_csv(cls, csv_a: str, csv_b: str, *, id_a: str, id_b: str, utm_srid: int,
+                     geom_col: str = "geometry", id_cast: Optional[str] = "BIGINT",
+                     max_distance: float = 25.0, keep_cols_a=None, keep_cols_b=None,
+                     table_a: str = "network_a", table_b: str = "network_b") -> "DuckDBMapMatcher":
+        """Build and fully configure a matcher from two CSVs whose ``geom_col`` holds WKT
+        geometry in EPSG:4326. One-call replacement for the usual
+        ``CREATE TABLE ... ST_GeomFromText`` + :meth:`configure_sources` +
+        :meth:`set_parameters` boilerplate::
+
+            m = DuckDBMapMatcher.from_wkt_csv(
+                "data/osm_edges.csv", "data/sweden_edges.csv",
+                id_a="edge_id", id_b="directed_id", utm_srid=3006, max_distance=30)
+            routes_long, routes_summary = m.match_routes(n_jobs=-1)
+
+        Each source is loaded into an in-memory spatial table; geometries are assumed lon/lat
+        (EPSG:4326) and transformed to ``utm_srid`` (meters) during candidate generation.
+
+        Parameters
+        ----------
+        csv_a, csv_b: paths to the Source-A and Source-B CSVs.
+        id_a, id_b:   id column names in each CSV.
+        utm_srid:     local projected CRS (EPSG, meters), e.g. 3006 for Sweden.
+        geom_col:     WKT geometry column name (same in both, default ``"geometry"``).
+        id_cast:      optional DuckDB cast for the id (default ``"BIGINT"``; ``None`` keeps text).
+        max_distance: candidate search radius (m).
+        keep_cols_a, keep_cols_b: extra columns to carry into each table (e.g. ``["name"]``).
+        table_a, table_b: in-memory table names to create.
+        """
+        m = cls()
+        srcs = ((csv_a, table_a, id_a, keep_cols_a or []),
+                (csv_b, table_b, id_b, keep_cols_b or []))
+        for path, table, idc, keep in srcs:
+            cast = f"::{id_cast}" if id_cast else ""
+            extra = "".join(f"{c}, " for c in keep)
+            m.conn.execute(
+                f"CREATE OR REPLACE TABLE {table} AS "
+                f"SELECT {idc}{cast} AS {idc}, {extra}ST_GeomFromText({geom_col}) AS geometry "
+                f"FROM '{path}';"
+            )
+        m.configure_sources(source_a=table_a, id_col_a=id_a, geom_col_a="geometry",
+                            source_b=table_b, id_col_b=id_b, geom_col_b="geometry",
+                            utm_srid=utm_srid)
+        m.set_parameters(max_distance=max_distance)
+        return m
+
+    @classmethod
+    def from_geofiles(cls, path_a: str, path_b: str, *, id_a: str, id_b: str, utm_srid: int,
+                      src_srid: int = 4326, max_distance: float = 25.0,
+                      keep_cols_a=None, keep_cols_b=None,
+                      table_a: str = "network_a", table_b: str = "network_b") -> "DuckDBMapMatcher":
+        """Same as :meth:`from_wkt_csv` but reads GIS files (GeoPackage / GeoJSON / Shapefile /
+        FlatGeobuf, anything DuckDB ``ST_Read`` supports) instead of WKT CSVs::
+
+            m = DuckDBMapMatcher.from_geofiles(
+                "osm.gpkg", "nvdb.gpkg", id_a="edge_id", id_b="directed_id",
+                utm_srid=3006, src_srid=3006)
+
+        ``src_srid`` is the CRS the files are stored in; geometry is reprojected to EPSG:4326 on
+        load (the rest of the pipeline transforms 4326 -> ``utm_srid``).
+        """
+        m = cls()
+        srcs = ((path_a, table_a, id_a, keep_cols_a or []),
+                (path_b, table_b, id_b, keep_cols_b or []))
+        for path, table, idc, keep in srcs:
+            geom = ("geom" if src_srid == 4326
+                    else f"ST_Transform(geom, 'EPSG:{src_srid}', 'EPSG:4326')")
+            extra = "".join(f"{c}, " for c in keep)
+            m.conn.execute(
+                f"CREATE OR REPLACE TABLE {table} AS "
+                f"SELECT {idc} AS {idc}, {extra}{geom} AS geometry FROM ST_Read('{path}');"
+            )
+        m.configure_sources(source_a=table_a, id_col_a=id_a, geom_col_a="geometry",
+                            source_b=table_b, id_col_b=id_b, geom_col_b="geometry",
+                            utm_srid=utm_srid)
+        m.set_parameters(max_distance=max_distance)
+        return m
+
+    def configure_sources(self,
                           source_a: str, id_col_a: str, geom_col_a: str,
                           source_b: str, id_col_b: str, geom_col_b: str,
                           utm_srid: int):
@@ -578,5 +682,171 @@ class DuckDBMapMatcher:
             else:
                 labels.append("N:M_COMPLEX")
         return labels
+
+    # ------------------------------------------------------------------
+    # Graph-DTW (route-based) matching  --  see network_matching/graph_dtw.py
+    # ------------------------------------------------------------------
+    ROUTES_LONG_COLUMNS = ["source_id", "dest_id", "seq", "direction",
+                           "edge_match_dist_avg", "edge_match_dist_max", "edge_match_dist_min",
+                           "edge_a_len", "edge_cover_pct", "edge_matched_len", "edge_b_len",
+                           "edge_b_used_pct", "edge_bearing_diff", "n_points",
+                           "route_match_dist", "n_edges"]
+    ROUTES_SUMMARY_COLUMNS = ["source_id", "n_edges", "dest_ids", "dtw_distance",
+                              "max_dtw_distance", "min_dtw_distance", "bearing_diff",
+                              "overlap_pct", "matched_len", "route_geom_wkt", "match_type"]
+
+    def compute_graph_dtw_routes(self, candidates_df: Optional[pd.DataFrame] = None,
+                                 snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
+                                 oneway_ids=None, trim_ends_m: float = 1.0, n_jobs: int = 1):
+        """Route-based matching: align each Source-A edge to the local directed graph of its
+        candidate B-edges (graph-DTW), returning one connected B-edge route per A-edge.
+
+        Parameters
+        ----------
+        candidates_df:
+            Output of :meth:`generate_candidate_pairs` (``id_a, wkt_a, id_b, wkt_b`` in UTM
+            meters). If ``None`` it is generated.
+        snap_tolerance_m, step_meters, oneway_ids:
+            Passed through to :func:`network_matching.graph_dtw.match_edge_to_bgraph`.
+        n_jobs:
+            >1 fans the per-A-edge work out with joblib (each A-edge is an independent unit).
+
+        Returns
+        -------
+        (routes_long, routes_summary) : two DataFrames.
+            ``routes_long`` has one row per (A-edge, B-edge in its route) with ``seq``/``direction``
+            and the route-level metrics repeated (columns ``ROUTES_LONG_COLUMNS``).
+            ``routes_summary`` has one row per A-edge (columns ``ROUTES_SUMMARY_COLUMNS``);
+            every A-edge appears, unmatched ones as a single ``NO_MATCH`` row.
+        """
+        t_start = time.time()
+        if candidates_df is None:
+            logger.info("graph-DTW: generating candidate pairs...")
+            candidates_df = self.generate_candidate_pairs()
+        n_pairs = len(candidates_df)
+        n_a = candidates_df["id_a"].nunique() if not candidates_df.empty else 0
+        logger.info("graph-DTW: %d candidate pairs over %d A-edges "
+                    "(snap=%.2fm, step=%.2fm, n_jobs=%d)",
+                    n_pairs, n_a, snap_tolerance_m, step_meters, n_jobs)
+
+        # Build the independent per-A-edge tasks: (id_a, coords_a, [(id_b, LineString), ...]).
+        tasks = []
+        if not candidates_df.empty:
+            for id_a, grp in candidates_df.groupby("id_a"):
+                try:
+                    geom_a = load_wkt(grp["wkt_a"].iloc[0])
+                except Exception:
+                    continue
+                if not isinstance(geom_a, LineString):
+                    continue
+                coords_a = list(geom_a.coords)
+                b_edges = []
+                for r in grp.itertuples(index=False):
+                    try:
+                        gb = load_wkt(r.wkt_b)
+                    except Exception:
+                        continue
+                    if isinstance(gb, LineString):
+                        b_edges.append((r.id_b, gb))
+                if b_edges:
+                    tasks.append((id_a, coords_a, b_edges))
+
+        logger.info("graph-DTW: %d A-edge tasks to align", len(tasks))
+
+        # Run graph-DTW per A-edge (optionally in parallel).
+        t_align = time.time()
+        if n_jobs and n_jobs != 1 and tasks:
+            from joblib import Parallel, delayed
+            logger.info("graph-DTW: aligning in parallel (n_jobs=%d)...", n_jobs)
+            outcomes = Parallel(n_jobs=n_jobs)(
+                delayed(_graph_dtw_group)(t, snap_tolerance_m, step_meters, oneway_ids, trim_ends_m)
+                for t in tasks
+            )
+        else:
+            outcomes = []
+            n_tasks = len(tasks)
+            step = max(1, n_tasks // 10)
+            for k, t in enumerate(tasks):
+                outcomes.append(_graph_dtw_group(t, snap_tolerance_m, step_meters,
+                                                 oneway_ids, trim_ends_m))
+                if (k + 1) % step == 0 or (k + 1) == n_tasks:
+                    logger.info("graph-DTW: aligned %d/%d A-edges (%.0f%%)",
+                                k + 1, n_tasks, 100.0 * (k + 1) / max(1, n_tasks))
+        logger.info("graph-DTW: alignment finished in %.1fs", time.time() - t_align)
+
+        long_rows, summary_rows, matched_ids = [], [], set()
+        for id_a, res in outcomes:
+            if res is None:
+                continue
+            matched_ids.add(id_a)
+            m = res["metrics"]
+            route = res["route"]
+            total_a = sum(re["a_len"] for re in m["route_edges"]) or 1.0
+            # one row per B-edge in the route, each with its OWN sliced metrics
+            for re in m["route_edges"]:
+                long_rows.append({
+                    "source_id": id_a, "dest_id": re["dest_id"], "seq": re["seq"],
+                    "direction": re["direction"],
+                    "edge_match_dist_avg": re["match_dist_avg"],
+                    "edge_match_dist_max": re["match_dist_max"],
+                    "edge_match_dist_min": re["match_dist_min"],
+                    "edge_a_len": re["a_len"],
+                    "edge_cover_pct": round(100.0 * re["a_len"] / total_a, 1),
+                    "edge_matched_len": re["matched_len"],
+                    "edge_b_len": re["b_edge_len"],
+                    "edge_b_used_pct": re["b_cover_pct"],
+                    "edge_bearing_diff": re["bearing_diff"],
+                    "n_points": re["n_points"],
+                    "route_match_dist": m["average"], "n_edges": m["n_edges"],
+                })
+            # matched path geometry (UTM) from the B-side of the warping path
+            bpts = []
+            for _pa, pb in res["warping_path"]:
+                if not bpts or abs(bpts[-1][0] - pb[0]) > 1e-9 or abs(bpts[-1][1] - pb[1]) > 1e-9:
+                    bpts.append(pb)
+            route_geom_wkt = LineString(bpts).wkt if len(bpts) >= 2 else None
+            summary_rows.append({
+                "source_id": id_a, "n_edges": m["n_edges"],
+                "dest_ids": [d for (d, _dir, _s) in route],
+                "dtw_distance": m["average"], "max_dtw_distance": m["max"],
+                "min_dtw_distance": m["min"], "bearing_diff": m["bearing_diff"],
+                "overlap_pct": m["overlap_pct"], "matched_len": m["matched_len"],
+                "route_geom_wkt": route_geom_wkt,
+                "match_type": "1:1" if m["n_edges"] == 1 else "1:N_ROUTE",
+            })
+
+        routes_long = pd.DataFrame(long_rows, columns=self.ROUTES_LONG_COLUMNS)
+        routes_summary = pd.DataFrame(summary_rows, columns=self.ROUTES_SUMMARY_COLUMNS)
+
+        # Append NO_MATCH rows so every Source-A edge is accounted for.
+        all_ids = set(self._get_all_ids_a()["id_a"].tolist())
+        unmatched = all_ids - matched_ids
+        if unmatched:
+            nm = pd.DataFrame([{
+                "source_id": i, "n_edges": 0, "dest_ids": None, "dtw_distance": float("nan"),
+                "max_dtw_distance": float("nan"), "min_dtw_distance": float("nan"),
+                "bearing_diff": float("nan"), "overlap_pct": pd.NA, "matched_len": float("nan"),
+                "route_geom_wkt": None, "match_type": "NO_MATCH",
+            } for i in unmatched], columns=self.ROUTES_SUMMARY_COLUMNS)
+            routes_summary = pd.concat([routes_summary, nm], ignore_index=True)
+
+        n_matched = len(matched_ids)
+        n_nomatch = int((routes_summary["match_type"] == "NO_MATCH").sum())
+        n_multi = int((routes_summary["match_type"] == "1:N_ROUTE").sum())
+        logger.info("graph-DTW: %d matched (%d multi-edge routes), %d NO_MATCH; "
+                    "%d route-edge rows; total %.1fs",
+                    n_matched, n_multi, n_nomatch, len(routes_long), time.time() - t_start)
+        return routes_long, routes_summary
+
+    def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
+                     oneway_ids=None, trim_ends_m: float = 1.0, n_jobs: int = 1):
+        """Run the full route-based (graph-DTW) pipeline: generate candidates, then align each
+        Source-A edge to the local B-graph. Returns ``(routes_long, routes_summary)`` -- the
+        graph-DTW analogue of :meth:`match`. See :meth:`compute_graph_dtw_routes`."""
+        candidates_df = self.generate_candidate_pairs()
+        return self.compute_graph_dtw_routes(
+            candidates_df, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
+            oneway_ids=oneway_ids, trim_ends_m=trim_ends_m, n_jobs=n_jobs,
+        )
 
 
