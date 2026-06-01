@@ -151,6 +151,10 @@ unassigned comes back as a `NO_MATCH` row.
 > `match_type` — that column still describes the *original* candidate fan-out, not the resolved
 > cardinality.
 
+`resolve()` decides cardinality within a single A→B direction. To combine *both* directions
+(A→B and B→A) into a **symmetric** matching that preserves split roads (1:N) and merges (N:1),
+see the design spec in [docs/symmetric_matching.md](docs/symmetric_matching.md).
+
 ---
 
 ## 📥 Input Source Variations
