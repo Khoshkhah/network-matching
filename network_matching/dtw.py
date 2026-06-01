@@ -23,7 +23,7 @@ def dtw_align(
             "average": float('inf'), 
             "max": float('inf'), 
             "min": float('inf'), 
-            "overlap_pct": 0.0
+            "overlap_pct": 0
         }
         
     line_a = LineString(coords_a)
@@ -95,7 +95,7 @@ def dtw_align(
             "average": float('inf'), 
             "max": float('inf'), 
             "min": float('inf'), 
-            "overlap_pct": 0.0
+            "overlap_pct": 0
         }
         
     # 4. DP Cost Matrix
@@ -145,7 +145,7 @@ def dtw_align(
             "average": float('inf'), 
             "max": float('inf'), 
             "min": float('inf'), 
-            "overlap_pct": 0.0
+            "overlap_pct": 0
         }
         
     # Backtrack to (0, 0)
@@ -177,9 +177,9 @@ def dtw_align(
     distances = [Point(pa).distance(Point(pb)) for (pa, pb) in warping_path]
     average_distance = float(np.mean(distances))
     
-    # Overlap percentage of Source A covered by the matched section
+    # Overlap percentage of Source A covered by the matched section (integer 0-100)
     matched_len = pts_a[i_end]["dist"] - start_on_a
-    overlap_pct = min(100.0, max(0.0, round((matched_len / len_a) * 100.0, 2)))
+    overlap_pct = int(min(100, max(0, round((matched_len / len_a) * 100.0))))
     
     metrics = {
         "average": average_distance,

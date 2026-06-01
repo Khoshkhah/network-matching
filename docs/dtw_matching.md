@@ -116,7 +116,7 @@ To handle partially overlapping segments while preserving DTW's shape-alignment 
 6. **Alignment-Based Overlap Percentage**:
    - We measure what percentage of **Source Segment A** is matched, from the start ($0.0$) to the furthest matched point $pts_a[i_{end}]$:
      $$\text{matched\_len} = pts_a[i_{end}]$$
-     $$\text{overlap\_pct} = \min\left(100.0, \max\left(0.0, \text{round}\left(\frac{\text{matched\_len}}{\text{len\_source\_a}} \times 100.0, 2\right)\right)\right)$$
+     $$\text{overlap\_pct} = \text{int}\left(\min\left(100, \max\left(0, \text{round}\left(\frac{\text{matched\_len}}{\text{len\_source\_a}} \times 100.0\right)\right)\right)\right)$$
    - This coverage-based metric completely replaces the old corridor box-matching calculations.
 
 ---

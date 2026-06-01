@@ -92,7 +92,7 @@ To prevent shape distortion:
 The coverage percentage represents the proportion of Source A's total length ($len\_a$) that is aligned:
 
 $$\text{matched\_len} = pts_a[i_{end}]$$
-$$\text{overlap\_pct} = \min\left(100.0, \max\left(0.0, \text{round}\left(\frac{\text{matched\_len}}{\text{len\_a}} \times 100.0, 2\right)\right)\right)$$
+$$\text{overlap\_pct} = \text{int}\left(\min\left(100, \max\left(0, \text{round}\left(\frac{\text{matched\_len}}{\text{len\_a}} \times 100.0\right)\right)\right)\right)$$
 
 ---
 

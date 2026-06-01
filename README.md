@@ -241,7 +241,7 @@ results = matcher.match()
 | **`max_dtw_distance`** | Largest point-to-point offset along the warping path (meters). |
 | **`min_dtw_distance`** | Smallest point-to-point offset along the warping path (meters). |
 | **`bearing_diff`** | Absolute travel-direction difference, `0–180°` (0 = same direction). |
-| **`overlap_pct`** | Percentage of the source segment's length covered by the aligned section, `0–100`. |
+| **`overlap_pct`** | Integer percentage of the source segment's length covered by the aligned section, `0–100` (nullable `Int64`; `<NA>` for `NO_MATCH` rows). |
 | **`rank`** | Rank of this destination among the source's candidates, by `dtw_distance`. **`rank == 1` is the best match.** `NaN`/`<NA>` for `NO_MATCH` rows. |
 | **`match_type`** | Category of the match (see below). |
 

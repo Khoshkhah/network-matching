@@ -278,7 +278,11 @@ class DuckDBMapMatcher:
             "match_type": "NO_MATCH",
         })
 
-        return pd.concat([results, unmatched_rows], ignore_index=True)
+        combined = pd.concat([results, unmatched_rows], ignore_index=True)
+        # Keep overlap_pct an integer percentage even though NO_MATCH rows add NaN
+        # (use a nullable Int64 so unmatched rows stay NULL rather than forcing floats).
+        combined["overlap_pct"] = combined["overlap_pct"].round().astype("Int64")
+        return combined
 
     def match(self) -> pd.DataFrame:
         """
