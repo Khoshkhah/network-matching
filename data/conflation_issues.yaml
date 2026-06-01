@@ -1,0 +1,304 @@
+# Conflation data-quality issues (OSM <-> Sweden NVDB) — manually curated.
+# Format spec & field docs: docs/conflation_issues.schema.yaml
+# Add one entry per issue under `issues:`.
+
+schema_version: 2
+area: sundbyberg
+sources:
+  osm:  { name: "OpenStreetMap", id_fields: [edge_id, osm_id] }
+  nvdb: { name: "Sweden NVDB",   id_fields: [directed_id, original_edge_id, nvdb_id] }
+
+issues:
+
+  - id: oneway_direction_conflict:osm=483898476:nvdb=1867484
+    type: oneway_direction_conflict
+    severity: warning
+    summary: >-
+      Both OSM and NVDB tag this road one-way but their geometries run opposite
+      ways — the sources disagree on direction (likely actually two-way).
+    road_name: Skogsbacken
+
+    members:
+      osm:
+        edge_id: 1992
+        osm_id: 483898476
+        geometry: "LINESTRING (17.976752400000002 59.36492200000001, 17.9773989 59.36530930000001, 17.9775592 59.365396700000005)"
+        raw:
+          highway: residential
+          name: Skogsbacken
+          oneway: "yes"
+          maxspeed: "30"
+          lanes: null
+          surface: asphalt
+          sidewalk: both
+          lit: "yes"
+          source: "survey:Bing"
+      nvdb:
+        directed_id: 991
+        original_edge_id: 1036
+        nvdb_id: 1867484
+        geometry: "LINESTRING (17.977583346343597 59.36539185645856, 17.977467212297146 59.36535249118147, 17.977374431618298 59.365310031315246, 17.97730073397438 59.36526536522443, 17.977183885747245 59.36517748279478, 17.976760991145035 59.36491902786754)"
+        raw:
+          name: Skogsbacken
+          highway: unclassified
+          oneway: "yes"
+          maxspeed_kmh: 30
+          lanes: null
+
+    evidence:
+      matched_len_m: 136.6
+      overlap_ab_pct: 99
+      overlap_ba_pct: 98
+      dtw_m: 1.3
+      anti_parallel: true
+
+    review:
+      status: confirmed
+      suggestion:
+        osm:  { oneway: "no" }
+        nvdb: { oneway: "no" }
+      note: >-
+        Field knowledge: two-way residential street; both sources mis-tagged it
+        as one-way. Push oneway=no to OSM and flag NVDB.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:nvdb=Löfströms_Allé
+    type: oneway_mistagged          # tagged one-way in NVDB but actually two-way
+    severity: warning
+    summary: >-
+      NVDB tags every segment of this road one-way, but it is two-way on the ground.
+    road_name: Löfströms Allé
+    members:
+      nvdb:                          # the wrongly one-way segments
+        - directed_id: 554
+          original_edge_id: 558
+          nvdb_id: 3661455
+          raw: { highway: tertiary, oneway: "yes", maxspeed_kmh: 40.0 }
+          geometry: "LINESTRING (17.95932472433023 59.36354724025886, 17.959916148989887 59.3631839346853, 17.960316547452233 59.3629370465874, 17.960514972808593 59.36281458136435, 17.96059979037933 59.36275874818199, 17.960696021279063 59.36268920645289)"
+        - directed_id: 555
+          original_edge_id: 559
+          nvdb_id: 3661454
+          raw: { highway: tertiary, oneway: "yes", maxspeed_kmh: 40.0 }
+          geometry: "LINESTRING (17.959666046393757 59.36341795980821, 17.959404819725467 59.36358141010522)"
+        - directed_id: 557
+          original_edge_id: 561
+          nvdb_id: 3661452
+          raw: { highway: tertiary, oneway: "yes", maxspeed_kmh: 40.0 }
+          geometry: "LINESTRING (17.96082064983999 59.36273581115966, 17.960719375040227 59.36278454387888, 17.96059589799314 59.36284395920852, 17.960466972974857 59.362916909633334, 17.960349385749577 59.362986433061934, 17.960225512847256 59.36305949851431, 17.959945792390346 59.36324291887328, 17.959677156947773 59.36341100760902)"
+        - directed_id: 1316
+          original_edge_id: 1372
+          nvdb_id: 1962390
+          raw: { highway: tertiary, oneway: "yes", maxspeed_kmh: 40.0 }
+          geometry: "LINESTRING (17.959404819725467 59.36358141010522, 17.959383836144873 59.36359452973943, 17.9579032227925 59.36449896433124, 17.957405979760615 59.36479831804649, 17.956900130154033 59.365114974118036, 17.956623431962836 59.36529589202985, 17.956528345105152 59.36535644831079)"
+        - directed_id: 1330
+          original_edge_id: 1386
+          nvdb_id: 1962391
+          raw: { highway: tertiary, oneway: "yes", maxspeed_kmh: 40.0 }
+          geometry: "LINESTRING (17.95639996335583 59.36533645542685, 17.956764596955168 59.36510806555807, 17.957368045373546 59.36474354714476, 17.957921655949473 59.364385808944, 17.9586674335024 59.36394468396557, 17.95930433996497 59.363559762190604, 17.95932472433023 59.36354724025886)"
+      osm:
+        status: "mixed — 8 one-way edge(s) (wrong) + 14 two-way"
+        wrongly_oneway_edge_ids: [475, 514, 635, 908, 1317, 1483, 1917, 1980]
+    review:
+      status: confirmed
+      suggestion: { nvdb: { oneway: "no" }, osm: { oneway: "no" } }
+      note: >-
+        Field knowledge: Löfströms Allé is two-way. NVDB tagged all segments one-way; OSM also has wrongly one-way edges.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:nvdb=Björkhagsvägen
+    type: oneway_mistagged          # tagged one-way in NVDB but actually two-way
+    severity: warning
+    summary: >-
+      NVDB tags every segment of this road one-way, but it is two-way on the ground.
+    road_name: Björkhagsvägen
+    members:
+      nvdb:                          # the wrongly one-way segments
+        - directed_id: 1312
+          original_edge_id: 1368
+          nvdb_id: 1867344
+          raw: { highway: unclassified, oneway: "yes", maxspeed_kmh: 30.0 }
+          geometry: "LINESTRING (17.955728671261923 59.365751390797094, 17.95573402625707 59.36576619491444, 17.95574558334097 59.36583526792041, 17.955751172978182 59.36592133377559, 17.955757174541766 59.365995951256174, 17.955749236112734 59.36606068588372, 17.955736694564305 59.36611076108771, 17.9556868864951 59.36620858771473)"
+        - directed_id: 1314
+          original_edge_id: 1370
+          nvdb_id: 1867343
+          raw: { highway: unclassified, oneway: "yes", maxspeed_kmh: 30.0 }
+          geometry: "LINESTRING (17.955705783446607 59.36568865818795, 17.955728671261923 59.365751390797094)"
+      osm:
+        status: "correct — modelled two-way"
+    review:
+      status: confirmed
+      suggestion: { nvdb: { oneway: "no" } }
+      note: >-
+        Field knowledge: Björkhagsvägen is two-way. NVDB tagged all segments one-way; OSM is already correct.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:nvdb=Kyrkogårdsvägen
+    type: oneway_mistagged          # tagged one-way in NVDB but actually two-way
+    severity: warning
+    summary: >-
+      NVDB tags every segment of this road one-way, but it is two-way on the ground.
+    road_name: Kyrkogårdsvägen
+    members:
+      nvdb:                          # the wrongly one-way segments
+        - directed_id: 2376
+          original_edge_id: 1258
+          nvdb_id: 1841540
+          raw: { highway: unclassified, oneway: "-1", maxspeed_kmh: 30.0 }
+          geometry: "LINESTRING (17.954554740575055 59.37437589208196, 17.95480492933914 59.37437558590833, 17.955051574389778 59.37434265998894, 17.955392849423973 59.37429520570335, 17.955809020136712 59.37424198170069, 17.95656626562026 59.3741380416092)"
+      osm:
+        status: "correct — modelled two-way"
+    review:
+      status: confirmed
+      suggestion: { nvdb: { oneway: "no" } }
+      note: >-
+        Field knowledge: Kyrkogårdsvägen is two-way. NVDB tagged all segments one-way; OSM is already correct.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:osm=Mönstringsvägen
+    type: oneway_mistagged          # tagged one-way (OSM side) but actually two-way
+    severity: warning
+    summary: >-
+      OSM tags some segments of this road one-way, but it is two-way (NVDB has it two-way).
+    road_name: Mönstringsvägen
+    members:
+      osm:                           # the wrongly one-way OSM edges
+        - edge_id: 625
+          osm_id: 192096980
+          raw: { highway: residential, oneway: "yes", maxspeed: "30" }
+          geometry: "LINESTRING (17.9455114 59.3859209, 17.9448686 59.3860578, 17.9441431 59.3862128)"
+        - edge_id: 2158
+          osm_id: 192096980
+          raw: { highway: residential, oneway: "yes", maxspeed: "30" }
+          geometry: "LINESTRING (17.9469101 59.385623200000005, 17.9455114 59.3859209)"
+      nvdb:
+        status: "correct — modelled two-way (e.g. directed 1362)"
+    review:
+      status: confirmed
+      suggestion: { osm: { oneway: "no" } }
+      note: >-
+        Field knowledge: Mönstringsvägen is two-way. OSM tagged segments one-way; NVDB is already correct.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:osm=Arrendevägen_40
+    type: oneway_mistagged          # tagged one-way (OSM side) but very likely two-way
+    severity: warning
+    summary: >-
+      A single OSM segment is tagged one-way on an otherwise two-way road; NVDB has it two-way.
+    road_name: Arrendevägen
+    members:
+      osm:                           # the lone wrongly one-way OSM edge
+        - edge_id: 40
+          osm_id: 235393363
+          raw: { highway: residential, oneway: "yes", maxspeed: "30" }
+          geometry: "LINESTRING (17.947256900000003 59.3837625, 17.9474015 59.384033300000006)"
+      nvdb:
+        status: "correct — modelled two-way (directed 67/1368 + reverse copies)"
+    review:
+      status: confirmed
+      suggestion: { osm: { oneway: "no" } }
+      note: >-
+        User-flagged (unsure); data strongly supports two-way: OSM 40 is the ONLY one-way
+        edge among 13 Arrendevägen edges (other 12 two-way) and NVDB has it two-way.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:osm=Milstensvägen
+    type: oneway_mistagged          # tagged one-way (OSM side) but should be two-way
+    severity: warning
+    summary: >-
+      OSM segments tagged one-way around Milstensvägen (incl. unnamed pieces); NVDB has
+      Milstensvägen two-way and most OSM edges of it are two-way too.
+    road_name: Milstensvägen
+    members:
+      osm:                           # wrongly one-way OSM edges
+        - edge_id: 1217
+          osm_id: 969887473
+          name: null
+          raw: { highway: service, name: null, oneway: "yes" }
+          geometry: "LINESTRING (17.9560271 59.38473080000001, 17.9561068 59.384703, 17.956358400000003 59.384617600000006, 17.9562698 59.384552500000005, 17.9561521 59.384545100000004, 17.955984400000002 59.384602400000006, 17.955903300000003 59.384629200000006)"
+        - edge_id: 1567
+          osm_id: 43040924
+          name: "Milstensvägen"
+          raw: { highway: residential, name: "Milstensvägen", oneway: "yes" }
+          geometry: "LINESTRING (17.9545909 59.3836166, 17.954613600000002 59.383646500000005, 17.9551951 59.3844131, 17.9552604 59.3844627)"
+        - edge_id: 2089
+          osm_id: 1274411125
+          name: null
+          raw: { highway: service, name: null, oneway: "yes" }
+          geometry: "LINESTRING (17.954949900000003 59.383575300000004, 17.9550358 59.383566, 17.9551836 59.3835331, 17.9552921 59.3835428, 17.9554017 59.383680700000006, 17.9558782 59.383734800000006, 17.955908400000002 59.383846500000004)"
+      nvdb:
+        status: "correct — Milstensvägen modelled two-way"
+    review:
+      status: confirmed
+      suggestion: { osm: { oneway: "no" } }
+      note: >-
+        Field knowledge: should be two-way. NVDB has Milstensvägen two-way and 30/34 OSM
+        Milstensvägen edges are two-way; these (incl. 2 unnamed) are wrongly one-way.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:osm=Lönnvägen_1983
+    type: oneway_mistagged          # tagged one-way (OSM side) but should be two-way
+    severity: warning
+    summary: >-
+      A single OSM segment is tagged one-way on an otherwise two-way road.
+    road_name: Lönnvägen
+    members:
+      osm:
+        - edge_id: 1983
+          osm_id: 157517684
+          raw: { highway: residential, oneway: "yes", maxspeed: "30" }
+          geometry: "LINESTRING (17.9523398 59.36947970000001, 17.9538093 59.3696137)"
+      nvdb:
+        status: "adjacent NVDB roads two-way (Oskarsvägen / Björkhagsvägen)"
+    review:
+      status: confirmed
+      suggestion: { osm: { oneway: "no" } }
+      note: >-
+        Field knowledge: Lönnvägen is two-way. OSM 1983 is the ONLY one-way edge among 7
+        Lönnvägen edges (other 6 two-way).
+      reviewer: kaveh
+
+  - id: oneway_mistagged:osm=Älvängsvägen
+    type: oneway_mistagged          # tagged one-way (OSM side) but should be two-way
+    severity: warning
+    summary: >-
+      OSM tags this road one-way, but it is two-way (NVDB has it two-way).
+    road_name: Älvängsvägen
+    members:
+      osm:
+        - edge_id: 546
+          osm_id: 147543264
+          raw: { highway: residential, oneway: "yes", maxspeed: "30" }
+          geometry: "LINESTRING (17.948482300000002 59.3689072, 17.9485567 59.3688732, 17.9494377 59.3686936)"
+      nvdb:
+        status: "correct — Alvängsvägen two-way (NVDB spells it without umlaut)"
+    review:
+      status: confirmed
+      suggestion: { osm: { oneway: "no" } }
+      note: >-
+        Field knowledge: two-way. OSM mixed (2 of 4 edges one-way); NVDB two-way.
+      reviewer: kaveh
+
+  - id: oneway_mistagged:osm=Ripvägen
+    type: oneway_mistagged          # tagged one-way (OSM side) but should be two-way
+    severity: warning
+    summary: >-
+      OSM tags this road one-way, but it is two-way (NVDB has it two-way).
+    road_name: Ripvägen
+    members:
+      osm:
+        - edge_id: 131
+          osm_id: 24324695
+          raw: { highway: residential, oneway: "yes", maxspeed: "30" }
+          geometry: "LINESTRING (17.949440000000003 59.369933700000004, 17.949327800000002 59.369846800000005, 17.9489981 59.3695572, 17.948873300000002 59.369434700000006, 17.9484591 59.368950100000006, 17.948482300000002 59.3689072)"
+        - edge_id: 1080
+          osm_id: 24324695
+          raw: { highway: residential, oneway: "yes", maxspeed: "30" }
+          geometry: "LINESTRING (17.949469 59.370029800000005, 17.949440000000003 59.369933700000004)"
+      nvdb:
+        status: "correct — Ripvägen two-way"
+    review:
+      status: confirmed
+      suggestion: { osm: { oneway: "no" } }
+      note: >-
+        Field knowledge: two-way. Both OSM Ripvägen edges tagged one-way; NVDB two-way.
+      reviewer: kaveh

@@ -1,0 +1,145 @@
+# =============================================================================
+# Conflation data-quality issues — FORMAT SPEC + worked example
+# =============================================================================
+# One file records the data-quality issues found while conflating two road
+# networks (OSM <-> Sweden NVDB). It is meant to be HUMAN-READABLE and reviewed.
+#
+# Each issue has two halves:
+#   * machine-owned  (id, type, members + their `raw:` source data, evidence)
+#       -> regenerated every run by the detector.
+#   * `review:`      (status, the human's `suggestion:` raw-data fix, and `note:`)
+#       -> human-owned; the detector MUST preserve it, merging by `id`.
+#
+# So a reviewer sees, inline: the RAW data of each source, can write a suggested
+# RAW-DATA correction per source, and leave a note — without leaving the file.
+#
+# YAML is canonical (comments + review). Maps 1:1 to JSON.
+# -----------------------------------------------------------------------------
+
+schema_version: 2
+
+area: sundbyberg
+sources:
+  osm:  { name: "OpenStreetMap", id_fields: [edge_id, osm_id] }
+  nvdb: { name: "Sweden NVDB",   id_fields: [directed_id, original_edge_id, nvdb_id] }
+
+# Allowed issue `type` values (extend as new checks are added):
+#   oneway_direction_conflict  both sides one-way but anti-parallel (likely two-way / mis-tagged)
+#   unmatched_source           a road in one source with no counterpart in the other
+#   geometry_mismatch          matched, but drift (dtw) above an expected bound
+#   cardinality_complex        road sits in an N:M tangle worth manual review
+issue_types:
+  - oneway_direction_conflict
+  - unmatched_source
+  - geometry_mismatch
+  - cardinality_complex
+
+issues:
+
+  # ─── WRONG DATA: both sources one-way, but opposite directions ──────────────
+  - id: oneway_direction_conflict:osm=483898476:nvdb=1867484
+    type: oneway_direction_conflict
+    severity: warning
+    summary: >-
+      Both OSM and NVDB tag this road one-way but their geometries run opposite
+      ways — the sources disagree on direction (often: actually two-way).
+    road_name: Skogsbacken
+
+    members:                          # detector-filled, incl. the RAW source data
+      osm:
+        edge_id: 1992
+        osm_id: 483898476
+        geometry: "LINESTRING (17.976752400000002 59.36492200000001, 17.9773989 59.36530930000001, 17.9775592 59.365396700000005)"
+        raw:                          # raw OSM tags, exactly as stored
+          highway: residential
+          name: Skogsbacken
+          oneway: "yes"
+          maxspeed: "30"
+          lanes: null
+          surface: asphalt
+          sidewalk: both
+          lit: "yes"
+          source: "survey:Bing"
+      nvdb:
+        directed_id: 991
+        original_edge_id: 1036
+        nvdb_id: 1867484
+        geometry: "LINESTRING (17.977583346343597 59.36539185645856, 17.977467212297146 59.36535249118147, 17.977374431618298 59.365310031315246, 17.97730073397438 59.36526536522443, 17.977183885747245 59.36517748279478, 17.976760991145035 59.36491902786754)"
+        raw:                          # raw NVDB attributes
+          name: Skogsbacken
+          highway: unclassified
+          oneway: "yes"
+          maxspeed_kmh: 30
+          lanes: null
+
+    evidence:                         # detector-filled metrics that triggered it
+      matched_len_m: 136.6
+      overlap_ab_pct: 99
+      overlap_ba_pct: 98
+      dtw_m: 1.3
+      anti_parallel: true
+
+    review:                           # HUMAN-OWNED — detector preserves this block
+      status: confirmed               # open | confirmed | rejected | fixed
+      suggestion:                     # the reviewer's RAW-DATA correction, per source
+        osm:  { oneway: "no" }        # -> two-way
+        nvdb: { oneway: "no" }
+      note: >-
+        Field knowledge: this is a two-way residential street; both sources
+        mis-tagged it as one-way. Push oneway=no to OSM and flag NVDB.
+      reviewer: kaveh
+
+  # ─── NO MATCH from source A (OSM): present in OSM, absent in NVDB ───────────
+  - id: unmatched_source:osm=1068575934
+    type: unmatched_source
+    severity: info
+    summary: >-
+      OSM road with no NVDB counterpart within the 25 m search radius.
+    road_name: Rissneleden
+    members:
+      osm:
+        edge_id: 17
+        osm_id: 1068575934
+        geometry: "LINESTRING (17.9416394 59.370725, 17.9417569 59.37079610000001)"
+        raw:
+          highway: tertiary
+          name: Rissneleden
+          oneway: "yes"
+          maxspeed: "50"
+          surface: asphalt
+    evidence:
+      unmatched_in: nvdb              # which network it has no counterpart in
+      max_distance_m: 25
+    review:
+      status: open
+      suggestion: null                # e.g. { nvdb: { add_road: true } }
+      note: null
+      reviewer: null
+
+  # ─── NO MATCH from source B (NVDB): present in NVDB, absent in OSM ──────────
+  - id: unmatched_source:nvdb=3464128
+    type: unmatched_source
+    severity: info
+    summary: >-
+      NVDB road with no OSM counterpart within the 25 m search radius.
+    road_name: Rissneleden
+    members:
+      nvdb:
+        directed_id: 324
+        original_edge_id: 325
+        nvdb_id: 3464128
+        geometry: "LINESTRING (17.93413796127901 59.37345564000175, 17.934141609060507 59.37344917528651, 17.934143614097348 59.373447173050366)"
+        raw:
+          name: Rissneleden
+          highway: tertiary
+          oneway: "yes"
+          maxspeed_kmh: 30
+          lanes: null
+    evidence:
+      unmatched_in: osm
+      max_distance_m: 25
+    review:
+      status: open
+      suggestion: null                # e.g. { osm: { add_road: true } }
+      note: null
+      reviewer: null
