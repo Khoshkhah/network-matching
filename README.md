@@ -1,23 +1,46 @@
-# 🗺️ General-Purpose Directed Map-to-Map Matching Library
+# network-matching
 
-Welcome to the **`network-matching`** Python library — a high-performance, reusable map conflation engine that aligns and merges directed road networks (for example, matching an OpenStreetMap network against Sweden's NVDB network).
+A reusable, high-performance library for **directed road map-to-map matching (conflation)** —
+aligning two road networks (for example OpenStreetMap against Sweden's NVDB), even when they are
+segmented differently. It combines **Dynamic Time Warping (DTW)** for shape alignment with
+**DuckDB Spatial** for fast candidate search, and works in a local projected CRS so all distances
+are in meters.
 
-The engine combines **Dynamic Time Warping (DTW)** for shape alignment with **DuckDB Spatial** for fast candidate search, producing direction-aware, high-fidelity geometry matches — even when the two networks are segmented differently (e.g. one road in network A split into several pieces in network B, a `1:N` split).
+The library offers **two matching modes**, both built on the same `DuckDBMapMatcher` class,
+inputs, and CRS handling:
+
+| Mode | Entry point | Produces | Best for |
+|------|-------------|----------|----------|
+| **Route-based (graph-DTW)** | `match_routes()` | each A-edge → a connected **route** of B-edges | conflating networks split differently; the recommended default |
+| **Edge-to-edge** | `match()` + `resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning points/edges to a single nearest segment; fine-grained control |
 
 ---
 
-## 🧭 Graph-DTW Route Matching (route-based)
+## Installation
 
-Beyond the pairwise edge-to-edge matcher, the library includes **graph-DTW**: instead of aligning
-an A-edge to a single B-edge, it aligns it to the **whole local directed graph** of nearby
-B-edges, returning the connected **route** of B-edges the A-edge maps to. This stitches
-differently-segmented roads into one clean match and can never pick a topologically-disconnected
-parallel road.
+```bash
+pip install -e .                 # core library
+pip install -r requirements.txt  # core + visualization + notebook tooling
+# extras:  pip install -e ".[viz]"   (maps)     pip install -e ".[dev]"   (tests, notebooks)
+```
+
+**Dependencies.** Core: `duckdb` (spatial extension auto-loaded), `numpy`, `pandas`, `shapely`,
+`geopandas`, `joblib` (parallel route matching). Visualization (scripts/notebooks): `folium`,
+`branca`, `matplotlib`. Optional: `scipy` (faster endpoint validation; pure-numpy fallback).
+
+---
+
+## Mode 1 — Route-based matching (graph-DTW)
+
+Instead of aligning an A-edge to a single B-edge, graph-DTW aligns it to the **whole local directed
+graph** of nearby B-edges and returns the connected **route** of B-edges it maps to. This stitches
+a road that is split differently in the two networks into one clean match, and can never select a
+topologically-disconnected parallel road.
 
 ```python
 from network_matching import DuckDBMapMatcher
 
-# one-call init (WKT CSVs; or .from_geofiles(...) for GeoPackage/GeoJSON/Shapefile)
+# one-call initializer (WKT CSVs; or .from_geofiles(...) for GeoPackage / GeoJSON / Shapefile)
 m = DuckDBMapMatcher.from_wkt_csv(
     "data/osm_edges.csv", "data/sweden_edges.csv",
     id_a="edge_id", id_b="directed_id", utm_srid=3006, max_distance=30)
@@ -25,264 +48,147 @@ m = DuckDBMapMatcher.from_wkt_csv(
 routes_long, routes_summary = m.match_routes(n_jobs=-1)   # parallel over A-edges
 ```
 
-- **`routes_summary`** — one row per A-edge (route, avg match distance, coverage, `match_type`).
-- **`routes_long`** — one row per B-edge in each route (the result *divided per edge*: order `seq`,
-  % of A covered, % of the B-edge used, per-edge bearing Δ).
+**Output — two tables:**
 
-📖 **Docs:** [end-to-end pipeline](docs/graph_dtw_pipeline.md) · [algorithm](docs/graph_dtw_matching.md).
-🗺️ **Maps:** `python scripts/graph_dtw_map.py` (whole network) ·
-`python scripts/graph_dtw_edge_detail.py --edge-id 3597` (single-edge deep dive). Outputs → `output/`.
+- **`routes_summary`** — one row per A-edge: the chosen route (`dest_ids`), average match distance,
+  coverage, `route_geom_wkt`, and `match_type` (`1:1` / `1:N_ROUTE` / `NO_MATCH`).
+- **`routes_long`** — one row per B-edge in each route (the result *divided per edge*): `seq` (order
+  of matching), `edge_cover_pct` (% of A covered), `edge_b_used_pct` (% of the B-edge used), and the
+  per-edge match distance and bearing.
 
----
+**Key parameters:** `snap_tolerance_m` (junction snapping), `step_meters` (sampling density),
+`trim_ends_m` (drop free-entry/exit junk fragments), `n_jobs` (parallel cores).
 
-## 🚀 Features
-
-- **Direction-Aware (Directed) Matching** — uses travel bearings and coordinate sequences, so a road and its reverse-direction twin are not confused.
-- **Progressive Overlap-Based DTW Alignment** — finds the natural overlap start and end dynamically, ignoring the non-overlapping tails of each segment without length assumptions or segment swapping.
-- **Configurable Quality Thresholds** — candidate search radius (`max_distance`), maximum bearing difference (`max_angle`), and minimum overlap (`min_overlap`) are all tunable. By default the two quality filters are wide open, so every spatial candidate is evaluated; tighten them to discard weak matches.
-- **Ranked Match Selection** — every qualifying candidate is kept and ranked by alignment quality. The best match for a given source is the row with `rank == 1`; split roads (`1:N`) cleanly preserve all their pieces.
-- **Complete Output** — every source segment appears in the result, even those with no match (flagged `match_type == 'NO_MATCH'`), so nothing is silently dropped.
-- **Flexible Input Sources** — CSV files, DuckDB tables, Pandas/GeoPandas DataFrames, and GIS files (GeoPackage, Shapefile, GeoJSON).
-
----
-
-## 📦 Installation
-
-From the root of the project:
+**Visualize** (standalone HTML written to `output/`):
 
 ```bash
-pip install -e .                 # core library
-pip install -r requirements.txt  # core + visualization + notebook tooling
-# extras: pip install -e ".[viz]"  (maps)   /   pip install -e ".[dev]"  (tests, notebooks)
+python scripts/graph_dtw_map.py                          # whole-network map
+python scripts/graph_dtw_edge_detail.py --edge-id 3597   # single-edge deep dive
 ```
 
-### Dependencies
-- **Core:** `duckdb` (spatial extension auto-loaded), `numpy`, `pandas`, `shapely`, `geopandas`,
-  `joblib` (parallel route matching).
-- **Visualization** (scripts/notebooks): `folium`, `branca`, `matplotlib`.
-- **Optional:** `scipy` (faster endpoint-gap validation; pure-numpy fallback otherwise).
+Full pipeline reference (init, steps, output schemas, parameters):
+[docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md). The algorithm itself (DTW on a directed
+graph): [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md).
 
 ---
 
-## ⚙️ How It Works
+## Mode 2 — Edge-to-edge matching
 
-Matching runs as a three-tier pipeline, all wrapped behind a single `match()` call:
+Pairwise matching: a three-tier pipeline behind `match()` that scores every nearby B-segment
+against each A-segment, then ranks the candidates.
 
 | Tier | What happens | Controlled by |
 |------|--------------|---------------|
-| **1. Candidate search** | A spatial R-Tree join finds every Source-B segment within `max_distance` meters of each Source-A segment. | `max_distance` |
-| **2. Shape scoring** | For each candidate pair, DTW measures the average geometric drift (`dtw_distance`), the direction difference (`bearing_diff`), and how much of the source is covered (`overlap_pct`). | — |
-| **3. Reconciliation** | Candidates failing the `max_angle` / `min_overlap` thresholds are dropped; the survivors are ranked per source by `dtw_distance`. Sources with no surviving match get a `NO_MATCH` row. | `max_angle`, `min_overlap` |
-
----
-
-## 🛠️ Quick Start
-
-The core class is **`DuckDBMapMatcher`**. The general workflow is the same regardless of where your data lives:
-
-> **1. Initialize → 2. Load / point to your two networks → 3. Configure column mappings → 4. (optional) Set thresholds → 5. `match()` (score candidates) → 6. `resolve()` (decide the assignment) → 7. Inspect or save.**
-
-The column and table names below (`network_a`, `id`, `geom`, …) are **placeholders** — substitute whatever your own data uses. The matcher only needs to know, for each network: the table/source name, its **ID column**, and its **geometry column**.
+| 1. Candidate search | DuckDB spatial join finds every B-segment within `max_distance` of each A-segment. | `max_distance` |
+| 2. Shape scoring | DTW measures average drift (`dtw_distance`), direction difference (`bearing_diff`), and coverage (`overlap_pct`). | — |
+| 3. Reconciliation | Drop pairs failing `max_angle` / `min_overlap`; rank the survivors per source by `dtw_distance`. | `max_angle`, `min_overlap` |
 
 ```python
 from network_matching import DuckDBMapMatcher
 
-# 1. Initialize the matcher (clean in-memory DuckDB by default)
-matcher = DuckDBMapMatcher()
+m = DuckDBMapMatcher.from_wkt_csv(
+    "data/osm_edges.csv", "data/sweden_edges.csv",
+    id_a="edge_id", id_b="directed_id", utm_srid=3006, max_distance=25)
+m.set_parameters(max_angle=45, min_overlap=50)        # optional quality filters (off by default)
 
-# 2. Make your two networks available to the matcher's connection.
-#    (Here we load them from CSV; see the other input cases below.)
-matcher.conn.execute("""
-    CREATE TABLE network_a AS
-    SELECT id::BIGINT AS id, ST_GeomFromText(geom) AS geom
-    FROM 'data/network_a.csv';
-""")
-matcher.conn.execute("""
-    CREATE TABLE network_b AS
-    SELECT id::BIGINT AS id, ST_GeomFromText(geom) AS geom
-    FROM 'data/network_b.csv';
-""")
-
-# 3. Tell the matcher which columns hold the ID and geometry of each network.
-#    `utm_srid` is a LOCAL projected (metre-based) CRS so distances are in meters.
-matcher.configure_sources(
-    source_a="network_a", id_col_a="id", geom_col_a="geom",
-    source_b="network_b", id_col_b="id", geom_col_b="geom",
-    utm_srid=3006,  # e.g. SWEREF99 TM for Sweden; use the right EPSG for your area
-)
-
-# 4. (Optional) Tune the matching thresholds. Any argument you omit keeps its default.
-matcher.set_parameters(
-    max_distance=25.0,   # candidate search radius, meters          (default 25.0)
-    max_angle=180.0,     # max bearing difference, degrees 0–180    (default 180.0 = off)
-    min_overlap=0.0,     # min overlap percentage, 0–100            (default 0.0 = off)
-)
-
-# 5. Run the full pipeline (directed: A → B). Source-A segments with no match
-#    come back as NO_MATCH rows.
-results = matcher.match()
-
-# 6. Decide the final assignment. match() returns ALL ranked candidates; resolve()
-#    commits to one according to your problem (see "Making the Decision" below).
-assignment = matcher.resolve(results, strategy="best_per_source")  # many-to-one
-
-# 7. Inspect …
+results    = m.match()                                # all ranked candidates (+ NO_MATCH rows)
+assignment = m.resolve(results, strategy="best_per_source")
 print(assignment["match_type"].value_counts())
-
-# … or save to CSV.
-matcher.conn.register("final_matches", assignment)
-matcher.conn.execute(
-    "COPY final_matches TO 'data/conflation_results.csv' (HEADER, DELIMITER ',');"
-)
 ```
 
-### Tuning the thresholds
+### Deciding the assignment (`resolve`)
 
-| Parameter | Unit | Default | Effect |
-|-----------|------|---------|--------|
-| `max_distance` | meters | `25.0` | Tier 1 search radius — how far apart two segments can be and still be considered candidates. |
-| `max_angle` | degrees, `0–180` | `180.0` | Tier 3 filter — drop pairs whose travel directions differ by more than this. `180` disables it. |
-| `min_overlap` | percent, `0–100` | `0.0` | Tier 3 filter — drop pairs covering less than this fraction of the source's length. `0` disables it. |
+`match()` is a candidate *generator* — for every source it keeps all qualifying destinations,
+ranked by `dtw_distance`. `resolve()` commits to an assignment by **cardinality**:
 
-With the defaults, the two quality filters are off and **every** candidate within `max_distance` is matched and ranked. Tighten `max_angle` (e.g. `45`) and `min_overlap` (e.g. `50`) to keep only confident matches.
+| `strategy` | Cardinality | Use when |
+|------------|-------------|----------|
+| `"all"` | no decision | you'll apply your own logic |
+| `"best_per_source"` *(default)* | many-to-one | assign each A to its closest B (e.g. sensors → roads) |
+| `"best_per_dest"` | one-to-many | best representative A per B |
+| `"one_to_one"` | global unique | unique segment-to-segment conflation |
+
+Every source appears exactly once; unassigned ones come back as `NO_MATCH`. Read the decision from
+the returned rows, not from `match_type`. For a **symmetric** (A→B and B→A) split/merge-aware
+reconciliation, see [docs/symmetric_matching.md](docs/symmetric_matching.md).
+
+### Result columns
+
+`source_id, dest_id, dtw_distance, max_dtw_distance, min_dtw_distance, bearing_diff, overlap_pct,
+rank, match_type`. `rank == 1` is the best match per source; `dtw_distance` (average drift in
+meters) is the primary quality score. `match_type` is `1:1_SYMMETRIC`, `1:N_SPLIT`,
+`UNIDIRECTIONAL_PARTIAL`, or `NO_MATCH`. Drop unmatched rows with
+`results[results["match_type"] != "NO_MATCH"]`.
 
 ---
 
-## 🎯 Making the Decision (`resolve`)
+## Inputs
 
-`match()` is a **candidate generator**, not a decision maker. For every source it keeps *all*
-qualifying destinations, ranked by `dtw_distance` — it deliberately does **not** commit to "this
-A goes to that B," because the right answer depends on your problem's **cardinality**:
-
-> *Example:* if A is a list of sensor locations and B is road segments, two sensors in different
-> lanes should both map to the **same** road — a **many-to-one** assignment is correct. But for
-> unique segment-to-segment network conflation, you want each segment used **once** — a
-> **one-to-one** assignment.
-
-`resolve()` applies that decision to the table from `match()`:
+Geometry is assumed lon/lat (EPSG:4326) and transformed to your local projected `utm_srid`
+(meters) during matching. The one-call initializers cover the common formats:
 
 ```python
-assignment = matcher.resolve(results, strategy="best_per_source")
+DuckDBMapMatcher.from_wkt_csv(csv_a, csv_b, id_a=..., id_b=..., utm_srid=...)      # WKT CSVs
+DuckDBMapMatcher.from_geofiles(file_a, file_b, id_a=..., id_b=..., utm_srid=...,   # GeoPackage /
+                               src_srid=...)                                       # GeoJSON / Shapefile
 ```
 
-| `strategy` | Cardinality | Each source → | Each dest → | Use when |
-|------------|-------------|---------------|-------------|----------|
-| `"all"` | none (no decision) | all candidates | reused | you'll apply your own logic |
-| `"best_per_source"` *(default)* | **many-to-one** | its 1 closest dest | may be shared | **sensors → roads**; assign each A to the road it's on |
-| `"best_per_dest"` | **one-to-many** | may be shared | its 1 closest source | "best representative A per B" |
-| `"one_to_one"` | **global unique** | its 1 unique dest | its 1 unique source | unique segment-to-segment conflation |
+Both accept `keep_cols_a` / `keep_cols_b` to carry extra attributes (e.g. `["name"]`) through.
 
-`"one_to_one"` accepts pairs greedily from the smallest `dtw_distance` upward, so the globally
-closest pairs win and conflicting weaker pairs are dropped (a fast approximation of optimal
-assignment). Whatever the strategy, **every source still appears exactly once** — any source left
-unassigned comes back as a `NO_MATCH` row.
+For full control, build the matcher manually and call `configure_sources(...)`. The only part that
+changes with your data is how the two tables are made available to `m.conn`:
 
-> ⚠️ After resolving, read the decision from the **returned rows themselves**, not from
-> `match_type` — that column still describes the *original* candidate fan-out, not the resolved
-> cardinality.
-
-`resolve()` decides cardinality within a single A→B direction. To combine *both* directions
-(A→B and B→A) into a **symmetric** matching that preserves split roads (1:N) and merges (N:1),
-see the design spec in [docs/symmetric_matching.md](docs/symmetric_matching.md).
-
----
-
-## 📥 Input Source Variations
-
-Step 2 above is the only part that changes with your data format; everything else (`configure_sources` → `match`) is identical.
-
-### Case 1 — Local CSV files with WKT geometries
-For flat CSVs whose geometry column is Well-Known Text (e.g. `LINESTRING (312345 6123456, ...)`):
+- **WKT CSV** — `CREATE TABLE t AS SELECT id, ST_GeomFromText(geom) AS geom FROM 'file.csv';`
+- **DuckDB databases** — `DuckDBMapMatcher(db_path_a=..., db_path_b=...)` (B attached read-only as `db_b`).
+- **GeoPandas** — `m.conn.register("t", gdf)`.
+- **GIS files in place** — point a source at `ST_Read('file.gpkg')`.
 
 ```python
-matcher = DuckDBMapMatcher()
-matcher.conn.execute("""
-    CREATE TABLE network_a AS
-    SELECT id::BIGINT AS id, ST_GeomFromText(geom) AS geom FROM 'data/network_a.csv';
-""")
-matcher.conn.execute("""
-    CREATE TABLE network_b AS
-    SELECT id::BIGINT AS id, ST_GeomFromText(geom) AS geom FROM 'data/network_b.csv';
-""")
-matcher.configure_sources(
-    source_a="network_a", id_col_a="id", geom_col_a="geom",
-    source_b="network_b", id_col_b="id", geom_col_b="geom",
-    utm_srid=3006,
-)
-results = matcher.match()
-```
-
-### Case 2 — Physical DuckDB databases (ATTACH)
-Connect to database A and attach database B read-only to avoid file locking:
-
-```python
-matcher = DuckDBMapMatcher(
-    db_path_a="path/to/network_a.duckdb",
-    db_path_b="path/to/network_b.duckdb",   # attached under the alias 'db_b'
-)
-matcher.configure_sources(
-    source_a="schema_a.edges",      id_col_a="id", geom_col_a="geom",
-    source_b="db_b.main.edges",     id_col_b="id", geom_col_b="geom",
-    utm_srid=3006,
-)
-results = matcher.match()
-```
-
-### Case 3 — GeoPandas / GeoDataFrames
-Register in-memory GeoDataFrames directly into the matcher's connection:
-
-```python
-import geopandas as gpd
-
-gdf_a = gpd.read_file("network_a.gpkg", layer="edges")
-gdf_b = gpd.read_file("network_b.shp")
-
-matcher = DuckDBMapMatcher()
-matcher.conn.register("network_a", gdf_a)
-matcher.conn.register("network_b", gdf_b)
-matcher.configure_sources(
-    source_a="network_a", id_col_a="id", geom_col_a="geometry",
-    source_b="network_b", id_col_b="id", geom_col_b="geometry",
-    utm_srid=3006,
-)
-results_df = matcher.match()
-```
-
-### Case 4 — GIS files via DuckDB `ST_Read` (no Python load)
-Point the sources straight at on-disk spatial files:
-
-```python
-matcher = DuckDBMapMatcher()
-matcher.configure_sources(
-    source_a="ST_Read('data/network_a.gpkg')",    id_col_a="fid", geom_col_a="geom",
-    source_b="ST_Read('data/network_b.geojson')", id_col_b="id",  geom_col_b="geom",
-    utm_srid=3006,
-)
-results = matcher.match()
+m = DuckDBMapMatcher()
+m.conn.execute("CREATE TABLE a AS SELECT id, ST_GeomFromText(geom) AS geom FROM 'data/a.csv';")
+m.conn.execute("CREATE TABLE b AS SELECT id, ST_GeomFromText(geom) AS geom FROM 'data/b.csv';")
+m.configure_sources(source_a="a", id_col_a="id", geom_col_a="geom",
+                    source_b="b", id_col_b="id", geom_col_b="geom", utm_srid=3006)
+m.set_parameters(max_distance=25)
 ```
 
 ---
 
-## 📈 Result Columns Explained
+## Documentation
 
-`match()` returns a Pandas DataFrame with one row per matched source→destination pair (plus one `NO_MATCH` row for each source that matched nothing):
+| Document | Covers |
+|----------|--------|
+| [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
+| [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
+| [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
+| [docs/algorithm.md](docs/algorithm.md) | The three-tier edge-to-edge architecture. |
+| [docs/symmetric_matching.md](docs/symmetric_matching.md) | Symmetric (two-way) split/merge reconciliation. |
+| [docs/framework.md](docs/framework.md) | Software design. |
 
-| Column | Meaning |
-|--------|---------|
-| **`source_id`** | ID of the source segment (network A). |
-| **`dest_id`** | ID of the matched destination segment (network B). `None` for `NO_MATCH` rows. |
-| **`dtw_distance`** | Average geometric drift in meters along the DTW warping path — *the* primary match-quality score (lower = better). |
-| **`max_dtw_distance`** | Largest point-to-point offset along the warping path (meters). |
-| **`min_dtw_distance`** | Smallest point-to-point offset along the warping path (meters). |
-| **`bearing_diff`** | Absolute travel-direction difference, `0–180°` (0 = same direction). |
-| **`overlap_pct`** | Integer percentage of the source segment's length covered by the aligned section, `0–100` (nullable `Int64`; `<NA>` for `NO_MATCH` rows). |
-| **`rank`** | Rank of this destination among the source's candidates, by `dtw_distance`. **`rank == 1` is the best match.** `NaN`/`<NA>` for `NO_MATCH` rows. |
-| **`match_type`** | Category of the match (see below). |
+---
 
-### `match_type` values
-- **`1:1_SYMMETRIC`** — the source matched exactly one destination (a clean one-to-one pairing).
-- **`1:N_SPLIT`** — the source matched several destinations (one road split across multiple pieces in the other network). *All* rows of such a source carry this label; use `rank == 1` to pick the best piece.
-- **`UNIDIRECTIONAL_PARTIAL`** — fallback label for a lower-confidence single candidate.
-- **`NO_MATCH`** — the source had no candidate survive (no nearby segment, or none passing the thresholds). `dest_id` is `None` and all metric columns are `NaN`.
+## Project layout
 
-> **Committing to a final assignment:** use [`resolve()`](#-making-the-decision-resolve) rather than filtering by hand — e.g. `matcher.resolve(results, strategy="best_per_source")`. **Dropping unmatched rows:** filter to `results[results["match_type"] != "NO_MATCH"]`.
+```
+network_matching/   library — matcher, graph_dtw, bgraph_prep, logging_utils, dtw
+scripts/            CLI tools — graph_dtw_map.py, graph_dtw_edge_detail.py, ...
+notebooks/          demos — route tables, real-data plots, synthetic cases
+docs/               documentation
+tests/              pytest suite
+data/               INPUT data only (osm_edges.csv, sweden_edges.csv, boundary)
+output/             generated maps + result CSVs (git-ignored)
+conflation_issues/  issue schema + area-specific curated issues
+logs/               run logs (git-ignored)
+```
+
+---
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+A dedicated conda env (`network-matching`, Python 3.11, with a registered Jupyter kernel) is
+recommended for the notebooks and tests.
