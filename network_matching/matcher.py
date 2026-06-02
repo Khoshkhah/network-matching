@@ -803,7 +803,6 @@ class DuckDBMapMatcher:
             matched_ids.add(id_a)
             m = res["metrics"]
             route = res["route"]
-            total_a = sum(re["a_len"] for re in m["route_edges"]) or 1.0
             # one row per B-edge in the route, each with its OWN sliced metrics
             for re in m["route_edges"]:
                 long_rows.append({
@@ -812,8 +811,8 @@ class DuckDBMapMatcher:
                     "edge_match_dist_avg": re["match_dist_avg"],
                     "edge_match_dist_max": re["match_dist_max"],
                     "edge_match_dist_min": re["match_dist_min"],
-                    "edge_a_len": re["a_len"],
-                    "edge_cover_pct": round(100.0 * re["a_len"] / total_a, 1),
+                    "edge_a_len": re["a_len"],            # A length COVERED by this edge (m)
+                    "edge_cover_pct": re["cover_pct"],    # % of the whole A-edge this edge covers
                     "edge_matched_len": re["matched_len"],
                     "edge_b_len": re["b_edge_len"],
                     "edge_b_used_pct": re["b_cover_pct"],
@@ -896,9 +895,9 @@ class DuckDBMapMatcher:
         max_bearing_diff:
             Drop routes whose whole-route bearing difference (degrees) exceeds this.
         min_overlap_pct:
-            Drop routes covering less than this percent of the A-edge (``overlap_pct``). Graph-DTW
-            matches the whole A-edge, so coverage is ~100 except for a **dead-end** route (A's road
-            extends past the end of B's corridor); this catches those.
+            Drop routes covering less than this percent of the A-edge (``overlap_pct``). Coverage
+            is < 100 where A **overhangs** past the route's first/last B-edge endpoint (its end
+            samples pile onto a single vertex); this drops edges whose ends stick out too far.
 
         Returns
         -------

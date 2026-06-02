@@ -475,11 +475,17 @@ def graph_dtw_align(
         if not (0 <= e < len(gb.edge_ids)):
             continue  # degenerate group: A matched a vertex without crossing any B-arc (no B-edge)
         seg = drift_all[k:j + 1]
+        # a_len = A covered by this edge: count an A-segment only where the matched B vertex
+        # ADVANCES. Where consecutive A-points collapse onto a single vertex (A overhangs past the
+        # first/last edge's endpoint), B does not move -> that A-length is uncovered.
+        # b_len = B traversed (sum of B movement); it is 0 on a collapse, so a fully-walked B-edge
+        # is still 100% used.
         a_len = b_len = 0.0
         for t in range(max(k, 1), j + 1):
             (pa0, pb0), (pa1, pb1) = warping_all[t - 1], warping_all[t]
-            a_len += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
             b_len += float(np.hypot(pb1[0] - pb0[0], pb1[1] - pb0[1]))
+            if pairs[t][1] != pairs[t - 1][1]:        # B vertex advanced -> A here is covered
+                a_len += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
         directions = [step_dir[t] for t in range(k, j + 1) if step_dir[t]]
         if j > k:
             (a_s, b_s) = warping_all[k]
@@ -509,12 +515,16 @@ def graph_dtw_align(
     route = [(re["dest_id"], re["direction"], re["seq"]) for re in route_edges]
     matched_len = float(sum(re["matched_len"] for re in route_edges))
 
-    # The warping path spans the entire A-edge (the DP runs a_0 .. a_{N-1}), so with end-trimming
-    # off the route covers all of A -> overlap_pct = 100. It drops only when trim_ends_m removes an
-    # end edge (the removed edge's A-length is then not in the kept route).
+    # A coverage: the warping spans all of A, but A-length where A OVERHANGS past the first/last
+    # edge's endpoint (a run of A-points collapsing onto a single B vertex) is uncovered.
+    # overlap_pct = covered A / A; it is < 100 whenever A's ends stick out past B's corridor
+    # (a segmentation/overhang effect that can happen on any network -- not a dead-end).
     total_a_len = LineString([p[:2] for p in a_pool]).length if N > 1 else 0.0
     kept_a = float(sum(re["a_len"] for re in route_edges))
     overlap_pct = int(min(100, round(100.0 * kept_a / total_a_len))) if total_a_len > 0 else 0
+    # per-edge A coverage as % of the WHOLE A-edge (these sum to overlap_pct)
+    for re in route_edges:
+        re["cover_pct"] = round(100.0 * re["a_len"] / total_a_len, 1) if total_a_len > 0 else 0.0
 
     # Returned warping path / per-step arrays: sliced to the kept span for clean visualization.
     pairs_k = pairs[lo:hi + 1]

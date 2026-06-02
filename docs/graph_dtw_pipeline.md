@@ -100,8 +100,9 @@ routes_summary, routes_long = m.resolve_routes(
 
 Any threshold left `None` is not applied. A route that fails is reset to a `NO_MATCH` row (route
 cleared, metrics `NaN`) and its rows are removed from `routes_long`; every A-edge still appears.
-(Coverage is ~100 since graph-DTW matches the whole A-edge; `min_overlap_pct` is only meaningful
-for **dead-end** routes — where A's road extends past the end of B's corridor, so coverage < 100.)
+(`min_overlap_pct` drops edges whose ends **overhang** too far past B's corridor — coverage < 100
+where A's first/last samples pile onto a single B-edge endpoint; common on differently-segmented
+networks.)
 
 ---
 
@@ -117,7 +118,7 @@ for **dead-end** routes — where A's road extends past the end of B's corridor,
 | `dtw_distance`                  | average match distance (m) over the whole edge — main quality signal |
 | `max_dtw_distance` / `min_dtw_distance` | max / min match distance |
 | `bearing_diff`                  | whole-route bearing difference (degrees) |
-| `overlap_pct`                   | % of A covered by the route (≈100; < 100 only for a dead-end — A extends past B's corridor) |
+| `overlap_pct`                   | **% of A covered** (matched to advancing B geometry); < 100 where A overhangs past the route's first/last B-edge endpoint |
 | `matched_len`                   | total B-length (m) traversed |
 | `route_geom_wkt`                | matched corridor geometry, WKT in **UTM (`utm_srid`)** |
 | `match_type`                    | `1:1` (single edge) · `1:N_ROUTE` (multi-edge) · `NO_MATCH` |
@@ -133,8 +134,8 @@ The result **divided per B-edge** (`seq` = order of matching along the route).
 | `seq`                           | **order of matching** (0,1,2,…) |
 | `direction`                     | `forward` / `backward` vs the B-edge's digitized geometry |
 | `edge_match_dist_avg/max/min`   | match distance over just this edge's matched points |
-| `edge_a_len`                    | metres of A matched onto this edge |
-| `edge_cover_pct`                | **% of A** this edge covers (`edge_a_len` ÷ total) |
+| `edge_a_len`                    | metres of A **covered** by this edge (where its B vertex advances) |
+| `edge_cover_pct`                | **% of the whole A-edge** this edge covers (these sum to `overlap_pct`) |
 | `edge_matched_len`              | metres of this B-edge traversed |
 | `edge_b_len`                    | this B-edge's total length (m) |
 | `edge_b_used_pct`               | **% of this B-edge** used (`edge_matched_len` ÷ `edge_b_len`) |
@@ -207,8 +208,8 @@ the package installed editable + a registered Jupyter kernel "Python (network-ma
 
 ## 8. Scope
 
-Directed A→B; deterministic (candidate edges sorted by id); A is matched in full (end-trimming off
-by default).
+Directed A→B; deterministic (candidate edges sorted by id). Coverage (`overlap_pct`) is < 100 where
+A overhangs past B's first/last edge endpoint (end-trimming off by default).
 The cost is count-weighted (route choice depends on `step_meters` density); a density-independent
 objective and symmetric (B→A) reconciliation are future work — see
 [`graph_dtw_matching.md`](graph_dtw_matching.md) §7.

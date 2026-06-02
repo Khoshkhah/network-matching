@@ -155,7 +155,7 @@ shape as `dtw_align`, so existing plotting code works unchanged. The public prim
 | `average`      | mean match distance (m) over the warping path — main quality signal     |
 | `max` / `min`  | max / min match distance along the path                                |
 | `matched_len`  | total length (m) traversed in B along the route                        |
-| `overlap_pct`  | % of A covered by the kept route (≈100, lower if ends were trimmed)     |
+| `overlap_pct`  | **% of A covered** (A-length matched to *advancing* B geometry); < 100 where A overhangs past the route's first/last B-edge endpoint |
 | `bearing_diff` | whole-route bearing difference over the matched span (degrees)         |
 | `route`        | ordered `[(b_edge_id, direction, seq), …]` (`seq` = order of matching)  |
 | `n_edges`      | number of B-edges in the route                                         |
@@ -170,14 +170,39 @@ shape as `dtw_align`, so existing plotting code works unchanged. The public prim
 | `seq`            | order of this edge along the route (0,1,2,…)                        |
 | `direction`      | `forward` / `backward` (vs the B-edge's digitized geometry)         |
 | `match_dist_avg/max/min` | match distance over just this edge's matched points        |
-| `a_len`          | metres of A matched onto this edge                                  |
+| `a_len`          | metres of A **covered** by this edge (where its B vertex advances)  |
+| `cover_pct`      | **% of the whole A-edge** this edge covers (`a_len / A-length`)      |
 | `matched_len`    | metres of this B-edge traversed                                    |
 | `b_edge_len`     | this B-edge's total length (m)                                     |
-| `b_cover_pct`    | % of *this B-edge* used = `matched_len / b_edge_len`               |
+| `b_cover_pct`    | **% of *this B-edge* used** = `matched_len / b_edge_len`            |
 | `bearing_diff`   | bearing of this B-edge's span vs the A part matched to it (degrees) |
 | `n_points`       | A sample points matched onto this edge                             |
 
-(The per-edge `a_len` values sum to A's length; "% of A covered by this edge" = `a_len / Σ a_len`.)
+The two coverage axes are independent: **`cover_pct`** is how much of *A* this edge covers, while
+**`b_cover_pct`** is how much of *this B-edge* A uses. The per-edge `cover_pct` sum to `overlap_pct`.
+
+### 4.1 Coverage and overhang
+
+A-coverage counts an A-segment only where the matched **B vertex advances**. Where a run of
+consecutive A-points **collapses onto a single B vertex** — A's end overhangs past the route's
+first/last B-edge endpoint, so there is no more B to walk — that A-length is **uncovered**. This is
+a segmentation/overhang effect (A and B don't end at the same place) and happens on any network; it
+is *not* a dead-end concept.
+
+*Example.* A is 60 m; the route is `B1 → B2` but B only covers A's middle 20–40 m (A overhangs
+0–20 m and 40–60 m):
+
+```
+A:  0────10────20────30────40────50────60        (samples every 10 m)
+              └─ B1 ─┘└─ B2 ─┘                    (B covers only 20..40)
+a0,a1,a2  ── all map to B1's start vertex  (overhang 0..20 → uncovered)
+a2→a3→a4  ── B advances along B1 then B2   (covered 20..40)
+a4,a5,a6  ── all map to B2's end vertex    (overhang 40..60 → uncovered)
+```
+
+Result: `overlap_pct = 20/60 = 33%`. Per edge: `B1` and `B2` each **cover 10 m of A** (`cover_pct`
+≈ 17% each, summing to 33%), yet each is **100% used** (`b_cover_pct = 100`) because A walks their
+full geometry. So a B-edge can be fully used while A is only partly covered.
 
 ---
 
@@ -283,10 +308,10 @@ network map via [`scripts/graph_dtw_map.py`](../scripts/graph_dtw_map.py).
   snap tolerance; candidate edges are sorted by id so results are **deterministic**.
 - B-edges are walkable in **both directions** by default (geometry-only conflation); one-way
   edges can be restricted to their digitized direction via `oneway_ids`.
-- A is matched **in full** — the warping path spans the entire A-edge, so `overlap_pct` is 100%
-  except for a genuine **dead-end** (A's road extends past the end of B's corridor, where A
-  advances while the matched B point is stuck at a terminal vertex). Match distance is the primary
-  quality signal. (`trim_ends_m`, an optional end-edge remover, is **off by default**.)
+- The warping path spans the entire A-edge, but **coverage** (`overlap_pct`) is the A-length
+  matched to *advancing* B geometry — it drops below 100% wherever A **overhangs** past the
+  route's first/last B-edge endpoint (see §4.1). Match distance is the other primary quality
+  signal. (`trim_ends_m`, an optional end-edge remover, is **off by default**.)
 - **Cost is count-weighted** (a sum over discrete vertices), so route choice depends on
   `step_meters` density; a length-weighted / per-step-projection objective (density-independent)
   and symmetric (B→A) reconciliation remain future work.
