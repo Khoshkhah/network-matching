@@ -94,12 +94,13 @@ filters:
 routes_summary, routes_long = m.resolve_routes(
     routes_summary, routes_long,
     max_match_dist=10,     # drop routes with avg match distance > 10 m
-    max_bearing_diff=30,   # ...or whole-route bearing difference > 30°
-    min_overlap_pct=90)    # ...or covering < 90% of the A-edge
+    max_bearing_diff=30)   # ...or whole-route bearing difference > 30°
 ```
 
 Any threshold left `None` is not applied. A route that fails is reset to a `NO_MATCH` row (route
 cleared, metrics `NaN`) and its rows are removed from `routes_long`; every A-edge still appears.
+(There is no overlap threshold — graph-DTW matches the whole A-edge, so `overlap_pct` is ~100 by
+construction and would not discriminate.)
 
 ---
 

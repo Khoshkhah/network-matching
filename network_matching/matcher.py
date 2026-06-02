@@ -851,8 +851,7 @@ class DuckDBMapMatcher:
 
     def resolve_routes(self, routes_summary: pd.DataFrame, routes_long: Optional[pd.DataFrame] = None,
                        *, max_match_dist: Optional[float] = None,
-                       max_bearing_diff: Optional[float] = None,
-                       min_overlap_pct: Optional[float] = None):
+                       max_bearing_diff: Optional[float] = None):
         """Filter route matches by quality thresholds (the route-mode analogue of the edge-to-edge
         quality filters).
 
@@ -860,6 +859,9 @@ class DuckDBMapMatcher:
         ``resolve_routes`` keeps only routes that pass the given thresholds; an A-edge whose route
         fails any threshold is reset to a ``NO_MATCH`` row (route cleared, metrics ``NaN``) and its
         rows are removed from ``routes_long``. Any threshold left ``None`` is not applied.
+
+        (There is no overlap threshold: graph-DTW matches the whole A-edge, so ``overlap_pct`` is
+        ~100 by construction and would not discriminate.)
 
         Parameters
         ----------
@@ -869,8 +871,6 @@ class DuckDBMapMatcher:
             Drop routes whose average match distance (``dtw_distance``, meters) exceeds this.
         max_bearing_diff:
             Drop routes whose whole-route bearing difference (degrees) exceeds this.
-        min_overlap_pct:
-            Drop routes covering less than this percent of the A-edge.
 
         Returns
         -------
@@ -884,9 +884,6 @@ class DuckDBMapMatcher:
             fail |= matched & (rs["dtw_distance"] > max_match_dist)
         if max_bearing_diff is not None:
             fail |= matched & (rs["bearing_diff"] > max_bearing_diff)
-        if min_overlap_pct is not None:
-            ov = pd.to_numeric(rs["overlap_pct"], errors="coerce")
-            fail |= matched & (ov < min_overlap_pct)
 
         failed_ids = set(rs.loc[fail, "source_id"])
         nan = float("nan")
