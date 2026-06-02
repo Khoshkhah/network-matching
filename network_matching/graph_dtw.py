@@ -514,6 +514,18 @@ def graph_dtw_align(
         })
         seq += 1
 
+    # The A-segments that bridge a trimmed junk end edge to the first/last KEPT edge are real
+    # coverage (their destination is the kept edge) -- attribute them to the kept edge so A
+    # coverage stays ~100%. (The DP always spans all of A; only the junk edge's own tiny A-span
+    # is dropped.) Without this, slicing the warping would lose that bridging segment entirely.
+    if route_edges:
+        if lo > 0:
+            (pa0, _b0), (pa1, _b1) = warping_all[lo - 1], warping_all[lo]
+            route_edges[0]["a_len"] += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
+        if hi < len(warping_all) - 1:
+            (pa0, _b0), (pa1, _b1) = warping_all[hi], warping_all[hi + 1]
+            route_edges[-1]["a_len"] += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
+
     route = [(re["dest_id"], re["direction"], re["seq"]) for re in route_edges]
     matched_len = float(sum(re["matched_len"] for re in route_edges))
 
