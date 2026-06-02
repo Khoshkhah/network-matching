@@ -16,7 +16,7 @@ you can filter matched vs unmatched per network, and inspect the abnormal cases:
 
 Run:
     python scripts/graph_dtw_validation_map.py
-    python scripts/graph_dtw_validation_map.py --offset 0.0006 --a-cover 95 --b-under 50 --b-over 110
+    python scripts/graph_dtw_validation_map.py --offset 0.00035 --a-cover 95 --b-under 50 --b-over 110
 """
 
 import argparse
@@ -178,7 +178,7 @@ def main():
     ap.add_argument("--utm-srid", type=int, default=3006)
     ap.add_argument("--max-distance", type=float, default=30.0)
     ap.add_argument("--n-jobs", type=int, default=-1)
-    ap.add_argument("--offset", type=float, default=0.0006,
+    ap.add_argument("--offset", type=float, default=0.00035,
                     help="degrees to shift network B north-east")
     ap.add_argument("--a-cover", type=float, default=95.0, help="A under-covered threshold (%)")
     ap.add_argument("--b-under", type=float, default=50.0, help="B under-used threshold (%)")
