@@ -84,6 +84,23 @@ routes_long, routes_summary = m.match_routes(
 | `oneway_ids`        | B-edge ids walkable only in their digitized direction. Default: bidirectional. |
 | `n_jobs`            | parallel workers over A-edges: `-1` = all cores, `1` = serial. |
 
+### Filter by quality (`resolve_routes`)
+
+`match_routes` returns the best route for **every** A-edge regardless of quality. To keep only
+confident matches, filter by thresholds — the route-mode analogue of the edge-to-edge quality
+filters:
+
+```python
+routes_summary, routes_long = m.resolve_routes(
+    routes_summary, routes_long,
+    max_match_dist=10,     # drop routes with avg match distance > 10 m
+    max_bearing_diff=30,   # ...or whole-route bearing difference > 30°
+    min_overlap_pct=90)    # ...or covering < 90% of the A-edge
+```
+
+Any threshold left `None` is not applied. A route that fails is reset to a `NO_MATCH` row (route
+cleared, metrics `NaN`) and its rows are removed from `routes_long`; every A-edge still appears.
+
 ---
 
 ## 4. Output tables

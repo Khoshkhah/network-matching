@@ -849,4 +849,64 @@ class DuckDBMapMatcher:
             oneway_ids=oneway_ids, trim_ends_m=trim_ends_m, n_jobs=n_jobs,
         )
 
+    def resolve_routes(self, routes_summary: pd.DataFrame, routes_long: Optional[pd.DataFrame] = None,
+                       *, max_match_dist: Optional[float] = None,
+                       max_bearing_diff: Optional[float] = None,
+                       min_overlap_pct: Optional[float] = None):
+        """Filter route matches by quality thresholds (the route-mode analogue of the edge-to-edge
+        quality filters).
+
+        :meth:`match_routes` returns the best route for **every** A-edge regardless of quality.
+        ``resolve_routes`` keeps only routes that pass the given thresholds; an A-edge whose route
+        fails any threshold is reset to a ``NO_MATCH`` row (route cleared, metrics ``NaN``) and its
+        rows are removed from ``routes_long``. Any threshold left ``None`` is not applied.
+
+        Parameters
+        ----------
+        routes_summary, routes_long:
+            The two tables from :meth:`match_routes`. ``routes_long`` is optional.
+        max_match_dist:
+            Drop routes whose average match distance (``dtw_distance``, meters) exceeds this.
+        max_bearing_diff:
+            Drop routes whose whole-route bearing difference (degrees) exceeds this.
+        min_overlap_pct:
+            Drop routes covering less than this percent of the A-edge.
+
+        Returns
+        -------
+        ``routes_summary`` (failing routes turned into ``NO_MATCH``), or the tuple
+        ``(routes_summary, routes_long)`` if ``routes_long`` was given.
+        """
+        rs = routes_summary.copy()
+        matched = rs["match_type"] != "NO_MATCH"
+        fail = pd.Series(False, index=rs.index)
+        if max_match_dist is not None:
+            fail |= matched & (rs["dtw_distance"] > max_match_dist)
+        if max_bearing_diff is not None:
+            fail |= matched & (rs["bearing_diff"] > max_bearing_diff)
+        if min_overlap_pct is not None:
+            ov = pd.to_numeric(rs["overlap_pct"], errors="coerce")
+            fail |= matched & (ov < min_overlap_pct)
+
+        failed_ids = set(rs.loc[fail, "source_id"])
+        nan = float("nan")
+        for col in ("dtw_distance", "max_dtw_distance", "min_dtw_distance",
+                    "bearing_diff", "matched_len"):
+            rs.loc[fail, col] = nan
+        rs["overlap_pct"] = rs["overlap_pct"].astype("Int64")
+        rs.loc[fail, "overlap_pct"] = pd.NA
+        rs.loc[fail, "n_edges"] = 0
+        rs.loc[fail, "dest_ids"] = None
+        rs.loc[fail, "route_geom_wkt"] = None
+        rs.loc[fail, "match_type"] = "NO_MATCH"
+
+        n_kept = int((rs["match_type"] != "NO_MATCH").sum())
+        logger.info("resolve_routes: %d routes failed thresholds -> NO_MATCH; %d kept",
+                    len(failed_ids), n_kept)
+
+        if routes_long is None:
+            return rs
+        rl = routes_long[~routes_long["source_id"].isin(failed_ids)].copy()
+        return rs, rl
+
 

@@ -59,6 +59,14 @@ routes_long, routes_summary = m.match_routes(n_jobs=-1)   # parallel over A-edge
 **Key parameters:** `snap_tolerance_m` (junction snapping), `step_meters` (sampling density),
 `trim_ends_m` (drop free-entry/exit junk fragments), `n_jobs` (parallel cores).
 
+`match_routes` returns a route for every A-edge; keep only confident matches by filtering on
+thresholds (failures become `NO_MATCH`):
+
+```python
+routes_summary, routes_long = m.resolve_routes(
+    routes_summary, routes_long, max_match_dist=10, max_bearing_diff=30, min_overlap_pct=90)
+```
+
 **Visualize** (standalone HTML written to `output/`):
 
 ```bash
