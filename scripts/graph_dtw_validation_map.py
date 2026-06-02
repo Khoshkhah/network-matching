@@ -27,7 +27,9 @@ from shapely.affinity import translate
 from shapely.wkt import loads as load_wkt
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from network_matching import DuckDBMapMatcher, get_logger, setup_logging  # noqa: E402
+from network_matching import (  # noqa: E402
+    DuckDBMapMatcher, get_logger, setup_logging, suggest_thresholds,
+)
 
 log = get_logger("scripts.graph_dtw_validation_map")
 
@@ -189,6 +191,8 @@ def main():
     ap.add_argument("--b-over", type=float, default=110.0, help="B over-used threshold (%)")
     ap.add_argument("--resolved", action="store_true",
                     help="apply resolve_routes (quality filter) before mapping")
+    ap.add_argument("--auto-thresholds", action="store_true",
+                    help="pick resolve thresholds from the data via suggest_thresholds (implies --resolved)")
     ap.add_argument("--max-match-dist", type=float, default=25.0, help="resolve: max avg match dist (m)")
     ap.add_argument("--max-bearing-diff", type=float, default=45.0, help="resolve: max bearing diff (deg)")
     ap.add_argument("--min-overlap", type=float, default=None, help="resolve: min A coverage (%)")
@@ -202,13 +206,19 @@ def main():
     log.info("running match_routes...")
     routes_long, routes_summary = m.match_routes(n_jobs=args.n_jobs)
     mode = "raw result"
-    if args.resolved:
-        routes_summary, routes_long = m.resolve_routes(
-            routes_summary, routes_long,
-            max_match_dist=args.max_match_dist, max_bearing_diff=args.max_bearing_diff,
-            min_overlap_pct=args.min_overlap)
-        mode = f"resolved (max_dist={args.max_match_dist:g}, max_bearing={args.max_bearing_diff:g}"
-        mode += f", min_overlap={args.min_overlap:g})" if args.min_overlap is not None else ")"
+    if args.resolved or args.auto_thresholds:
+        if args.auto_thresholds:
+            sugg = suggest_thresholds(routes_summary, report=True)
+            kw = {k: v for k, v in sugg["recommended"].items() if v is not None}
+            routes_summary, routes_long = m.resolve_routes(routes_summary, routes_long, **kw)
+            mode = "resolved (auto: " + ", ".join(f"{k}={v:g}" for k, v in kw.items()) + ")"
+        else:
+            routes_summary, routes_long = m.resolve_routes(
+                routes_summary, routes_long,
+                max_match_dist=args.max_match_dist, max_bearing_diff=args.max_bearing_diff,
+                min_overlap_pct=args.min_overlap)
+            mode = f"resolved (max_dist={args.max_match_dist:g}, max_bearing={args.max_bearing_diff:g}"
+            mode += f", min_overlap={args.min_overlap:g})" if args.min_overlap is not None else ")"
         if args.out == ap.get_default("out"):
             args.out = "output/graph_dtw_validation_map_resolved.html"
     log.info("building validation map (%s)...", mode)
