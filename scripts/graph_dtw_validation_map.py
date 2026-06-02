@@ -51,7 +51,8 @@ def _fetch(m):
     return a, b
 
 
-def build_map(m, routes_long, routes_summary, *, offset, a_cover, b_under, b_over, boundary):
+def build_map(m, routes_long, routes_summary, *, offset, a_cover, b_under, b_over, boundary,
+              mode="raw result"):
     import folium
 
     a_geom, b_geom = _fetch(m)
@@ -155,7 +156,8 @@ def build_map(m, routes_long, routes_summary, *, offset, a_cover, b_under, b_ove
     title = (f"<div style='position:fixed;top:10px;left:50px;z-index:9999;background:white;"
              f"padding:8px 12px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3);"
              f"font-family:Arial;font-size:13px'>"
-             f"<b>Graph-DTW validation</b> &nbsp; OSM A &harr; NVDB B (shifted)<br>"
+             f"<b>Graph-DTW validation</b> &nbsp; OSM A &harr; NVDB B (shifted) &nbsp; "
+             f"<span style='color:#2563eb'>[{mode}]</span><br>"
              f"A matched {len(matched_a)} / NO_MATCH {(routes_summary['match_type']=='NO_MATCH').sum()}"
              f" &nbsp;|&nbsp; B used {len(used_b)} / unused {len(b_geom)-len(used_b)}<br>"
              f"<span style='color:#dc2626'>A under-covered {n_au}</span> &nbsp; "
@@ -181,6 +183,10 @@ def main():
     ap.add_argument("--a-cover", type=float, default=95.0, help="A under-covered threshold (%)")
     ap.add_argument("--b-under", type=float, default=50.0, help="B under-used threshold (%)")
     ap.add_argument("--b-over", type=float, default=110.0, help="B over-used threshold (%)")
+    ap.add_argument("--resolved", action="store_true",
+                    help="apply resolve_routes (quality filter) before mapping")
+    ap.add_argument("--max-match-dist", type=float, default=25.0, help="resolve: max avg match dist (m)")
+    ap.add_argument("--max-bearing-diff", type=float, default=45.0, help="resolve: max bearing diff (deg)")
     args = ap.parse_args()
 
     setup_logging()
@@ -190,9 +196,17 @@ def main():
                                       table_b="vehicle_edges_directed")
     log.info("running match_routes...")
     routes_long, routes_summary = m.match_routes(n_jobs=args.n_jobs)
-    log.info("building validation map...")
+    mode = "raw result"
+    if args.resolved:
+        routes_summary, routes_long = m.resolve_routes(
+            routes_summary, routes_long,
+            max_match_dist=args.max_match_dist, max_bearing_diff=args.max_bearing_diff)
+        mode = f"resolved (max_dist={args.max_match_dist:g}, max_bearing={args.max_bearing_diff:g})"
+        if args.out == ap.get_default("out"):
+            args.out = "output/graph_dtw_validation_map_resolved.html"
+    log.info("building validation map (%s)...", mode)
     fmap = build_map(m, routes_long, routes_summary, offset=args.offset, a_cover=args.a_cover,
-                     b_under=args.b_under, b_over=args.b_over, boundary=args.boundary)
+                     b_under=args.b_under, b_over=args.b_over, boundary=args.boundary, mode=mode)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     fmap.save(args.out)
     log.info("saved -> %s", args.out)
