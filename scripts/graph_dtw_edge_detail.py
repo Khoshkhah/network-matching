@@ -78,7 +78,8 @@ def build_detail_map(res, a4326, b4326, edge_id, conn, srid, a_shift=0.00012):
     route_edges = M["route_edges"]
     route_ids = [re["dest_id"] for re in route_edges]
     per_edge = {re["dest_id"]: re for re in route_edges}
-    total_a = sum(re["a_len"] for re in route_edges) or 1.0
+    # re["cover_pct"] is the % of the WHOLE A-edge this B-edge covers (these sum to overlap_pct,
+    # NOT to 100%, because A's overhang past B's corridor is uncovered).
 
     # Pre-transform UTM -> (lat, lon) with DuckDB (consistent with how the UTM was produced).
     vtx_ll = _utm_to_latlon(conn, [(float(gb.vx[i]), float(gb.vy[i]))
@@ -125,8 +126,8 @@ def build_detail_map(res, a4326, b4326, edge_id, conn, srid, a_shift=0.00012):
                     f"<b>match dist:</b> avg {re['match_dist_avg']:.2f} "
                     f"(max {re['match_dist_max']:.2f}, min {re['match_dist_min']:.2f}) m<br>"
                     f"<b>covers A:</b> {re['a_len']:.1f} m = "
-                    f"<b>{100.0 * re['a_len'] / total_a:.0f}%</b> of edge A<br>"
-                    f"<b>uses {re['b_cover_pct']:.0f}% of this B-edge</b> "
+                    f"<b>{re['cover_pct']:.1f}%</b> of edge A<br>"
+                    f"<b>uses {re['b_cover_pct']:.1f}% of this B-edge</b> "
                     f"({re['matched_len']:.1f} / {re['b_edge_len']:.1f} m)<br>"
                     f"<b>bearing Δ:</b> {re['bearing_diff']:.1f}° &nbsp; "
                     f"<b>A pts matched:</b> {re['n_points']}")
@@ -222,9 +223,9 @@ def build_detail_map(res, a4326, b4326, edge_id, conn, srid, a_shift=0.00012):
         f"<tr><td>{re['seq']}</td><td>{re['dest_id']}</td><td>{re['direction']}</td>"
         f"<td>{re['match_dist_avg']:.2f}</td><td>{re['match_dist_max']:.2f}</td>"
         f"<td>{re['match_dist_min']:.2f}</td><td>{re['a_len']:.1f}</td>"
-        f"<td>{100.0 * re['a_len'] / total_a:.0f}%</td>"
+        f"<td>{re['cover_pct']:.1f}%</td>"
         f"<td>{re['bearing_diff']:.1f}°</td>"
-        f"<td>{re['matched_len']:.1f}</td><td>{re['b_cover_pct']:.0f}%</td>"
+        f"<td>{re['matched_len']:.1f}</td><td>{re['b_cover_pct']:.1f}%</td>"
         f"<td>{re['n_points']}</td></tr>"
         for re in route_edges)
     panel = (

@@ -14,7 +14,7 @@ from .graph_dtw import match_edge_to_bgraph
 logger = logging.getLogger("network_matching.matcher")
 
 
-def _graph_dtw_group(task, snap_tolerance_m, step_meters, oneway_ids, trim_ends_m):
+def _graph_dtw_group(task, snap_tolerance_m, step_meters, trim_ends_m):
     """Pure, picklable worker: run graph-DTW for one A-edge group.
 
     ``task`` is ``(id_a, coords_a, b_edges)`` where ``b_edges`` is a list of
@@ -26,7 +26,7 @@ def _graph_dtw_group(task, snap_tolerance_m, step_meters, oneway_ids, trim_ends_
     res = match_edge_to_bgraph(
         coords_a, b_edges,
         snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
-        oneway_ids=oneway_ids, trim_ends_m=trim_ends_m,
+        trim_ends_m=trim_ends_m,
     )
     if not res["route"]:
         return id_a, None
@@ -719,7 +719,7 @@ class DuckDBMapMatcher:
 
     def compute_graph_dtw_routes(self, candidates_df: Optional[pd.DataFrame] = None,
                                  snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                                 oneway_ids=None, trim_ends_m: float = 0.0, n_jobs: int = 1):
+                                 trim_ends_m: float = 0.0, n_jobs: int = 1):
         """Route-based matching: align each Source-A edge to the local directed graph of its
         candidate B-edges (graph-DTW), returning one connected B-edge route per A-edge.
 
@@ -728,7 +728,7 @@ class DuckDBMapMatcher:
         candidates_df:
             Output of :meth:`generate_candidate_pairs` (``id_a, wkt_a, id_b, wkt_b`` in UTM
             meters). If ``None`` it is generated.
-        snap_tolerance_m, step_meters, oneway_ids:
+        snap_tolerance_m, step_meters, trim_ends_m:
             Passed through to :func:`network_matching.graph_dtw.match_edge_to_bgraph`.
         n_jobs:
             >1 fans the per-A-edge work out with joblib (each A-edge is an independent unit).
@@ -781,7 +781,7 @@ class DuckDBMapMatcher:
             from joblib import Parallel, delayed
             logger.info("graph-DTW: aligning in parallel (n_jobs=%d)...", n_jobs)
             outcomes = Parallel(n_jobs=n_jobs)(
-                delayed(_graph_dtw_group)(t, snap_tolerance_m, step_meters, oneway_ids, trim_ends_m)
+                delayed(_graph_dtw_group)(t, snap_tolerance_m, step_meters, trim_ends_m)
                 for t in tasks
             )
         else:
@@ -790,7 +790,7 @@ class DuckDBMapMatcher:
             step = max(1, n_tasks // 10)
             for k, t in enumerate(tasks):
                 outcomes.append(_graph_dtw_group(t, snap_tolerance_m, step_meters,
-                                                 oneway_ids, trim_ends_m))
+                                                 trim_ends_m))
                 if (k + 1) % step == 0 or (k + 1) == n_tasks:
                     logger.info("graph-DTW: aligned %d/%d A-edges (%.0f%%)",
                                 k + 1, n_tasks, 100.0 * (k + 1) / max(1, n_tasks))
@@ -864,18 +864,19 @@ class DuckDBMapMatcher:
         return routes_long, routes_summary
 
     def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                     oneway_ids=None, trim_ends_m: float = 0.0, n_jobs: int = 1):
+                     trim_ends_m: float = 0.0, n_jobs: int = 1):
         """Run the full route-based (graph-DTW) pipeline: generate candidates, then align each
         Source-A edge to the local B-graph. Returns ``(routes_long, routes_summary)`` -- the
         graph-DTW analogue of :meth:`match`. See :meth:`compute_graph_dtw_routes`."""
         candidates_df = self.generate_candidate_pairs()
         return self.compute_graph_dtw_routes(
             candidates_df, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
-            oneway_ids=oneway_ids, trim_ends_m=trim_ends_m, n_jobs=n_jobs,
+            trim_ends_m=trim_ends_m, n_jobs=n_jobs,
         )
 
     def resolve_routes(self, routes_summary: pd.DataFrame, routes_long: Optional[pd.DataFrame] = None,
                        *, max_match_dist: Optional[float] = None,
+                       max_max_dist: Optional[float] = None,
                        max_bearing_diff: Optional[float] = None,
                        min_overlap_pct: Optional[float] = None):
         """Filter route matches by quality thresholds (the route-mode analogue of the edge-to-edge
@@ -892,6 +893,9 @@ class DuckDBMapMatcher:
             The two tables from :meth:`match_routes`. ``routes_long`` is optional.
         max_match_dist:
             Drop routes whose average match distance (``dtw_distance``, meters) exceeds this.
+        max_max_dist:
+            Drop routes whose **maximum** match distance (``max_dtw_distance``, meters) exceeds
+            this -- catches a route that fits well on average but spikes far off somewhere.
         max_bearing_diff:
             Drop routes whose whole-route bearing difference (degrees) exceeds this.
         min_overlap_pct:
@@ -909,6 +913,8 @@ class DuckDBMapMatcher:
         fail = pd.Series(False, index=rs.index)
         if max_match_dist is not None:
             fail |= matched & (rs["dtw_distance"] > max_match_dist)
+        if max_max_dist is not None:
+            fail |= matched & (rs["max_dtw_distance"] > max_max_dist)
         if max_bearing_diff is not None:
             fail |= matched & (rs["bearing_diff"] > max_bearing_diff)
         if min_overlap_pct is not None:

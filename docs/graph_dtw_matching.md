@@ -45,12 +45,19 @@ predecessor of point `b_j` is `b_{j-1}`. Graph-DTW replaces that line with a **d
   - each **B-edge** = its own nodes **+ the projections of A's nodes onto that edge**.
   (A small `step_meters` gap-fill keeps long straight stretches from being coarse; set it falsy
   for pure node+projection pools exactly like `dtw_align`.)
-- Consecutive vertices of an edge are joined by a directed **arc** in the digitized direction
-  (`forward`) and, unless the edge is one-way, also the reverse (`backward`) — geometry-only
-  conflation, so a B road digitized opposite to A is still walkable along A.
-- B-edges whose **endpoints** coincide (within a snap tolerance) are joined: their shared
-  endpoint becomes a single **junction vertex**, which is how the route crosses from one B-edge
-  to the next.
+- The B network is a **fully directed edge table** — every bidirectional road already appears as
+  two opposing directed edges (e.g. the NVDB `is_reverse` twins) — so `GB` uses **forward arcs
+  only**: consecutive vertices of an edge are joined by a directed arc in its digitized direction
+  (`start → end`). No `backward`/synthesized reverse arcs: if A runs opposite to an edge, it
+  simply matches that edge's reverse twin (a different `directed_id`) instead.
+- **Every vertex belongs to exactly one edge** (`vert_edge`). B-edges whose endpoints coincide
+  (within a snap tolerance) are joined head-to-tail by a directed **inter-edge arc** — one edge's
+  **end** → another edge's **start**. Junction endpoints are kept as *separate coincident
+  vertices* (one per incident edge), **not** merged into one shared vertex. Keeping the owning
+  edge in the vertex — hence in the DP state — is what makes the route unambiguous at a junction:
+  a state is never "at the junction", it is "at edge `u`'s end" or "at edge `w`'s start". This
+  also makes a **U-turn impossible** — an edge that only *ends* at a junction has no arc leaving
+  it, so the path can flow *through* a junction but never dip onto a side edge and return.
 
 So the single predecessor `b_{j-1}` becomes "**any graph-predecessor** `u` of vertex `v`", and a
 matched point on either side is either an original **node** (point-to-point) or a **projection**
@@ -118,16 +125,26 @@ Re-paying `dist(a_i, w)` on each horizontal step is precisely DTW's `D[i][j-1] +
 exact regardless of cycles. Per A-edge the cost is `O(N · E·log V)` with `V, E` tiny (~10 edges
 → a few hundred vertices) — microseconds.
 
-### 3.2 Backtracking → route + direction
+### 3.2 Backtracking → route
 
-Each `D[i][v]` records which move won (`vertical`, `horizontal`, or `diagonal`) and, for the two
-B-advancing moves, the **arc** (its B-edge and traversal direction). Tracing back from the best
-terminal vertex to row 0 yields the warping path of `(a_i, v)` pairs; consecutive steps on the
-same B-edge are collapsed into one **route entry**, giving the **route**
-`[(b_edge_id, direction, seq), …]`.
+Each `D[i][v]` records which move won (`vertical`, `horizontal`, or `diagonal`) and the
+predecessor vertex. Tracing back from the best terminal vertex to row 0 yields the warping path
+of `(a_i, v)` pairs. The B-edge of each step is read **directly from the vertex** (`vert_edge[v]`)
+— no arc inference, no shared-junction ambiguity, because every vertex belongs to exactly one
+edge. Consecutive steps on the same B-edge are grouped into one **route entry**, giving the
+**route** `[(b_edge_id, direction, seq), …]`. Traversal is always `forward` (the directed table
+already encodes orientation; which of a road's two twins matched tells you the physical
+direction).
 
-### 3.3 End trimming + determinism
+### 3.3 Zero-traversal touches, end trimming + determinism
 
+- **Zero-traversal touches (always dropped).** A leading/trailing route edge that A only *touches*
+  at a junction vertex — its end overhangs onto the next edge's start, but it never runs **along**
+  that edge (`B-used == 0`) — is removed from the route unconditionally; it is overhang, not a
+  match. If **no** edge is actually traversed (A only touches boundary vertices, e.g. a stub that
+  ends at but never runs along a B-edge), the result is **`NO_MATCH`**. This is what keeps a route
+  to the edges A truly walks (so an A-edge that visibly follows one B-edge is reported as one
+  edge, not two).
 - **End trimming (`trim_ends_m`, default `0` = OFF).** An optional cleanup that *removes* a
   leading/trailing route edge from the route list when it covers less than `trim_ends_m` of A
   (intended for a free-entry/exit snap onto a crossing B-edge). It is **off by default** because
@@ -157,7 +174,7 @@ shape as `dtw_align`, so existing plotting code works unchanged. The public prim
 | `matched_len`  | total length (m) traversed in B along the route                        |
 | `overlap_pct`  | **% of A covered** (A-length matched to *advancing* B geometry); < 100 where A overhangs past the route's first/last B-edge endpoint |
 | `bearing_diff` | whole-route bearing difference over the matched span (degrees)         |
-| `route`        | ordered `[(b_edge_id, direction, seq), …]` (`seq` = order of matching)  |
+| `route`        | ordered `[(b_edge_id, 'forward', seq), …]` (`seq` = order of matching)  |
 | `n_edges`      | number of B-edges in the route                                         |
 | `route_edges`  | **per-B-edge breakdown** (below)                                        |
 | `warp_*`       | per warping-step arrays: `warp_vertices`, `warp_edge`, `warp_is_node`, `warp_a_is_node` (node vs projection on each side) |
@@ -168,7 +185,7 @@ shape as `dtw_align`, so existing plotting code works unchanged. The public prim
 |------------------|---------------------------------------------------------------------|
 | `dest_id`        | the B-edge id                                                       |
 | `seq`            | order of this edge along the route (0,1,2,…)                        |
-| `direction`      | `forward` / `backward` (vs the B-edge's digitized geometry)         |
+| `direction`      | always `forward` (the directed table encodes orientation; the reverse twin is a separate edge) |
 | `match_dist_avg/max/min` | match distance over just this edge's matched points        |
 | `a_len`          | metres of A **covered** by this edge (where its B vertex advances)  |
 | `cover_pct`      | **% of the whole A-edge** this edge covers (`a_len / A-length`)      |
@@ -183,11 +200,16 @@ The two coverage axes are independent: **`cover_pct`** is how much of *A* this e
 
 ### 4.1 Coverage and overhang
 
-A-coverage counts an A-segment only where the matched **B vertex advances**. Where a run of
-consecutive A-points **collapses onto a single B vertex** — A's end overhangs past the route's
-first/last B-edge endpoint, so there is no more B to walk — that A-length is **uncovered**. This is
-a segmentation/overhang effect (A and B don't end at the same place) and happens on any network; it
-is *not* a dead-end concept.
+A-coverage is all of A **except the leading run on the route's entry vertex and the trailing run on
+its terminal vertex** — i.e. only where A **overhangs** past the route's first/last B-edge endpoint
+(a run of A-points collapsing onto that single end vertex, with no more B to walk). This is a
+segmentation/overhang effect (A and B don't start/end at the same place) and happens on any network;
+it is *not* a dead-end concept.
+
+Crucially, only the **ends** count: a *mid-corridor* stall — where A is simply denser than B so the
+warping advances A while the B vertex momentarily waits (drift stays low, A is on the corridor) — is
+**still covered**. Earlier the metric counted every non-advancing step as uncovered and so
+under-reported coverage on real data; it now charges overhang only at the two ends.
 
 *Example.* A is 60 m; the route is `B1 → B2` but B only covers A's middle 20–40 m (A overhangs
 0–20 m and 40–60 m):
@@ -238,7 +260,7 @@ although it is a single full-length parallel edge, it has no arcs in or out, so 
 it would strand the rest of A at high cost. **Edge-to-edge DTW would instead report `B4` as a
 clean full-length 1:1 match** — the exact failure graph-DTW removes.
 
-A picture of this alignment (and the split, parallel, cycle, and one-way cases) is produced by
+A picture of this alignment (and the split, parallel, cycle, and no-U-turn cases) is produced by
 [`notebooks/graph_dtw_visualization.ipynb`](../notebooks/graph_dtw_visualization.ipynb).
 
 ---
@@ -274,10 +296,9 @@ then an independent unit fanned out with **joblib**.
 
 | parameter           | meaning |
 |---------------------|---------|
-| `snap_tolerance_m`  | B-edge endpoints within this distance are merged into one **junction** vertex — how the route crosses between connected B-edges (connectivity-inference tolerance). |
+| `snap_tolerance_m`  | One edge's **end** is joined to another edge's **start** when they fall within this distance — the head-to-tail junction-crossing tolerance. |
 | `step_meters`       | **Gap-fill density**: a vertex every ~N m on top of the node+projection pools (default 10). Smaller = denser/slower and shifts which route wins (cost is count-weighted); `0` = projection-only, fastest. |
 | `trim_ends_m`       | **Default `0` (off).** Optional: *remove* a leading/trailing route edge covering **< this many meters of A**. Not a gap-filler (that is `snap_tolerance_m`); off by default because it can delete legitimate corridor edges. |
-| `oneway_ids`        | B-edge ids walkable only in their digitized direction (no `backward` arc). Default: all bidirectional. |
 | `n_jobs`            | Parallel workers over A-edges (joblib): `-1` = all cores, `1` = serial. |
 | `max_distance`      | (set via the initializer / `set_parameters`) candidate search radius for `ST_DWithin`. |
 
@@ -304,10 +325,13 @@ network map via [`scripts/graph_dtw_map.py`](../scripts/graph_dtw_map.py).
 ## 7. Scope of this version
 
 - **Directed A → B** only (no symmetric reconciliation).
-- B is treated as a **directed graph**; connectivity is inferred from **endpoints** within a
-  snap tolerance; candidate edges are sorted by id so results are **deterministic**.
-- B-edges are walkable in **both directions** by default (geometry-only conflation); one-way
-  edges can be restricted to their digitized direction via `oneway_ids`.
+- B is a **directed graph built forward-only** from the directed edge table; connectivity is
+  inferred from coincident **end → start** endpoints within a snap tolerance; candidate edges are
+  sorted by id so results are **deterministic**.
+- A road's two travel directions are **separate directed edges** in B, so no reverse/backward
+  arcs are synthesized: A matches whichever twin agrees with its direction, traversed `forward`.
+- Each vertex carries its owning edge (`vert_edge`), so the route is unambiguous at junctions and
+  a **U-turn onto a side edge is structurally impossible**.
 - The warping path spans the entire A-edge, but **coverage** (`overlap_pct`) is the A-length
   matched to *advancing* B geometry — it drops below 100% wherever A **overhangs** past the
   route's first/last B-edge endpoint (see §4.1). Match distance is the other primary quality

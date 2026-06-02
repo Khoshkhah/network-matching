@@ -13,7 +13,13 @@ Scenarios:
                        (the core "reduce wrong matches" win vs edge-to-edge).
   3. SNAP TOLERANCE -- near-but-unequal endpoints connect only when within the tolerance.
   4. CYCLE          -- a loop in GB terminates and returns a sensible route.
-  5. ONEWAY         -- a one-way B-edge against A's direction is avoided.
+  5. NO U-TURN      -- the directed graph cannot leave a junction on one edge and return
+                       (the perpendicular-stub artifact a shared-junction vertex would allow).
+  6. ZERO-TRAVERSAL -- an edge A only *touches* at a junction (never walks) is dropped from the
+                       route (the OSM-1251 phantom-tail case).
+
+The graph is built from a **directed** edge table (forward arcs only): a B-edge digitized
+against A is matched via its reverse twin, not a synthesized backward arc.
 """
 
 import os
@@ -107,25 +113,44 @@ def test_cycle_terminates():
 
 
 # --------------------------------------------------------------------------------------
-# 5. Oneway: a one-way B-edge against A's direction is avoided
+# 5. No U-turn: a perpendicular edge that only ENDS at the junction is never entered+left
 # --------------------------------------------------------------------------------------
-def test_oneway_blocks_wrong_direction():
-    coords_a = [(0.0, 0.0), (20.0, 0.0)]
+def test_no_uturn_onto_perpendicular_stub():
+    # A runs straight east. The main road is B_main -> B_cont. B_stub is a perpendicular edge
+    # that *ends* at the junction (digitized into it). With forward-only directed arcs there is
+    # no arc leaving the junction onto B_stub, so the warping path cannot dip onto it and back
+    # (the OSM-1278 artifact). The route must be the clean B_main -> B_cont.
+    coords_a = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]
     b_edges = [
-        ("B_ok",    LineString([(0.0, 0.2), (20.0, 0.2)])),    # correct direction, +0.2 m
-        ("B_wrong", LineString([(20.0, -0.2), (0.0, -0.2)])),  # digitized against A, -0.2 m
+        ("B_main", LineString([(0.0, 0.0), (10.0, 0.0)])),     # into the junction, along A
+        ("B_cont", LineString([(10.0, 0.0), (20.0, 0.0)])),    # out of the junction, along A
+        ("B_stub", LineString([(10.0, -8.0), (10.0, 0.0)])),   # perpendicular, ENDS at junction
     ]
+    res = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=2.0)
 
-    # Without oneway, B_wrong is walkable backward and is just as close -> either may win.
-    free = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=2.0)
-    assert free["route"]
-
-    # B_wrong one-way (digitized direction only) cannot cover A's direction -> B_ok wins.
-    res = match_edge_to_bgraph(
-        coords_a, b_edges, snap_tolerance_m=0.5, step_meters=2.0, oneway_ids={"B_wrong"},
-    )
-    assert _route_ids(res) == ["B_ok"]
+    assert _route_ids(res) == ["B_main", "B_cont"]
+    assert "B_stub" not in _route_ids(res)
+    assert all(d == "forward" for (_e, d, _s) in res["route"])
     assert res["avg_distance"] < 0.5
+
+
+# --------------------------------------------------------------------------------------
+# 6. Zero-traversal touch: A ending at a junction must not list the next edge it never walks
+# --------------------------------------------------------------------------------------
+def test_zero_traversal_end_edge_dropped():
+    # A runs along B_main and ends exactly at the junction, where a continuation edge starts.
+    # A only *touches* that edge's start vertex (overhang) and never traverses it, so the route
+    # must be the single B_main -- not [B_main, continuation] (the OSM-1251 phantom tail).
+    coords_a = [(0.0, 0.0), (5.0, 0.0), (10.0, 0.0)]
+    b_edges = [
+        ("B_main", LineString([(0.0, 0.0), (10.0, 0.0)])),   # A walks this fully
+        ("B_next", LineString([(10.0, 0.0), (20.0, 0.0)])),  # starts at A's end; never entered
+    ]
+    res = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=2.0)
+
+    assert res["metrics"]["n_edges"] == 1
+    # no route edge may have zero B traversal (a pure boundary touch)
+    assert all(re["b_cover_pct"] > 0 for re in res["metrics"]["route_edges"])
 
 
 # --------------------------------------------------------------------------------------
@@ -162,18 +187,20 @@ if __name__ == "__main__":
              ("B4", LineString([(0, -1.0), (30, -1.0)]))],
             snap_tolerance_m=0.5, step_meters=2.0)
 
-    _report("ONEWAY (B_wrong blocked)",
-            [(0.0, 0.0), (20.0, 0.0)],
-            [("B_ok", LineString([(0, 0.2), (20, 0.2)])),
-             ("B_wrong", LineString([(20, -0.2), (0, -0.2)]))],
-            snap_tolerance_m=0.5, step_meters=2.0, oneway_ids={"B_wrong"})
+    _report("NO U-TURN (B_stub never entered)",
+            [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)],
+            [("B_main", LineString([(0, 0), (10, 0)])),
+             ("B_cont", LineString([(10, 0), (20, 0)])),
+             ("B_stub", LineString([(10, -8), (10, 0)]))],
+            snap_tolerance_m=0.5, step_meters=2.0)
 
     # Run the assertion tests too.
     test_split_stitches_three_edges()
     test_isolated_parallel_road_rejected()
     test_snap_tolerance_controls_connectivity()
     test_cycle_terminates()
-    test_oneway_blocks_wrong_direction()
+    test_no_uturn_onto_perpendicular_stub()
+    test_zero_traversal_end_edge_dropped()
     print("\n" + "=" * 60)
     print("     ALL GRAPH-DTW TESTS PASSED")
     print("=" * 60)

@@ -10,11 +10,14 @@ the *projections of the other side's nodes* before the dynamic table is built:
 - each **B-edge** = its own nodes + the projections of A's nodes onto that edge.
 
 Where ``dtw_align`` aligns one A-edge to one B-edge, ``graph_dtw_align`` aligns one A-edge to the
-whole **local directed graph** ``GB`` built from the B-edges near it. The warping path advances
-monotonically along A while walking *forward through graph-connected* B-edges only, so it can
-never hop onto a geometrically-close but topologically disconnected road (parallel-road /
-junction disambiguation). Backtracking the dynamic table yields the ordered, connected route of
-B-edges (each with a traversal direction) plus the drift metric.
+whole **local directed graph** ``GB`` built from the B-edges near it. The B table is already
+fully directed (every bidirectional road is two opposing directed edges), so ``GB`` uses
+*forward arcs only*: each edge is walked start->end and connectivity is head-to-tail. The warping
+path advances monotonically along A while walking forward through graph-connected B-edges only,
+so it can never hop onto a geometrically-close but topologically disconnected road, and -- because
+each vertex carries the edge it lies on (the DP state knows its edge) -- it can never U-turn onto
+an edge that merely touches a junction. Backtracking the dynamic table yields the ordered,
+connected route of B-edges plus the drift metric.
 
 The classic DTW predecessor ``j-1`` (a single point on one polyline) becomes "any
 graph-predecessor ``u`` of ``v``" in ``GB``. Because ``GB`` may contain cycles (loops,
@@ -40,7 +43,6 @@ import numpy as np
 from shapely.geometry import LineString, Point
 
 Coord = Tuple[float, float]
-RouteEntry = Tuple[Any, str, int]  # (b_edge_id, direction, seq)
 PoolPoint = Tuple[float, float, bool]  # (x, y, is_node)
 
 
@@ -141,29 +143,35 @@ def _inf_metrics() -> Dict[str, Any]:
 # --------------------------------------------------------------------------------------
 # Local directed B-graph
 # --------------------------------------------------------------------------------------
-# An arc is (predecessor_or_successor_vertex, edge_index, direction) where ``direction`` is
-# "forward" (along the B-edge's digitized geometry) or "backward".
-Arc = Tuple[int, int, str]
+# The B network is already a fully **directed** edge table (every bidirectional road appears as
+# two opposing directed edges -- e.g. the NVDB ``is_reverse`` twins), so the graph uses *forward
+# arcs only*: each edge is traversed start->end along its digitized geometry, and connectivity is
+# head-to-tail (one edge's end vertex feeding the next edge's start vertex). An arc is simply the
+# neighbour vertex id; the edge a vertex lies on is carried in ``vert_edge``.
+Arc = int
 
 
 @dataclass
 class LocalBGraph:
     """Compact directed graph of the B-edges near one A-edge.
 
-    Vertices are projection-enriched points (each B-edge's nodes + projections of A's nodes onto
-    it). B-edges that share an endpoint (within the snap tolerance) are joined by collapsing
-    those endpoints onto a single shared vertex, so connectivity is implicit through shared
-    vertices (no separate junction arcs needed).
+    Vertices are projection-enriched points, and **every vertex belongs to exactly one B-edge**
+    (``vert_edge``). Endpoints of different edges that meet at a junction are kept as *separate
+    coincident vertices*, stitched by directed inter-edge arcs (edge ``u``'s end -> edge ``w``'s
+    start). Keeping the owning edge in the vertex -- hence in the DP state -- is what makes the
+    route unambiguous at junctions: a state is never "at the junction", it is "at edge ``u``'s
+    end" or "at edge ``w``'s start", which are different cells of the table.
     """
 
     vx: np.ndarray                       # vertex x coords, length V
     vy: np.ndarray                       # vertex y coords, length V
-    pred_arcs: List[List[Arc]]           # pred_arcs[v] = incoming arcs (u, edge, dir)
-    succ_arcs: List[List[Arc]]           # succ_arcs[v] = outgoing arcs (w, edge, dir)
+    pred_arcs: List[List[Arc]]           # pred_arcs[v] = incoming neighbour vertices
+    succ_arcs: List[List[Arc]]           # succ_arcs[v] = outgoing neighbour vertices
     edge_ids: List[Any]                  # edge_index -> original b_edge_id
     n_vertices: int
     is_node: np.ndarray                  # bool, length V: True = original B vertex, False = projection
     is_endpoint: np.ndarray              # bool, length V: True = an edge endpoint (junction / dead-end)
+    vert_edge: np.ndarray                # int, length V: vertex -> the B-edge index it lies on
     b_raw_nodes: List[Coord]             # all raw geometry vertices of the candidate B-edges
     edge_len: List[float]                # edge_index -> total length (m) of that B-edge
 
@@ -173,19 +181,19 @@ def build_local_digraph(
     a_coords: Sequence[Coord],
     snap_tolerance_m: float = 0.75,
     step_meters: float = 10.0,
-    oneway_ids: Optional[Sequence[Any]] = None,
 ) -> LocalBGraph:
-    """Build the local directed graph ``GB`` from ``(b_edge_id, LineString)`` edges, using
-    projection-enriched vertices.
+    """Build the local **directed** graph ``GB`` from ``(b_edge_id, LineString)`` edges.
 
-    Each B-edge's vertices = its own nodes + the projections of ``a_coords``' nodes onto that
-    edge (continuous-DTW style). Consecutive vertices get a directed arc in the digitized
-    direction ("forward") and, unless the edge id is in ``oneway_ids``, also the reverse
-    ("backward") -- geometry-only conflation, so a B road digitized opposite to A is still
-    walkable along A. Endpoints of different edges within ``snap_tolerance_m`` are merged onto a
-    single shared vertex (how the route crosses from one B-edge to a connected next one).
+    The B table is already directed (each road's two travel directions are separate rows), so
+    arcs are *forward only*: each edge contributes intra-edge arcs along its digitized direction,
+    and where one edge's **end** coincides with another edge's **start** (within
+    ``snap_tolerance_m``) a directed inter-edge arc joins them head-to-tail. Every vertex belongs
+    to exactly one edge (``vert_edge``); junction endpoints are kept as *separate coincident
+    vertices* rather than merged, so the DP state always knows which edge it is on. Each edge's
+    vertices = its own nodes + the projections of ``a_coords``' nodes onto it (continuous-DTW
+    style). If A runs opposite to an edge, it simply matches that edge's reverse twin (a different
+    ``directed_id``) instead -- no synthesized backward arcs needed.
     """
-    oneway = set(oneway_ids or [])
     a_nodes = [(float(x), float(y)) for x, y in a_coords]
     # Sort candidate edges by id so vertex numbering (and thus DP tie-breaks) is deterministic
     # regardless of the order candidate rows arrive in (DuckDB joins are not order-stable).
@@ -202,80 +210,55 @@ def build_local_digraph(
         edge_pools.append(_node_projection_pool(coords, a_nodes, step_meters))
         b_raw_nodes.extend((float(c[0]), float(c[1])) for c in coords)
 
-    # --- endpoint clustering (union-find over the 2*E endpoints) ---
-    endpoints: List[Tuple[int, int, float, float]] = []  # (edge_idx, which 0/1, x, y)
-    for e, pool in enumerate(edge_pools):
-        endpoints.append((e, 0, pool[0][0], pool[0][1]))
-        endpoints.append((e, 1, pool[-1][0], pool[-1][1]))
-
-    parent = list(range(len(endpoints)))
-
-    def find(a: int) -> int:
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = parent[a]
-        return a
-
-    tol2 = snap_tolerance_m * snap_tolerance_m
-    for i in range(len(endpoints)):
-        for j in range(i + 1, len(endpoints)):
-            dx = endpoints[i][2] - endpoints[j][2]
-            dy = endpoints[i][3] - endpoints[j][3]
-            if dx * dx + dy * dy <= tol2:
-                parent[find(i)] = find(j)
-
-    # --- assign vertex ids (shared vertex per endpoint cluster, fresh id per interior pt) ---
+    # --- vertices: every pool point is its own vertex, owned by exactly one edge ---
+    # Junction endpoints are NOT merged: each edge keeps its own endpoint vertices, so a vertex
+    # (and thus the DP state) always knows which edge it lies on. Connectivity is added as
+    # directed inter-edge arcs below.
     vx: List[float] = []
     vy: List[float] = []
     is_node: List[bool] = []
     is_endpoint: List[bool] = []
-    cluster_vertex: Dict[int, int] = {}
-
-    def endpoint_vertex(ep_index: int) -> int:
-        root = find(ep_index)
-        if root not in cluster_vertex:
-            cluster_vertex[root] = len(vx)
-            vx.append(endpoints[ep_index][2])
-            vy.append(endpoints[ep_index][3])
-            is_node.append(True)       # endpoints are original nodes
-            is_endpoint.append(True)   # ...and they are edge endpoints (junctions/dead-ends)
-        return cluster_vertex[root]
-
+    vert_edge: List[int] = []
     edge_vertex_lists: List[List[int]] = []
     for e, pool in enumerate(edge_pools):
         m = len(pool)
         vids: List[int] = []
         for k, (px, py, isn) in enumerate(pool):
-            if k == 0:
-                vid = endpoint_vertex(e * 2 + 0)
-            elif k == m - 1:
-                vid = endpoint_vertex(e * 2 + 1)
-            else:
-                vid = len(vx)
-                vx.append(px)
-                vy.append(py)
-                is_node.append(bool(isn))
-                is_endpoint.append(False)
-            vids.append(vid)
+            vids.append(len(vx))
+            vx.append(px)
+            vy.append(py)
+            is_node.append(bool(isn))
+            is_endpoint.append(k == 0 or k == m - 1)
+            vert_edge.append(e)
         edge_vertex_lists.append(vids)
 
     V = len(vx)
     pred_arcs: List[List[Arc]] = [[] for _ in range(V)]
     succ_arcs: List[List[Arc]] = [[] for _ in range(V)]
 
-    def add_arc(u: int, w: int, e: int, direction: str) -> None:
-        succ_arcs[u].append((w, e, direction))
-        pred_arcs[w].append((u, e, direction))
+    def add_arc(u: int, w: int) -> None:
+        succ_arcs[u].append(w)
+        pred_arcs[w].append(u)
 
-    for e, vids in enumerate(edge_vertex_lists):
-        is_oneway = edge_ids[e] in oneway
+    # intra-edge arcs: forward (digitized) direction only -- the reverse direction is its own row.
+    for vids in edge_vertex_lists:
         for k in range(len(vids) - 1):
-            u, w = vids[k], vids[k + 1]
-            if u == w:
+            if vids[k] != vids[k + 1]:
+                add_arc(vids[k], vids[k + 1])
+
+    # inter-edge arcs: one edge's END -> another edge's START where they coincide within the snap
+    # tolerance (head-to-tail). This is the directed junction crossing; no backward/U-turn arcs.
+    tol2 = snap_tolerance_m * snap_tolerance_m
+    starts = [vids[0] for vids in edge_vertex_lists]
+    ends = [vids[-1] for vids in edge_vertex_lists]
+    for eu, u in enumerate(ends):
+        for ew, w in enumerate(starts):
+            if eu == ew:
                 continue
-            add_arc(u, w, e, "forward")
-            if not is_oneway:
-                add_arc(w, u, e, "backward")
+            dx = vx[u] - vx[w]
+            dy = vy[u] - vy[w]
+            if dx * dx + dy * dy <= tol2:
+                add_arc(u, w)
 
     # total length (m) of each B-edge (from its densified pool, which includes the endpoints)
     edge_len = []
@@ -288,26 +271,12 @@ def build_local_digraph(
     return LocalBGraph(np.asarray(vx, float), np.asarray(vy, float),
                        pred_arcs, succ_arcs, edge_ids, V,
                        np.asarray(is_node, bool), np.asarray(is_endpoint, bool),
-                       b_raw_nodes, edge_len)
+                       np.asarray(vert_edge, int), b_raw_nodes, edge_len)
 
 
 # --------------------------------------------------------------------------------------
 # Graph-DTW alignment (the dynamic table)
 # --------------------------------------------------------------------------------------
-def _collapse_route(crossed: List[Tuple[int, str]], edge_ids: List[Any]) -> List[RouteEntry]:
-    """Collapse the backtracked sequence of crossed arcs (edge_index, direction) into an
-    ordered route of distinct B-edge runs: ``[(b_edge_id, direction, seq), ...]``."""
-    route: List[RouteEntry] = []
-    seq = 0
-    for e, direction in crossed:
-        eid = edge_ids[e]
-        if route and route[-1][0] == eid:
-            continue  # same edge still being traversed
-        route.append((eid, direction, seq))
-        seq += 1
-    return route
-
-
 def graph_dtw_align(
     coords_a: Sequence[Coord],
     gb: LocalBGraph,
@@ -363,18 +332,18 @@ def graph_dtw_align(
     e0 = emit(0)
     for v in range(V):
         D[0][v] = e0[v]
-        back[0][v] = ("START", -1, -1, "")
+        back[0][v] = ("START", -1)
 
     for i in range(1, N):
         ei = emit(i)
         # base = vertical + diagonal (depend only on row i-1)
         for v in range(V):
             best = D[i - 1][v]
-            bmove: Tuple = ("V", v, -1, "")
-            for (u, e, direction) in gb.pred_arcs[v]:
+            bmove: Tuple = ("V", v)
+            for u in gb.pred_arcs[v]:
                 if D[i - 1][u] < best:
                     best = D[i - 1][u]
-                    bmove = ("D", u, e, direction)
+                    bmove = ("D", u)
             D[i][v] = ei[v] + best
             back[i][v] = bmove
 
@@ -385,27 +354,23 @@ def graph_dtw_align(
             c, v = heapq.heappop(heap)
             if c > D[i][v]:
                 continue
-            for (w, e, direction) in gb.succ_arcs[v]:
+            for w in gb.succ_arcs[v]:
                 cand = D[i][v] + ei[w]
                 if cand < D[i][w]:
                     D[i][w] = cand
-                    back[i][w] = ("H", v, e, direction)
+                    back[i][w] = ("H", v)
                     heapq.heappush(heap, (cand, w))
 
     v_best = int(np.argmin(D[N - 1]))
     if not np.isfinite(D[N - 1][v_best]):
         return INF, [], _inf_metrics()
 
-    # Backtrack -> per-step (a_index, vertex, edge-the-vertex-sits-on, direction).
+    # Backtrack -> ordered (a_index, vertex) pairs.
     pairs: List[Tuple[int, int]] = []
-    step_e: List[int] = []      # edge index of the arc INTO v (-1 for vertical/START)
-    step_dir: List[str] = []
     i, v = N - 1, v_best
     while True:
-        move, u, e, direction = back[i][v]
+        move, u = back[i][v]
         pairs.append((i, v))
-        step_e.append(e)
-        step_dir.append(direction)
         if move == "START":
             break
         if move == "V":
@@ -415,22 +380,11 @@ def graph_dtw_align(
             v = u
         else:  # "H"
             v = u
-    pairs.reverse(); step_e.reverse(); step_dir.reverse()
+    pairs.reverse()
 
-    # A vertical/START step has no arc (-1); it sits on the edge it arrived on -> forward-fill,
-    # then back-fill the leading steps from the first real edge.
-    last = -1
-    for k in range(len(step_e)):
-        if step_e[k] != -1:
-            last = step_e[k]
-        elif last != -1:
-            step_e[k] = last
-    first_valid = next((x for x in step_e if x != -1), -1)
-    for k in range(len(step_e)):
-        if step_e[k] == -1:
-            step_e[k] = first_valid
-        else:
-            break
+    # The edge each step sits on is read DIRECTLY from the vertex (``vert_edge``) -- no arc
+    # inference, no shared-junction ambiguity: every vertex belongs to exactly one edge.
+    step_e: List[int] = [int(gb.vert_edge[v]) for (_i, v) in pairs]
 
     warping_all = [((float(ax[i]), float(ay[i])), (float(vx[v]), float(vy[v]))) for (i, v) in pairs]
 
@@ -454,17 +408,43 @@ def graph_dtw_align(
             L += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
         return L
 
-    # Trim spurious free-entry/exit fragments: leading/trailing edges that cover ~0 m of A
-    # (the start/end vertex snapping onto a crossing edge). Only the ends are trimmed.
+    def _b_len(gk: int, gj: int) -> float:
+        # B-length actually traversed by a group (physical movement along the edge).
+        L = 0.0
+        for t in range(max(gk, 1), gj + 1):
+            (_0, pb0), (_1, pb1) = warping_all[t - 1], warping_all[t]
+            L += float(np.hypot(pb1[0] - pb0[0], pb1[1] - pb0[1]))
+        return L
+
     g0, g1 = 0, len(groups) - 1
-    if trim_ends_m and len(groups) > 1:
+    # Always drop a leading/trailing edge with ZERO B traversal: A merely touches that edge's
+    # boundary vertex at a junction (its end overhangs onto the next edge's start) but never walks
+    # it -- it is overhang, not a match. Without this the route lists an extra edge the picture
+    # shows no traversal of (B-used == 0%).
+    while g0 < g1 and _b_len(groups[g0][0], groups[g0][1]) <= 1e-9:
+        g0 += 1
+    while g1 > g0 and _b_len(groups[g1][0], groups[g1][1]) <= 1e-9:
+        g1 -= 1
+    # Optional further trim of leading/trailing fragments by A-length covered (off by default).
+    if trim_ends_m and g1 > g0:
         while g0 < g1 and _a_len(groups[g0][0], groups[g0][1]) < trim_ends_m:
             g0 += 1
         while g1 > g0 and _a_len(groups[g1][0], groups[g1][1]) < trim_ends_m:
             g1 -= 1
     lo, hi = groups[g0][0], groups[g1][1]
 
+    # If B is never actually traversed (A only touches boundary vertices -- e.g. a stub that ends
+    # at, but never runs along, a B-edge), there is no real match -> NO_MATCH.
+    if _b_len(lo, hi) <= 1e-9:
+        return INF, [], _inf_metrics()
+
     drift_all = [float(np.hypot(pa[0] - pb[0], pa[1] - pb[1])) for pa, pb in warping_all]
+
+    # Coverage = all of A EXCEPT the leading run on the route's entry vertex and the trailing run
+    # on its terminal vertex -- i.e. only where A OVERHANGS past the route's first/last B-edge
+    # endpoint. A mid-corridor stall (A denser than B, so the B vertex momentarily waits) is still
+    # COVERED -- it is not overhang. ``ve`` / ``vt`` are the entry / terminal B vertices.
+    ve, vt = pairs[lo][1], pairs[hi][1]
 
     # --- per-B-edge breakdown, on the FULL warping with absolute indices (so the A-segment that
     # bridges a trimmed end edge to the first/last KEPT edge is still counted). ---
@@ -475,18 +455,18 @@ def graph_dtw_align(
         if not (0 <= e < len(gb.edge_ids)):
             continue  # degenerate group: A matched a vertex without crossing any B-arc (no B-edge)
         seg = drift_all[k:j + 1]
-        # a_len = A covered by this edge: count an A-segment only where the matched B vertex
-        # ADVANCES. Where consecutive A-points collapse onto a single vertex (A overhangs past the
-        # first/last edge's endpoint), B does not move -> that A-length is uncovered.
-        # b_len = B traversed (sum of B movement); it is 0 on a collapse, so a fully-walked B-edge
+        # a_len = A covered by this edge: an A-segment counts UNLESS it is leading overhang (B still
+        # on the entry vertex ``ve``) or trailing overhang (B already settled on the terminal vertex
+        # ``vt``). b_len = B traversed (sum of B movement); 0 on a collapse, so a fully-walked B-edge
         # is still 100% used.
         a_len = b_len = 0.0
         for t in range(max(k, 1), j + 1):
             (pa0, pb0), (pa1, pb1) = warping_all[t - 1], warping_all[t]
             b_len += float(np.hypot(pb1[0] - pb0[0], pb1[1] - pb0[1]))
-            if pairs[t][1] != pairs[t - 1][1]:        # B vertex advanced -> A here is covered
+            is_lead = pairs[t][1] == ve            # B has not left the entry vertex yet
+            is_trail = pairs[t - 1][1] == vt       # B has already settled on the terminal vertex
+            if not is_lead and not is_trail:
                 a_len += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
-        directions = [step_dir[t] for t in range(k, j + 1) if step_dir[t]]
         if j > k:
             (a_s, b_s) = warping_all[k]
             (a_e, b_e) = warping_all[j]
@@ -498,7 +478,7 @@ def graph_dtw_align(
         b_cover = 100.0 * b_len / b_edge_len if b_edge_len > 0 else 0.0
         route_edges.append({
             "dest_id": gb.edge_ids[e],
-            "direction": directions[0] if directions else "forward",
+            "direction": "forward",          # directed table: every edge is traversed start->end
             "seq": seq,                      # order of this B-edge along the route (0,1,2,...)
             "match_dist_avg": float(np.mean(seg)) if seg else float("inf"),
             "match_dist_max": float(np.max(seg)) if seg else float("inf"),
@@ -568,7 +548,6 @@ def match_edge_to_bgraph(
     *,
     snap_tolerance_m: float = 0.75,
     step_meters: float = 10.0,
-    oneway_ids: Optional[Sequence[Any]] = None,
     trim_ends_m: float = 0.0,
 ) -> Dict[str, Any]:
     """Map-match one A-edge to the local directed graph of nearby B-edges (continuous,
@@ -586,13 +565,11 @@ def match_edge_to_bgraph(
         List of ``(b_edge_id, shapely LineString in the same CRS)`` -- the candidate B-edges
         near this A-edge (e.g. one ``groupby('id_a')`` group of ``generate_candidate_pairs``).
     snap_tolerance_m:
-        Endpoints of different B-edges within this distance are treated as a shared junction.
+        Endpoints of different B-edges within this distance are joined head-to-tail (one edge's
+        end -> another's start) into a junction crossing.
     step_meters:
         Optional gap-fill resolution added on top of the node+projection pools (set falsy to use
         pure node+projection pools like ``dtw_align``).
-    oneway_ids:
-        Optional collection of B-edge ids that may only be traversed in their digitized
-        direction (no "backward" arcs).
     trim_ends_m:
         Default ``0`` (off). Optional cleanup that *removes* a leading/trailing route edge
         covering less than this many meters of A. Not a gap-filler (use ``snap_tolerance_m`` for
@@ -605,8 +582,7 @@ def match_edge_to_bgraph(
     :class:`LocalBGraph`, handy for visualization).
     """
     gb = build_local_digraph(
-        b_edges, coords_a, snap_tolerance_m=snap_tolerance_m,
-        step_meters=step_meters, oneway_ids=oneway_ids,
+        b_edges, coords_a, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
     )
     avg, warping, metrics = graph_dtw_align(
         coords_a, gb, step_meters=step_meters, trim_ends_m=trim_ends_m)
@@ -628,10 +604,9 @@ class GraphDTWMatcher:
     """
 
     def __init__(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                 oneway_ids: Optional[Sequence[Any]] = None, trim_ends_m: float = 0.0):
+                 trim_ends_m: float = 0.0):
         self.snap_tolerance_m = snap_tolerance_m
         self.step_meters = step_meters
-        self.oneway_ids = oneway_ids
         self.trim_ends_m = trim_ends_m
 
     def match_edge(self, coords_a: Sequence[Coord],
@@ -640,6 +615,5 @@ class GraphDTWMatcher:
             coords_a, b_edges,
             snap_tolerance_m=self.snap_tolerance_m,
             step_meters=self.step_meters,
-            oneway_ids=self.oneway_ids,
             trim_ends_m=self.trim_ends_m,
         )
