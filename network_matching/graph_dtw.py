@@ -478,7 +478,10 @@ def graph_dtw_align(
     # --- divide the result per B-edge the route passes through (kept groups, re-sequenced) ---
     kept_groups = [(gk - lo, gj - lo, ge) for (gk, gj, ge) in groups[g0:g1 + 1]]
     route_edges: List[Dict[str, Any]] = []
-    for seq, (k, j, e) in enumerate(kept_groups):
+    seq = 0
+    for (k, j, e) in kept_groups:
+        if not (0 <= e < len(gb.edge_ids)):
+            continue  # degenerate group: A matched a vertex without crossing any B-arc (no B-edge)
         seg = drift[k:j + 1]
         a_len = b_len = 0.0
         for t in range(max(k, 1), j + 1):
@@ -496,7 +499,7 @@ def graph_dtw_align(
         b_edge_len = gb.edge_len[e] if 0 <= e < len(gb.edge_len) else 0.0
         b_cover = 100.0 * b_len / b_edge_len if b_edge_len > 0 else 0.0
         route_edges.append({
-            "dest_id": gb.edge_ids[e] if 0 <= e < len(gb.edge_ids) else None,
+            "dest_id": gb.edge_ids[e],
             "direction": directions[0] if directions else "forward",
             "seq": seq,                      # order of this B-edge along the route (0,1,2,...)
             "match_dist_avg": float(np.mean(seg)) if seg else float("inf"),
@@ -509,6 +512,7 @@ def graph_dtw_align(
             "bearing_diff": edge_bearing,
             "n_points": len(seg),
         })
+        seq += 1
 
     route = [(re["dest_id"], re["direction"], re["seq"]) for re in route_edges]
     matched_len = float(sum(re["matched_len"] for re in route_edges))

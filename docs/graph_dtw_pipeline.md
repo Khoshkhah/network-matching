@@ -142,6 +142,14 @@ The result **divided per B-edge** (`seq` = order of matching along the route).
 | `route_match_dist`              | whole-route average match distance (repeated) |
 | `n_edges`                       | whole-route edge count (repeated) |
 
+### Column types
+
+Both tables are returned with a fixed dtype schema (`DuckDBMapMatcher.ROUTES_LONG_DTYPES` /
+`ROUTES_SUMMARY_DTYPES`). Ids and counts are **nullable `Int64`** (so `dest_id` is `580`, never
+`580.0`, and a missing value never upcasts an integer column to float); distances/percentages are
+`float64`; `direction`/`match_type` are `string`; `dest_ids` (a list) and `route_geom_wkt` stay
+`object`. `NO_MATCH` rows carry `<NA>` / `NaN`.
+
 ---
 
 ## 5. Save

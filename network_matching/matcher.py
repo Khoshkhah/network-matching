@@ -695,6 +695,27 @@ class DuckDBMapMatcher:
                               "max_dtw_distance", "min_dtw_distance", "bearing_diff",
                               "overlap_pct", "matched_len", "route_geom_wkt", "match_type"]
 
+    # Column type schema for the two output tables (nullable Int64 for ids/counts so a missing
+    # value never silently upcasts an integer column to float, e.g. dest_id 580 not 580.0).
+    ROUTES_LONG_DTYPES = {
+        "source_id": "Int64", "dest_id": "Int64", "seq": "Int64", "direction": "string",
+        "edge_match_dist_avg": "float64", "edge_match_dist_max": "float64",
+        "edge_match_dist_min": "float64", "edge_a_len": "float64", "edge_cover_pct": "float64",
+        "edge_matched_len": "float64", "edge_b_len": "float64", "edge_b_used_pct": "float64",
+        "edge_bearing_diff": "float64", "n_points": "Int64", "route_match_dist": "float64",
+        "n_edges": "Int64",
+    }
+    ROUTES_SUMMARY_DTYPES = {
+        "source_id": "Int64", "n_edges": "Int64", "dtw_distance": "float64",
+        "max_dtw_distance": "float64", "min_dtw_distance": "float64", "bearing_diff": "float64",
+        "overlap_pct": "Int64", "matched_len": "float64", "match_type": "string",
+    }  # dest_ids (list) and route_geom_wkt (WKT/None) stay object
+
+    @staticmethod
+    def _apply_dtypes(df: pd.DataFrame, dtypes: dict) -> pd.DataFrame:
+        present = {c: t for c, t in dtypes.items() if c in df.columns}
+        return df.astype(present) if not df.empty else df
+
     def compute_graph_dtw_routes(self, candidates_df: Optional[pd.DataFrame] = None,
                                  snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
                                  oneway_ids=None, trim_ends_m: float = 1.0, n_jobs: int = 1):
@@ -836,6 +857,10 @@ class DuckDBMapMatcher:
         logger.info("graph-DTW: %d matched (%d multi-edge routes), %d NO_MATCH; "
                     "%d route-edge rows; total %.1fs",
                     n_matched, n_multi, n_nomatch, len(routes_long), time.time() - t_start)
+
+        # Enforce the column-type schema (stable dtypes; ids stay Int64, never float).
+        routes_long = self._apply_dtypes(routes_long, self.ROUTES_LONG_DTYPES)
+        routes_summary = self._apply_dtypes(routes_summary, self.ROUTES_SUMMARY_DTYPES)
         return routes_long, routes_summary
 
     def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
