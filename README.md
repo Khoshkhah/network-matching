@@ -56,8 +56,8 @@ routes_long, routes_summary = m.match_routes(n_jobs=-1)   # parallel over A-edge
   of matching), `edge_cover_pct` (% of A covered), `edge_b_used_pct` (% of the B-edge used), and the
   per-edge match distance and bearing.
 
-**Key parameters:** `snap_tolerance_m` (junction snapping), `step_meters` (sampling density),
-`trim_ends_m` (drop free-entry/exit junk fragments), `n_jobs` (parallel cores).
+**Key parameters:** `snap_tolerance_m` (junction snapping / connectivity), `step_meters` (sampling
+density), `n_jobs` (parallel cores). (`trim_ends_m`, an optional end-edge remover, is off by default.)
 
 `match_routes` returns a route for every A-edge; keep only confident matches by filtering on
 thresholds (failures become `NO_MATCH`):

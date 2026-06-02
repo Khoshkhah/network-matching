@@ -312,7 +312,7 @@ def graph_dtw_align(
     coords_a: Sequence[Coord],
     gb: LocalBGraph,
     step_meters: float = 10.0,
-    trim_ends_m: float = 1.0,
+    trim_ends_m: float = 0.0,
 ) -> Tuple[float, List[Tuple[Coord, Coord]], Dict[str, Any]]:
     """Align A-edge ``coords_a`` to the local directed graph ``gb`` with projection-enriched
     points on both sides.
@@ -464,34 +464,26 @@ def graph_dtw_align(
             g1 -= 1
     lo, hi = groups[g0][0], groups[g1][1]
 
-    # Restrict the warping path to the kept span.
-    pairs = pairs[lo:hi + 1]
-    step_dir = step_dir[lo:hi + 1]
-    step_e_kept = step_e[lo:hi + 1]
-    warping = warping_all[lo:hi + 1]
-    warp_vertices = [v for (_i, v) in pairs]
-    warp_a_is_node = [a_is_node[i] for (i, _v) in pairs]
-    warp_edge = [(gb.edge_ids[e] if 0 <= e < len(gb.edge_ids) else None) for e in step_e_kept]
-    drift = [float(np.hypot(pa[0] - pb[0], pa[1] - pb[1])) for pa, pb in warping]
-    average = float(np.mean(drift)) if drift else float("inf")
+    drift_all = [float(np.hypot(pa[0] - pb[0], pa[1] - pb[1])) for pa, pb in warping_all]
 
-    # --- divide the result per B-edge the route passes through (kept groups, re-sequenced) ---
-    kept_groups = [(gk - lo, gj - lo, ge) for (gk, gj, ge) in groups[g0:g1 + 1]]
+    # --- per-B-edge breakdown, on the FULL warping with absolute indices (so the A-segment that
+    # bridges a trimmed end edge to the first/last KEPT edge is still counted). ---
+    kept_groups = groups[g0:g1 + 1]
     route_edges: List[Dict[str, Any]] = []
     seq = 0
     for (k, j, e) in kept_groups:
         if not (0 <= e < len(gb.edge_ids)):
             continue  # degenerate group: A matched a vertex without crossing any B-arc (no B-edge)
-        seg = drift[k:j + 1]
+        seg = drift_all[k:j + 1]
         a_len = b_len = 0.0
         for t in range(max(k, 1), j + 1):
-            (pa0, pb0), (pa1, pb1) = warping[t - 1], warping[t]
+            (pa0, pb0), (pa1, pb1) = warping_all[t - 1], warping_all[t]
             a_len += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
             b_len += float(np.hypot(pb1[0] - pb0[0], pb1[1] - pb0[1]))
         directions = [step_dir[t] for t in range(k, j + 1) if step_dir[t]]
         if j > k:
-            (a_s, b_s) = warping[k]
-            (a_e, b_e) = warping[j]
+            (a_s, b_s) = warping_all[k]
+            (a_e, b_e) = warping_all[j]
             bd = abs(_bearing(a_s, a_e) - _bearing(b_s, b_e))
             edge_bearing = float(min(bd, 360 - bd))
         else:
@@ -514,24 +506,25 @@ def graph_dtw_align(
         })
         seq += 1
 
-    # The A-segments that bridge a trimmed junk end edge to the first/last KEPT edge are real
-    # coverage (their destination is the kept edge) -- attribute them to the kept edge so A
-    # coverage stays ~100%. (The DP always spans all of A; only the junk edge's own tiny A-span
-    # is dropped.) Without this, slicing the warping would lose that bridging segment entirely.
-    if route_edges:
-        if lo > 0:
-            (pa0, _b0), (pa1, _b1) = warping_all[lo - 1], warping_all[lo]
-            route_edges[0]["a_len"] += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
-        if hi < len(warping_all) - 1:
-            (pa0, _b0), (pa1, _b1) = warping_all[hi], warping_all[hi + 1]
-            route_edges[-1]["a_len"] += float(np.hypot(pa1[0] - pa0[0], pa1[1] - pa0[1]))
-
     route = [(re["dest_id"], re["direction"], re["seq"]) for re in route_edges]
     matched_len = float(sum(re["matched_len"] for re in route_edges))
 
+    # The warping path spans the entire A-edge (the DP runs a_0 .. a_{N-1}), so with end-trimming
+    # off the route covers all of A -> overlap_pct = 100. It drops only when trim_ends_m removes an
+    # end edge (the removed edge's A-length is then not in the kept route).
     total_a_len = LineString([p[:2] for p in a_pool]).length if N > 1 else 0.0
     kept_a = float(sum(re["a_len"] for re in route_edges))
     overlap_pct = int(min(100, round(100.0 * kept_a / total_a_len))) if total_a_len > 0 else 0
+
+    # Returned warping path / per-step arrays: sliced to the kept span for clean visualization.
+    pairs_k = pairs[lo:hi + 1]
+    step_e_kept = step_e[lo:hi + 1]
+    warping = warping_all[lo:hi + 1]
+    warp_vertices = [v for (_i, v) in pairs_k]
+    warp_a_is_node = [a_is_node[i] for (i, _v) in pairs_k]
+    warp_edge = [(gb.edge_ids[e] if 0 <= e < len(gb.edge_ids) else None) for e in step_e_kept]
+    drift = drift_all[lo:hi + 1]
+    average = float(np.mean(drift)) if drift else float("inf")
 
     a0, a1 = warping[0][0], warping[-1][0]
     b0, b1 = warping[0][1], warping[-1][1]
@@ -566,7 +559,7 @@ def match_edge_to_bgraph(
     snap_tolerance_m: float = 0.75,
     step_meters: float = 10.0,
     oneway_ids: Optional[Sequence[Any]] = None,
-    trim_ends_m: float = 1.0,
+    trim_ends_m: float = 0.0,
 ) -> Dict[str, Any]:
     """Map-match one A-edge to the local directed graph of nearby B-edges (continuous,
     projection-based DTW).
@@ -591,8 +584,9 @@ def match_edge_to_bgraph(
         Optional collection of B-edge ids that may only be traversed in their digitized
         direction (no "backward" arcs).
     trim_ends_m:
-        Drop leading/trailing route-edges that cover less than this many meters of A (spurious
-        free-entry/exit fragments). Set 0 to disable.
+        Default ``0`` (off). Optional cleanup that *removes* a leading/trailing route edge
+        covering less than this many meters of A. Not a gap-filler (use ``snap_tolerance_m`` for
+        connectivity); off by default because it can delete legitimate corridor edges.
 
     Returns
     -------
@@ -624,7 +618,7 @@ class GraphDTWMatcher:
     """
 
     def __init__(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                 oneway_ids: Optional[Sequence[Any]] = None, trim_ends_m: float = 1.0):
+                 oneway_ids: Optional[Sequence[Any]] = None, trim_ends_m: float = 0.0):
         self.snap_tolerance_m = snap_tolerance_m
         self.step_meters = step_meters
         self.oneway_ids = oneway_ids

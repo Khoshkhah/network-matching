@@ -128,11 +128,13 @@ same B-edge are collapsed into one **route entry**, giving the **route**
 
 ### 3.3 End trimming + determinism
 
-- **Trim free-entry/exit junk** (`trim_ends_m`, default 1 m). Because entry/exit are free, the
-  very first/last A sample can snap onto a *crossing* B-edge, adding a tiny leading/trailing route
-  fragment that covers ≈0 m of A (often at an absurd bearing). Leading/trailing route-edges whose
-  A-coverage is below `trim_ends_m` are dropped; `overlap_pct` is then the **kept** A-coverage
-  (so it can be <100, e.g. 98). Set `trim_ends_m=0` to disable.
+- **End trimming (`trim_ends_m`, default `0` = OFF).** An optional cleanup that *removes* a
+  leading/trailing route edge from the route list when it covers less than `trim_ends_m` of A
+  (intended for a free-entry/exit snap onto a crossing B-edge). It is **off by default** because
+  on real data A's points often cluster near a junction, so a legitimate corridor edge can have a
+  tiny per-edge A-span and be removed by mistake. It does **not** fill gaps — connectivity between
+  near-but-unequal endpoints is handled by `snap_tolerance_m`, not this. With the default the full
+  DTW route is kept and the warping path spans all of A.
 - **Deterministic.** Candidate B-edges are sorted by id before the graph is built, so vertex
   numbering — and therefore every DP tie-break — is stable regardless of the order candidate rows
   arrive in. The same input always yields the same route.
@@ -235,8 +237,7 @@ m = DuckDBMapMatcher.from_wkt_csv(
 # m = DuckDBMapMatcher.from_geofiles("osm.gpkg", "nvdb.gpkg",
 #         id_a="edge_id", id_b="directed_id", utm_srid=3006, src_srid=3006)
 
-routes_long, routes_summary = m.match_routes(snap_tolerance_m=0.5, step_meters=10,
-                                             trim_ends_m=1.0, n_jobs=-1)
+routes_long, routes_summary = m.match_routes(snap_tolerance_m=0.5, step_meters=10, n_jobs=-1)
 ```
 
 (The manual path — `DuckDBMapMatcher()` + `configure_sources(...)` + `set_parameters(...)` — still
@@ -250,7 +251,7 @@ then an independent unit fanned out with **joblib**.
 |---------------------|---------|
 | `snap_tolerance_m`  | B-edge endpoints within this distance are merged into one **junction** vertex — how the route crosses between connected B-edges (connectivity-inference tolerance). |
 | `step_meters`       | **Gap-fill density**: a vertex every ~N m on top of the node+projection pools (default 10). Smaller = denser/slower and shifts which route wins (cost is count-weighted); `0` = projection-only, fastest. |
-| `trim_ends_m`       | Drop leading/trailing route-edges covering **< this many meters of A** (spurious free-entry/exit fragments). `0` = keep all. |
+| `trim_ends_m`       | **Default `0` (off).** Optional: *remove* a leading/trailing route edge covering **< this many meters of A**. Not a gap-filler (that is `snap_tolerance_m`); off by default because it can delete legitimate corridor edges. |
 | `oneway_ids`        | B-edge ids walkable only in their digitized direction (no `backward` arc). Default: all bidirectional. |
 | `n_jobs`            | Parallel workers over A-edges (joblib): `-1` = all cores, `1` = serial. |
 | `max_distance`      | (set via the initializer / `set_parameters`) candidate search radius for `ST_DWithin`. |
@@ -282,8 +283,10 @@ network map via [`scripts/graph_dtw_map.py`](../scripts/graph_dtw_map.py).
   snap tolerance; candidate edges are sorted by id so results are **deterministic**.
 - B-edges are walkable in **both directions** by default (geometry-only conflation); one-way
   edges can be restricted to their digitized direction via `oneway_ids`.
-- A is matched in full, then `trim_ends_m` removes spurious ≈0%-coverage end fragments, so
-  `overlap_pct` reflects the **kept** coverage. Match distance is the primary quality signal.
+- A is matched **in full** — the warping path spans the entire A-edge, so `overlap_pct` is 100%
+  except for a genuine **dead-end** (A's road extends past the end of B's corridor, where A
+  advances while the matched B point is stuck at a terminal vertex). Match distance is the primary
+  quality signal. (`trim_ends_m`, an optional end-edge remover, is **off by default**.)
 - **Cost is count-weighted** (a sum over discrete vertices), so route choice depends on
   `step_meters` density; a length-weighted / per-step-projection objective (density-independent)
   and symmetric (B→A) reconciliation remain future work.

@@ -719,7 +719,7 @@ class DuckDBMapMatcher:
 
     def compute_graph_dtw_routes(self, candidates_df: Optional[pd.DataFrame] = None,
                                  snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                                 oneway_ids=None, trim_ends_m: float = 1.0, n_jobs: int = 1):
+                                 oneway_ids=None, trim_ends_m: float = 0.0, n_jobs: int = 1):
         """Route-based matching: align each Source-A edge to the local directed graph of its
         candidate B-edges (graph-DTW), returning one connected B-edge route per A-edge.
 
@@ -865,7 +865,7 @@ class DuckDBMapMatcher:
         return routes_long, routes_summary
 
     def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                     oneway_ids=None, trim_ends_m: float = 1.0, n_jobs: int = 1):
+                     oneway_ids=None, trim_ends_m: float = 0.0, n_jobs: int = 1):
         """Run the full route-based (graph-DTW) pipeline: generate candidates, then align each
         Source-A edge to the local B-graph. Returns ``(routes_long, routes_summary)`` -- the
         graph-DTW analogue of :meth:`match`. See :meth:`compute_graph_dtw_routes`."""
@@ -897,8 +897,8 @@ class DuckDBMapMatcher:
             Drop routes whose whole-route bearing difference (degrees) exceeds this.
         min_overlap_pct:
             Drop routes covering less than this percent of the A-edge (``overlap_pct``). Graph-DTW
-            matches the whole A-edge, so coverage is usually ~100 -- but end-trimming and partial
-            matches can lower it, so this catches under-covered A-edges.
+            matches the whole A-edge, so coverage is ~100 except for a **dead-end** route (A's road
+            extends past the end of B's corridor); this catches those.
 
         Returns
         -------

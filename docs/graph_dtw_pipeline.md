@@ -57,7 +57,7 @@ Inputs live in [`data/`](../data/); see §7 for the folder layout.
 
 ```python
 routes_long, routes_summary = m.match_routes(
-    snap_tolerance_m=0.5, step_meters=10, trim_ends_m=1.0, n_jobs=-1)
+    snap_tolerance_m=0.5, step_meters=10, n_jobs=-1)
 ```
 
 ### Steps (what `match_routes` does)
@@ -70,8 +70,8 @@ routes_long, routes_summary = m.match_routes(
 3. **Graph-DTW per A-edge** — `match_edge_to_bgraph` builds the local directed B-graph and aligns
    A to it (the algorithm in [`graph_dtw_matching.md`](graph_dtw_matching.md)). Runs in parallel
    over A-edges with **joblib** (`n_jobs=-1` = all cores).
-4. **Trim** — leading/trailing route fragments covering `< trim_ends_m` of A are dropped.
-5. **Assemble** — results become the two tables; every A-edge appears (unmatched as `NO_MATCH`).
+4. **Assemble** — results become the two tables; every A-edge appears (unmatched as `NO_MATCH`).
+   (`trim_ends_m > 0` would optionally remove a junk end edge here; it is **off by default**.)
 
 ### Parameters
 
@@ -80,7 +80,7 @@ routes_long, routes_summary = m.match_routes(
 | `max_distance`      | candidate search radius (m) for `ST_DWithin` (set in the initializer / `set_parameters`). |
 | `snap_tolerance_m`  | B-edge endpoints within this distance are merged into one **junction** vertex — how the route crosses between connected B-edges. |
 | `step_meters`       | gap-fill density: a vertex every ~N m on top of node+projection pools (default 10). Smaller = denser/slower; `0` = projection-only (fastest). |
-| `trim_ends_m`       | drop leading/trailing route-edges covering `<` this many meters of A (free-entry/exit junk). `0` = keep all. |
+| `trim_ends_m`       | **default `0` (off).** optional: *remove* a leading/trailing route edge covering `<` this many m of A. Not a gap-filler (use `snap_tolerance_m`); off by default as it can delete real corridor edges. |
 | `oneway_ids`        | B-edge ids walkable only in their digitized direction. Default: bidirectional. |
 | `n_jobs`            | parallel workers over A-edges: `-1` = all cores, `1` = serial. |
 
@@ -100,8 +100,8 @@ routes_summary, routes_long = m.resolve_routes(
 
 Any threshold left `None` is not applied. A route that fails is reset to a `NO_MATCH` row (route
 cleared, metrics `NaN`) and its rows are removed from `routes_long`; every A-edge still appears.
-(Coverage is usually ~100 since graph-DTW matches the whole A-edge, but end-trimming / partial
-matches can lower it — `min_overlap_pct` catches those under-covered A-edges.)
+(Coverage is ~100 since graph-DTW matches the whole A-edge; `min_overlap_pct` is only meaningful
+for **dead-end** routes — where A's road extends past the end of B's corridor, so coverage < 100.)
 
 ---
 
@@ -117,7 +117,7 @@ matches can lower it — `min_overlap_pct` catches those under-covered A-edges.)
 | `dtw_distance`                  | average match distance (m) over the whole edge — main quality signal |
 | `max_dtw_distance` / `min_dtw_distance` | max / min match distance |
 | `bearing_diff`                  | whole-route bearing difference (degrees) |
-| `overlap_pct`                   | % of A covered by the kept route (≈100; lower if ends trimmed) |
+| `overlap_pct`                   | % of A covered by the route (≈100; < 100 only for a dead-end — A extends past B's corridor) |
 | `matched_len`                   | total B-length (m) traversed |
 | `route_geom_wkt`                | matched corridor geometry, WKT in **UTM (`utm_srid`)** |
 | `match_type`                    | `1:1` (single edge) · `1:N_ROUTE` (multi-edge) · `NO_MATCH` |
@@ -207,7 +207,8 @@ the package installed editable + a registered Jupyter kernel "Python (network-ma
 
 ## 8. Scope
 
-Directed A→B; deterministic (candidate edges sorted by id); A fully matched then end-trimmed.
+Directed A→B; deterministic (candidate edges sorted by id); A is matched in full (end-trimming off
+by default).
 The cost is count-weighted (route choice depends on `step_meters` density); a density-independent
 objective and symmetric (B→A) reconciliation are future work — see
 [`graph_dtw_matching.md`](graph_dtw_matching.md) §7.
