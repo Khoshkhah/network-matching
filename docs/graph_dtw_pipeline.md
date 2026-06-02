@@ -173,6 +173,10 @@ routes_long.to_csv("output/routes_long.csv", index=False)
   `snap_tolerance_m`.
 - **Whole-network map** → [`scripts/graph_dtw_map.py`](../scripts/graph_dtw_map.py): both networks
   (B shifted), match links coloured by match distance. `python scripts/graph_dtw_map.py`.
+- **Validation map** → [`scripts/graph_dtw_validation_map.py`](../scripts/graph_dtw_validation_map.py):
+  both networks (B shifted) with toggleable layers — A matched / NO_MATCH, B used / unused, and the
+  abnormal overlays (A under-covered, B under-used, B over-used). Plus the
+  [validation notebook](../notebooks/graph_dtw_validation.ipynb) (raw vs resolved coverage report).
 - **Single-edge deep dive** → [`scripts/graph_dtw_edge_detail.py`](../scripts/graph_dtw_edge_detail.py):
   the local subgraph, every point match, and the per-edge breakdown table.
   `python scripts/graph_dtw_edge_detail.py --edge-id 3597`.
