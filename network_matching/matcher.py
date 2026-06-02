@@ -695,18 +695,19 @@ class DuckDBMapMatcher:
                               "max_dtw_distance", "min_dtw_distance", "bearing_diff",
                               "overlap_pct", "matched_len", "route_geom_wkt", "match_type"]
 
-    # Column type schema for the two output tables (nullable Int64 for ids/counts so a missing
-    # value never silently upcasts an integer column to float, e.g. dest_id 580 not 580.0).
+    # Column type schema for the two output tables. Ids/counts are plain int64 -- they are always
+    # present integers (an edge id is never null and never a float). The ONE genuinely nullable
+    # column is routes_summary.overlap_pct (NO_MATCH rows), kept as nullable Int64.
     ROUTES_LONG_DTYPES = {
-        "source_id": "Int64", "dest_id": "Int64", "seq": "Int64", "direction": "string",
+        "source_id": "int64", "dest_id": "int64", "seq": "int64", "direction": "string",
         "edge_match_dist_avg": "float64", "edge_match_dist_max": "float64",
         "edge_match_dist_min": "float64", "edge_a_len": "float64", "edge_cover_pct": "float64",
         "edge_matched_len": "float64", "edge_b_len": "float64", "edge_b_used_pct": "float64",
-        "edge_bearing_diff": "float64", "n_points": "Int64", "route_match_dist": "float64",
-        "n_edges": "Int64",
+        "edge_bearing_diff": "float64", "n_points": "int64", "route_match_dist": "float64",
+        "n_edges": "int64",
     }
     ROUTES_SUMMARY_DTYPES = {
-        "source_id": "Int64", "n_edges": "Int64", "dtw_distance": "float64",
+        "source_id": "int64", "n_edges": "int64", "dtw_distance": "float64",
         "max_dtw_distance": "float64", "min_dtw_distance": "float64", "bearing_diff": "float64",
         "overlap_pct": "Int64", "matched_len": "float64", "match_type": "string",
     }  # dest_ids (list) and route_geom_wkt (WKT/None) stay object

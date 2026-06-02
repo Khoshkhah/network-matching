@@ -145,10 +145,11 @@ The result **divided per B-edge** (`seq` = order of matching along the route).
 ### Column types
 
 Both tables are returned with a fixed dtype schema (`DuckDBMapMatcher.ROUTES_LONG_DTYPES` /
-`ROUTES_SUMMARY_DTYPES`). Ids and counts are **nullable `Int64`** (so `dest_id` is `580`, never
-`580.0`, and a missing value never upcasts an integer column to float); distances/percentages are
+`ROUTES_SUMMARY_DTYPES`). Ids and counts are plain **`int64`** — always-present integers (an edge
+id is never null and never a float, so `dest_id` is `580`, not `580.0`); distances/percentages are
 `float64`; `direction`/`match_type` are `string`; `dest_ids` (a list) and `route_geom_wkt` stay
-`object`. `NO_MATCH` rows carry `<NA>` / `NaN`.
+`object`. The one genuinely nullable column is `routes_summary.overlap_pct` (nullable `Int64`,
+`<NA>` for `NO_MATCH` rows).
 
 ---
 
