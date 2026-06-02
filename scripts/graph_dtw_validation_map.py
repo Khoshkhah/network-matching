@@ -109,8 +109,12 @@ def build_map(m, routes_long, routes_summary, *, offset, a_cover, b_under, b_ove
         if eid in matched_a:
             r = a_meta.loc[eid]
             cov = float(r["overlap_pct"]) if r["overlap_pct"] == r["overlap_pct"] else None
-            html = (f"<b>OSM A:</b> {eid}<br><b>coverage:</b> {cov:.0f}%<br>"
-                    f"<b>route:</b> {r['dest_ids']}<br><b>drift:</b> {r['dtw_distance']:.2f} m")
+            html = (f"<b>OSM A:</b> {eid}<br>"
+                    f"<b>match type:</b> {r['match_type']}<br>"
+                    f"<b>coverage:</b> {cov:.0f}% of A<br>"
+                    f"<b>route:</b> {r['dest_ids']} &nbsp;({int(r['n_edges'])} B-edges)<br>"
+                    f"<b>bearing &Delta;:</b> {r['bearing_diff']:.1f}&deg;<br>"
+                    f"<b>matched length:</b> {r['matched_len']:.0f} m")
             line(paths, fg_a_m, "#2563eb", 3, tooltip=tip(html))
             if cov is not None and cov < a_cover:
                 line(paths, fg_a_under, "#dc2626", 5,
