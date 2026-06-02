@@ -13,6 +13,7 @@ from .graph_dtw import (
     match_edge_to_bgraph,
 )
 from .bgraph_prep import validate_b_geometry
+from .thresholds import suggest_thresholds, isolation_forest_flags
 
 __all__ = [
     "DuckDBMapMatcher",
@@ -22,6 +23,8 @@ __all__ = [
     "graph_dtw_align",
     "match_edge_to_bgraph",
     "validate_b_geometry",
+    "suggest_thresholds",
+    "isolation_forest_flags",
     "setup_logging",
     "get_logger",
 ]

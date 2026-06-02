@@ -78,10 +78,9 @@ routes_long, routes_summary = m.match_routes(
 | parameter           | meaning |
 |---------------------|---------|
 | `max_distance`      | candidate search radius (m) for `ST_DWithin` (set in the initializer / `set_parameters`). |
-| `snap_tolerance_m`  | B-edge endpoints within this distance are merged into one **junction** vertex — how the route crosses between connected B-edges. |
+| `snap_tolerance_m`  | one B-edge's **end** is joined to another's **start** when within this distance — the head-to-tail junction crossing (B is a directed table; no reverse arcs are synthesized). |
 | `step_meters`       | gap-fill density: a vertex every ~N m on top of node+projection pools (default 10). Smaller = denser/slower; `0` = projection-only (fastest). |
 | `trim_ends_m`       | **default `0` (off).** optional: *remove* a leading/trailing route edge covering `<` this many m of A. Not a gap-filler (use `snap_tolerance_m`); off by default as it can delete real corridor edges. |
-| `oneway_ids`        | B-edge ids walkable only in their digitized direction. Default: bidirectional. |
 | `n_jobs`            | parallel workers over A-edges: `-1` = all cores, `1` = serial. |
 
 ### Filter by quality (`resolve_routes`)
@@ -93,7 +92,8 @@ filters:
 ```python
 routes_summary, routes_long = m.resolve_routes(
     routes_summary, routes_long,
-    max_match_dist=10,      # drop routes with avg match distance > 10 m
+    max_match_dist=10,      # drop routes with avg match distance (dtw_distance) > 10 m
+    max_max_dist=25,        # ...or whose MAX match distance spikes > 25 m
     max_bearing_diff=30,    # ...or whole-route bearing difference > 30°
     min_overlap_pct=95)     # ...or covering < 95% of the A-edge
 ```
@@ -103,6 +103,37 @@ cleared, metrics `NaN`) and its rows are removed from `routes_long`; every A-edg
 (`min_overlap_pct` drops edges whose ends **overhang** too far past B's corridor — coverage < 100
 where A's first/last samples pile onto a single B-edge endpoint; common on differently-segmented
 networks.)
+
+#### Estimating the thresholds (`suggest_thresholds`)
+
+Rather than pick the cuts by eye, estimate them from the data. Each quality metric forms a tight
+**good cluster** plus a **tail** of wrong/poor matches; `suggest_thresholds` runs several
+outlier / two-population estimators (Tukey IQR & MAD fences, a high percentile, a 2-component
+Gaussian-mixture EM, a KDE valley, Otsu, Kneedle, and an IsolationForest cut) and recommends the
+cut between cluster and tail (a bimodal separator when a real bad cluster exists, else a robust
+fence). The numpy estimators need no extra deps; IsolationForest needs `scikit-learn` (`[ml]`) and
+the diagnostic plot needs `matplotlib` (`[viz]`) — both guarded and skipped if absent.
+
+```python
+from network_matching import suggest_thresholds
+sugg = suggest_thresholds(routes_summary, report=True,
+                          plot_path="output/threshold_suggestions.png")
+routes_summary, routes_long = m.resolve_routes(routes_summary, routes_long, **sugg["recommended"])
+```
+
+`sugg["recommended"]` is a dict of `resolve_routes` kwargs (`max_match_dist`, `max_max_dist`,
+`max_bearing_diff`, `min_overlap_pct`); per-metric breakdowns (every method's value + the chosen
+cut + a rationale) are under `sugg["metrics"]`. CLI: `python scripts/suggest_thresholds.py`;
+walk-through: [`notebooks/threshold_estimation.ipynb`](../notebooks/threshold_estimation.ipynb).
+Full reference (every estimator, the recommendation rule, the multivariate IsolationForest):
+[`threshold_estimation.md`](threshold_estimation.md).
+
+**Multivariate review (`isolation_forest_flags`).** Per-metric cuts treat each axis independently.
+`isolation_forest_flags(routes_summary)` fits one IsolationForest on all quality signals **jointly**
+(z-scored; `overlap_pct` flipped to a deficit) and flags matches anomalous *in combination* — a
+route can look acceptable on each axis yet sit in a sparse region of the joint space. It returns
+the frame with `if_outlier` (bool) and `if_score` (lower = more anomalous) columns, a complement to
+the thresholds for surfacing jointly-weird matches to inspect. Needs `scikit-learn` (`[ml]`).
 
 ---
 
@@ -132,7 +163,7 @@ The result **divided per B-edge** (`seq` = order of matching along the route).
 | `source_id`                     | A-edge id |
 | `dest_id`                       | B-edge id |
 | `seq`                           | **order of matching** (0,1,2,…) |
-| `direction`                     | `forward` / `backward` vs the B-edge's digitized geometry |
+| `direction`                     | always `forward` (B is a directed table; the reverse direction is a separate `directed_id`) |
 | `edge_match_dist_avg/max/min`   | match distance over just this edge's matched points |
 | `edge_a_len`                    | metres of A **covered** by this edge (where its B vertex advances) |
 | `edge_cover_pct`                | **% of the whole A-edge** this edge covers (these sum to `overlap_pct`) |

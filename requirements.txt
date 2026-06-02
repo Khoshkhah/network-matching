@@ -7,6 +7,7 @@ shapely>=2.0.0
 geopandas>=0.10.0
 joblib>=1.0.0          # parallel route matching (match_routes n_jobs)
 scipy>=1.7.0           # optional: faster endpoint-gap validation (has a pure-numpy fallback)
+scikit-learn>=1.0      # optional: IsolationForest threshold estimator (guarded import)
 
 # Visualization (scripts + notebooks)
 folium>=0.14.0
