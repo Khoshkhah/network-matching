@@ -187,6 +187,7 @@ def main():
                     help="apply resolve_routes (quality filter) before mapping")
     ap.add_argument("--max-match-dist", type=float, default=25.0, help="resolve: max avg match dist (m)")
     ap.add_argument("--max-bearing-diff", type=float, default=45.0, help="resolve: max bearing diff (deg)")
+    ap.add_argument("--min-overlap", type=float, default=None, help="resolve: min A coverage (%)")
     args = ap.parse_args()
 
     setup_logging()
@@ -200,8 +201,10 @@ def main():
     if args.resolved:
         routes_summary, routes_long = m.resolve_routes(
             routes_summary, routes_long,
-            max_match_dist=args.max_match_dist, max_bearing_diff=args.max_bearing_diff)
-        mode = f"resolved (max_dist={args.max_match_dist:g}, max_bearing={args.max_bearing_diff:g})"
+            max_match_dist=args.max_match_dist, max_bearing_diff=args.max_bearing_diff,
+            min_overlap_pct=args.min_overlap)
+        mode = f"resolved (max_dist={args.max_match_dist:g}, max_bearing={args.max_bearing_diff:g}"
+        mode += f", min_overlap={args.min_overlap:g})" if args.min_overlap is not None else ")"
         if args.out == ap.get_default("out"):
             args.out = "output/graph_dtw_validation_map_resolved.html"
     log.info("building validation map (%s)...", mode)

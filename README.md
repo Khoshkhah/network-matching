@@ -64,7 +64,7 @@ thresholds (failures become `NO_MATCH`):
 
 ```python
 routes_summary, routes_long = m.resolve_routes(
-    routes_summary, routes_long, max_match_dist=10, max_bearing_diff=30)
+    routes_summary, routes_long, max_match_dist=10, max_bearing_diff=30, min_overlap_pct=95)
 ```
 
 **Visualize** (standalone HTML written to `output/`):
