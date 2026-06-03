@@ -48,18 +48,16 @@ logger = logging.getLogger("network_matching.thresholds")
 # metric -> "lower" (lower is better, upper-tail outliers) or "higher" (higher is better)
 _DIRECTION = {
     "dtw_distance": "lower",
-    "max_dtw_distance": "lower",
     "bearing_diff": "lower",
     "overlap_pct": "higher",
 }
 # metric -> the resolve_routes keyword its recommended value maps to
 _RESOLVE_KW = {
     "dtw_distance": "max_match_dist",
-    "max_dtw_distance": "max_max_dist",
     "bearing_diff": "max_bearing_diff",
     "overlap_pct": "min_overlap_pct",
 }
-_DEFAULT_METRICS = ("dtw_distance", "max_dtw_distance", "bearing_diff", "overlap_pct")
+_DEFAULT_METRICS = ("dtw_distance", "bearing_diff", "overlap_pct")
 
 
 # --------------------------------------------------------------------------------------

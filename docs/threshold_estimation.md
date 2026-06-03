@@ -14,7 +14,6 @@ ones by upper/lower bounds on a few quality signals:
 | metric (`routes_summary` column) | meaning | direction | `resolve_routes` kwarg |
 |----------------------------------|---------|-----------|------------------------|
 | `dtw_distance`     | average match distance (m) | lower better | `max_match_dist` |
-| `max_dtw_distance` | max match distance (m)     | lower better | `max_max_dist` |
 | `bearing_diff`     | route bearing difference (°)| lower better | `max_bearing_diff` |
 | `overlap_pct`      | A-edge coverage (%)        | higher better| `min_overlap_pct` |
 
@@ -117,11 +116,10 @@ overlap** in native %.
       "recommended": 7.418,
       "rationale": "bimodal (...): good/bad crossover",
     },
-    "max_dtw_distance": {...}, "bearing_diff": {...}, "overlap_pct": {...},
+    "bearing_diff": {...}, "overlap_pct": {...},
   },
   "recommended": {                       # maps DIRECTLY to resolve_routes kwargs
-    "max_match_dist": 7.418, "max_max_dist": 12.874,
-    "max_bearing_diff": 4.734, "min_overlap_pct": 97.0,
+    "max_match_dist": 7.418, "max_bearing_diff": 4.734, "min_overlap_pct": 97.0,
   },
   "params": {...}, "n_total": 3948, "n_nomatch": 604, "plot_path": "output/threshold_suggestions.png",
 }

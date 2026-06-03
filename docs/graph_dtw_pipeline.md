@@ -93,7 +93,6 @@ filters:
 routes_summary, routes_long = m.resolve_routes(
     routes_summary, routes_long,
     max_match_dist=10,      # drop routes with avg match distance (dtw_distance) > 10 m
-    max_max_dist=25,        # ...or whose MAX match distance spikes > 25 m
     max_bearing_diff=30,    # ...or whole-route bearing difference > 30°
     min_overlap_pct=95)     # ...or covering < 95% of the A-edge
 ```
@@ -121,7 +120,7 @@ sugg = suggest_thresholds(routes_summary, report=True,
 routes_summary, routes_long = m.resolve_routes(routes_summary, routes_long, **sugg["recommended"])
 ```
 
-`sugg["recommended"]` is a dict of `resolve_routes` kwargs (`max_match_dist`, `max_max_dist`,
+`sugg["recommended"]` is a dict of `resolve_routes` kwargs (`max_match_dist`,
 `max_bearing_diff`, `min_overlap_pct`); per-metric breakdowns (every method's value + the chosen
 cut + a rationale) are under `sugg["metrics"]`. CLI: `python scripts/suggest_thresholds.py`;
 walk-through: [`notebooks/threshold_estimation.ipynb`](../notebooks/threshold_estimation.ipynb).

@@ -876,7 +876,6 @@ class DuckDBMapMatcher:
 
     def resolve_routes(self, routes_summary: pd.DataFrame, routes_long: Optional[pd.DataFrame] = None,
                        *, max_match_dist: Optional[float] = None,
-                       max_max_dist: Optional[float] = None,
                        max_bearing_diff: Optional[float] = None,
                        min_overlap_pct: Optional[float] = None):
         """Filter route matches by quality thresholds (the route-mode analogue of the edge-to-edge
@@ -893,9 +892,6 @@ class DuckDBMapMatcher:
             The two tables from :meth:`match_routes`. ``routes_long`` is optional.
         max_match_dist:
             Drop routes whose average match distance (``dtw_distance``, meters) exceeds this.
-        max_max_dist:
-            Drop routes whose **maximum** match distance (``max_dtw_distance``, meters) exceeds
-            this -- catches a route that fits well on average but spikes far off somewhere.
         max_bearing_diff:
             Drop routes whose whole-route bearing difference (degrees) exceeds this.
         min_overlap_pct:
@@ -913,8 +909,6 @@ class DuckDBMapMatcher:
         fail = pd.Series(False, index=rs.index)
         if max_match_dist is not None:
             fail |= matched & (rs["dtw_distance"] > max_match_dist)
-        if max_max_dist is not None:
-            fail |= matched & (rs["max_dtw_distance"] > max_max_dist)
         if max_bearing_diff is not None:
             fail |= matched & (rs["bearing_diff"] > max_bearing_diff)
         if min_overlap_pct is not None:

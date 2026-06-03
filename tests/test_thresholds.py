@@ -119,7 +119,7 @@ def test_recommended_maps_to_resolve_kwargs():
     rs = _make_summary(rng)
     out = suggest_thresholds(rs, report=False)
     assert set(out["recommended"]) == {
-        "max_match_dist", "max_max_dist", "max_bearing_diff", "min_overlap_pct"}
+        "max_match_dist", "max_bearing_diff", "min_overlap_pct"}
     # all finite for this data
     assert all(v is not None for v in out["recommended"].values())
 
@@ -135,8 +135,6 @@ def test_edge_cases_no_crash():
         "match_type": ["1:1"] * 5,
     })
     out = suggest_thresholds(df, report=False)
-    assert out["metrics"]["max_dtw_distance"]["n"] == 0
-    assert out["recommended"]["max_max_dist"] is None
     # constant column -> finite recommendation, no divide-by-zero
     assert out["recommended"]["max_match_dist"] is not None
     # tiny-N column still produces something finite
