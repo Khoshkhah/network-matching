@@ -7,6 +7,7 @@ Exercised on small edge lists in a plain meter CRS -- no DuckDB, no real data.
 
 import os
 import sys
+from collections import deque
 
 import numpy as np
 import pytest
@@ -65,6 +66,50 @@ def test_branch_junction_is_consistent():
     locs = np.array([(gb.vx[phi[a]], gb.vy[phi[a]]) for a in jl if a in phi])
     spread = float(np.max(np.ptp(locs, axis=0))) if len(locs) else 0.0
     assert spread < 0.6, f"junction A-vertices spread {spread:.2f} m apart in B"
+
+
+# --------------------------------------------------------------------------------------
+# Sequence rules: the matched result must be a monotone forward walk in B + connected route
+# --------------------------------------------------------------------------------------
+def _fwd_reachable(gb, src, dst):
+    if src == dst:
+        return True
+    seen, q = {src}, deque([src])
+    while q:
+        u = q.popleft()
+        for w in gb.succ_arcs[u]:
+            if w == dst:
+                return True
+            if w not in seen:
+                seen.add(w)
+                q.append(w)
+    return False
+
+
+@pytest.mark.parametrize("name", ["chain", "y_split", "merge", "diamond"])
+def test_matched_sequence_obeys_rules(name):
+    # on the clean scenarios: every GA arc a->a' maps to a forward B-step φ(a)->φ(a')
+    # (monotone, no backward / disconnected jump), and each route's B-edges are graph-connected.
+    res = _match(name)
+    ga, gb, phi = res["GA"], res["GB"], res["phi"]
+    for a in range(ga.n_vertices):
+        if a not in phi:
+            continue
+        for a2 in ga.succ_arcs[a]:
+            if a2 in phi:
+                assert _fwd_reachable(gb, phi[a], phi[a2]), (
+                    f"{name}: A arc {a}->{a2} maps to a non-forward B step "
+                    f"{phi[a]}->{phi[a2]}")
+    econ = set()
+    for u in range(gb.n_vertices):
+        for w in gb.succ_arcs[u]:
+            eu, ew = gb.edge_ids[gb.vert_edge[u]], gb.edge_ids[gb.vert_edge[w]]
+            if eu != ew:
+                econ.add((eu, ew))
+    for aeid, route in res["routes"].items():
+        for i in range(1, len(route)):
+            assert (route[i - 1], route[i]) in econ, (
+                f"{name}: route {aeid} has disconnected B-edges {route[i-1]}->{route[i]}")
 
 
 # --------------------------------------------------------------------------------------

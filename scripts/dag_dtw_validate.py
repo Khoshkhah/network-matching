@@ -22,6 +22,7 @@ Exit code 0 = all core invariants held, 1 = a failure.
 import argparse
 import os
 import sys
+from collections import deque
 
 import numpy as np
 from shapely.geometry import LineString
@@ -48,6 +49,53 @@ PASS, FAIL = "\033[32mPASS\033[0m", "\033[31mFAIL\033[0m"
 
 def _ok(cond):
     return PASS if cond else FAIL
+
+
+def _fwd_reachable(gb, src, dst):
+    """Is B-vertex ``dst`` reachable from ``src`` by walking GB forward arcs (or src == dst)?"""
+    if src == dst:
+        return True
+    seen, q = {src}, deque([src])
+    while q:
+        u = q.popleft()
+        for w in gb.succ_arcs[u]:
+            if w == dst:
+                return True
+            if w not in seen:
+                seen.add(w)
+                q.append(w)
+    return False
+
+
+def sequence_rules(res):
+    """The matched sequence must obey the map-matching rules. Returns (arc_violations,
+    route_violations):
+
+      - **monotone forward B-walk**: every GA arc ``a -> a'`` maps to a forward B-step
+        ``φ(a) -> φ(a')`` (reachable along GB arcs, or equal) -- as A advances B never goes
+        backward or jumps to a disconnected vertex;
+      - **connected route**: consecutive B-edges in a route are graph-connected in GB.
+    """
+    ga, gb, phi = res["GA"], res["GB"], res["phi"]
+    arc_viol = []
+    for a in range(ga.n_vertices):
+        if a not in phi:
+            continue
+        for a2 in ga.succ_arcs[a]:
+            if a2 in phi and not _fwd_reachable(gb, phi[a], phi[a2]):
+                arc_viol.append((ga.edge_ids[ga.vert_edge[a]], ga.edge_ids[ga.vert_edge[a2]]))
+    econ = set()                                       # B-edge -> B-edge connectivity in GB
+    for u in range(gb.n_vertices):
+        for w in gb.succ_arcs[u]:
+            eu, ew = gb.edge_ids[gb.vert_edge[u]], gb.edge_ids[gb.vert_edge[w]]
+            if eu != ew:
+                econ.add((eu, ew))
+    route_viol = []
+    for aeid, route in res["routes"].items():
+        for i in range(1, len(route)):
+            if (route[i - 1], route[i]) not in econ:
+                route_viol.append((aeid, route[i - 1], route[i]))
+    return arc_viol, route_viol
 
 
 def validate_case(name):
@@ -92,7 +140,16 @@ def validate_case(name):
         print(f"    [{_ok(jok)}] junction @({key[0]:.0f},{key[1]:.0f}): {len(verts)} A-vertices "
               f"span {spread:.2f} m in B (< 0.6)")
 
-    return len(EXPECT[name]) + 1 + n_junc_checks, fails
+    # 4. SEQUENCE RULES: monotone forward B-walk + connected route
+    arc_v, route_v = sequence_rules(res)
+    aok, rok = not arc_v, not route_v
+    fails += (not aok) + (not rok)
+    print(f"    [{_ok(aok)}] monotone forward B-walk (every A arc -> a forward B step)"
+          + (f"  {len(arc_v)} violation(s): {arc_v[:3]}" if arc_v else ""))
+    print(f"    [{_ok(rok)}] connected route (consecutive B-edges graph-connected)"
+          + (f"  {len(route_v)} violation(s): {route_v[:3]}" if route_v else ""))
+
+    return len(EXPECT[name]) + 1 + n_junc_checks + 2, fails
 
 
 def validate_structure():
@@ -127,17 +184,21 @@ def perturbation_sweep(name="y_split"):
     sc = get_dag(name)
     print(f"\n=== perturbation sweep: {name} (rigid shift, point-to-point) ===")
     print(f"    {'shift m':>8} | {'avg drift':>9} | routes")
+    print(f"    {'shift m':>8} | {'drift':>6} | {'seq-rule':>9} | routes")
     base = None
     for s in [0, 1, 2, 3, 4, 6, 8]:
         a = perturb_dag(sc["a_edges"], shift=float(s))
-        res = match_dag_to_bgraph(a, sc["b_edges"], **sc["defaults"])
+        res = match_dag_to_bgraph(a, sc["b_edges"], debug=True, **sc["defaults"])
         r = {k: v for k, v in res["routes"].items()}
         base = base or r
+        arc_v, route_v = sequence_rules(res)
+        seq = "OK" if not arc_v and not route_v else f"VIOLATED({len(arc_v)+len(route_v)})"
         changed = "  <- route changed" if r != base else ""
-        print(f"    {s:>8} | {res['avg_drift']:>7.2f} m | {r}{changed}")
-    print("    (a route change here is EXPECTED: point-to-point matches by distance only, so once "
-          "the\n     shift pulls a junction nearer a cross road it spills onto it -- direction is a "
-          "segment-mode concern)")
+        print(f"    {s:>8} | {res['avg_drift']:>4.2f} m | {seq:>9} | {r}{changed}")
+    print("    A route change AND a monotone-walk VIOLATION appear together once the shift pulls the "
+          "junction\n    onto a cross road: point-to-point spills the junction, and the coincident "
+          "junction vertices then\n    disagree in B (backtrack resolves them independently). This "
+          "is the vertex-exact junction gap.")
 
 
 def main():
