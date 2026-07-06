@@ -349,3 +349,59 @@ coloured A-edges, the joint correspondence, and `φ` at each junction.
 | primitive | `match_edge_to_bgraph` | `match_dag_to_bgraph` (forthcoming) |
 
 DAG-DTW is a strict superset: give it a single-path DAG and it **is** graph-DTW.
+
+---
+
+## 9. Implementation & optimization
+
+In a real source DAG the overwhelming majority of vertices are **interior, in-degree 1 /
+out-degree 1** — the projection + gap-fill points along an edge (§2). Only a handful are
+**junctions** (sources, sinks, branches, merges). The algorithm is built to pay the DAG price only
+at the junctions.
+
+### 9.1 Interior chains *are* graph-DTW
+
+On a degree-1 chain the §3 recurrence collapses:
+
+- one predecessor ⇒ the `Σ` over `Apred(a)` is a **single term** (no summing);
+- `outdeg(a) = 1` ⇒ the split factor is **`1`** (no dividing).
+
+So an interior vertex runs **exactly graph-DTW's three linear moves** (horizontal / vertical /
+diagonal). The DAG-specific machinery — the `Σ` and the `1/outdeg` split — fires **only** at the
+`O(#junctions)` branch/merge vertices. The interior is neither the complex part nor an extra cost;
+it is the code that already exists.
+
+### 9.2 Contract to the junction graph; reuse the graph-DTW primitive
+
+Collapse each degree-1 chain into a single **macro-edge** between two junctions, and work on that
+much smaller graph:
+
+- **Along a macro-edge** — propagate the incoming **message vector** (accumulated cost over
+  B-vertices) *as the seed row* of a linear graph-DTW pass, instead of free entry. One linear DP
+  per chain, driven by the existing `match_edge_to_bgraph` machinery.
+- **At a junction only** — apply the `Σ` (merge, sum incoming messages) and the `1/outdeg` split
+  (branch, divide the outgoing message), then pin `φ` at backtrack.
+
+Payoff: the new DAG code is tiny — the min-sum/split logic runs on a graph with `O(#junctions)`
+nodes — and everything heavy and correctness-critical stays the **already-tested graph-DTW
+primitive**. This is also the natural staging: Phase 1 can literally decompose at junctions and
+reuse `match_edge_to_bgraph`, before Phase 2 fuses it into one solver.
+
+### 9.3 Band the B-candidates per A-vertex (the real FLOP cut)
+
+The genuine cost is `|A-vertices| × Dijkstra over GB`. But an interior A-vertex only ever matches
+B-vertices **near it** — a far B-vertex has a huge `E(a, v)` and can never win. So restrict each
+A-vertex's states to a **band** of nearby B-vertices (Sakoe-Chiba-style corridor: k-nearest, or
+`E` below a threshold). That turns `|A| × |B|` into `|A| × (band width)` — near-lossless, and it
+is where the speedup actually comes from. Per chain, carry only the **local `GB`** (the B-edges
+near that chain) and merge into the full local graph only at junctions.
+
+### 9.4 Cheapest lever — interior node count
+
+Two existing knobs trade interior nodes for accuracy: `step_meters` (gap-fill density) and
+`min_pool_gap_m` (sliver removal). Coarser sampling = fewer interior vertices = faster. This is
+tuning, not structure, but it is the quickest win if a DAG is very large.
+
+**Recommended build order.** Ship §9.2 (junction-graph contraction over the existing graph-DTW
+primitive) first — it reuses tested code and keeps the new logic small — then add §9.3 (per-vertex
+banding) if profiling shows the interior Dijkstras dominate. §9.4 stays a tuning fallback.
