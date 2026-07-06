@@ -155,3 +155,18 @@ Robustness properties that are pinned as unit tests (`tests/test_graph_dtw_pertu
 small noise keeps the route; lateral drift ≈ lateral shift; the trap captures at −8 m but not
 −2 m; small rotations survive on the curve; a hard crop yields a contiguous sub-route; a
 reversed A is NO_MATCH on a directed table.
+
+---
+
+## 5. The interactive playground (notebook / dashboard)
+
+[`notebooks/graph_dtw_playground.ipynb`](../notebooks/graph_dtw_playground.ipynb) is the
+no-analysis companion to the tools above: it shows only the **correspondence** — every A sample
+point painted in the color of the B-edge it matched, with a link to its matched B point — and
+re-matches live as you drag sliders (shift / longitudinal / translate+bearing / rotate / noise /
+crop / stretch / reverse, plus `snap`, `step`, `emission`). A build-your-own-sample section takes
+the network as plain coordinate lists, so a new B-edge is one appended
+`("id", [(x, y), ...])` line.
+
+Run it as a notebook (`network-matching` kernel, needs `ipywidgets`) or as a standalone
+dashboard: `voila notebooks/graph_dtw_playground.ipynb`.

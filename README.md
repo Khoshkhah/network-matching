@@ -88,6 +88,16 @@ python scripts/graph_dtw_debug_viz.py --case parallel_trap --shift -6 --trace
 python scripts/graph_dtw_perturb_test.py --case split      # or --edge-id 1377
 ```
 
+**Play with the matching interactively** — the playground notebook shows *which A points
+matched which B-edge* (colored correspondence links, no analysis panels), with sliders for
+shift / rotate / noise / translate / crop and a build-your-own-network section (edges are plain
+coordinate lists). Also runs as a standalone dashboard:
+
+```bash
+jupyter lab notebooks/graph_dtw_playground.ipynb   # notebook
+voila notebooks/graph_dtw_playground.ipynb         # same file as a dashboard
+```
+
 Full pipeline reference (init, steps, output schemas, parameters):
 [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md). The algorithm itself (DTW on a directed
 graph): [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md).

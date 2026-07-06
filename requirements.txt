@@ -17,4 +17,6 @@ matplotlib>=3.5.0
 # Notebooks / development
 ipykernel
 nbconvert
+ipywidgets>=8.0       # interactive matching playground (notebooks/graph_dtw_playground.ipynb)
+voila>=0.5            # optional: serve the playground notebook as a standalone dashboard
 pytest
