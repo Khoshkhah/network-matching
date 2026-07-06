@@ -86,46 +86,74 @@ for the in-neighbours of `v` in `GB`. Let `E(a, v)` be the **local cost** (emiss
 A-vertex `a` with B-vertex `v` — the same models as graph-DTW: `point` = `dist(a, v)`, `segment` =
 the middle-to-middle segment distance `+ λ·Δbearing` (see [weighted_emission.md](weighted_emission.md)).
 
-`D[a][v]` is the minimum cost to align A **from a source down to `a`**, ending at B-vertex `v`. The
-recurrence is graph-DTW's three moves with the linear predecessor `i-1` **replaced by the set
-`Apred(a)`**:
+`D[a][v]` is the minimum cost to align the source **down to `a`**, ending at B-vertex `v`, with
+**every A-edge above `a` covered**. This last clause is what separates DAG-DTW from a shortest path
+through the DAG, and it dictates the combination operators:
 
 ```
-D[a][v] = E(a, v) + min(
-    min over a' in Apred(a)            of  D[a'][v],   # A-advance  : step along a GA arc, B stays
-    min over u  in Bpred(v)            of  D[a ][u],   # B-advance  : step along a GB arc, A stays
-    min over a' in Apred(a), u in Bpred(v) of D[a'][u] # both advance
-)
+D[a][v] = E(a, v) +        Σ                min           D[a'][v']
+                      a' ∈ Apred(a)   v' ∈ Bpred(v) ∪ {v}
 ```
 
-- **Init (free entry at every source).** For each **source** `a` of `GA` (`Apred(a) = ∅`):
-  `D[a][v] = E(a, v)` for every `v` — a match may begin at any A-source against any B-vertex, just
-  as graph-DTW's row 0 is free-entry.
-- **Sweep order.** Process A-vertices in **topological order**. When `a` is reached, every `a' ∈
-  Apred(a)` is already final, so the A-advance and both-advance terms read finished values — no
-  iteration to convergence, because `GA` is acyclic. (This is exactly why the source must be a
-  DAG.)
+Read it as **min-sum message passing** — two *different* combinations, on purpose:
+
+- **`min` over `v' ∈ Bpred(v) ∪ {v}`** — a **choice** of where the predecessor `a'` sat in B:
+  the same vertex `v` (A advanced, B stayed — the *vertical* move) or one arc back `v' ∈ Bpred(v)`
+  (both advanced — the *diagonal*). Cheapest option wins, so `min`. (`∪ {v}` folds vertical and
+  diagonal into one term.)
+- **`Σ` over `a' ∈ Apred(a)`** — **coverage**: every A-edge flowing into `a` must be aligned, none
+  discarded, so at a merge you **add** both approaches' costs. A `min` here would optimise one
+  incoming branch and leave the other **unmatched** — wrong, because the goal is to align the
+  *whole* DAG, not to find one best path through it. This is the crux: **sum over branches, min
+  over B-positions.**
+
+It reduces correctly at the two ends:
+
+- **Chain** (`|Apred(a)| = 1`): the sum is a single term, so `Σ` and `min` coincide and the
+  recurrence collapses to graph-DTW. The sum only ever *differs* from a min at a **merge**.
+- **Source** (`Apred(a) = ∅`): the empty sum is `0`, leaving `D[a][v] = E(a, v)` — **free entry**
+  at every A-source (any B-vertex), the DAG analog of graph-DTW's free row 0. No special case
+  needed.
+
+Other properties:
+
+- **Sweep order.** Process A-vertices in **topological order**. When `a` is reached every `a' ∈
+  Apred(a)` is already final, so each summand reads a finished value — no iteration to convergence,
+  because `GA` is acyclic. (This is exactly why the source must be a DAG.)
+- **B denser than A.** The inner term steps B by **one** arc (`Bpred(v)`). To let one A-arc ride a
+  *run* of B-vertices (graph-DTW's *horizontal* move, when B is sampled finer than A), that
+  one-step `min` generalises to a within-`a` shortest-B-**walk** — the Dijkstra of §3.1 — each
+  intermediate B-vertex re-paying its `E(a, ·)`. Same idea, multi-step.
 - **Termination — at the sinks.** A single path terminates at one point (`argmin_v D[N-1][v]`). A
-  DAG has several **sinks**; the full match must cover **every** source→sink path, so termination
-  is `argmin_v D[t][v]` at **each sink `t`** (§3.2 assembles them into one consistent result).
+  DAG has several **sinks**; because the sum already forced every branch to be covered, the result
+  is read at **each sink `t`** as `argmin_v D[t][v]` (§3.2 assembles them into one consistent
+  labelling).
+- **Exactness.** Min-sum is **exact on a tree / forest** (a Y-split is an out-tree, a merge is an
+  in-tree — the common junction cases). A **diamond** (split then re-merge) makes the sum
+  double-count the shared ancestor above the split; reconvergent DAGs need a shared-prefix
+  correction (future work — see §3.2).
 
-### 3.1 The B-advance is still a Dijkstra (B may cycle)
+### 3.1 The one-step term becomes a Dijkstra (B may cycle, B may be denser)
 
-The A-advance and both-advance terms depend only on **already-finalised** A-predecessors, so they
-are read directly. The B-advance term depends on `D[a][u]` for `u` in the **same** A-state `a`, and
-`GB` may contain cycles — there is no topological order there. As in graph-DTW §3.1, fix `a` and
-solve the within-state relaxation with **Dijkstra** over `GB`'s non-negative arc weights:
+The summed inner term reads only **already-finalised** A-predecessors, so its one-step form is
+computed directly. But two things make it a shortest-path within the A-state `a`, not a lookup:
+`GB` may **cycle** (no topological order on the B side), and B may be **denser than A** (one A-arc
+should be free to ride a run of B-vertices). Both are handled by fixing `a` and relaxing with
+**Dijkstra** over `GB`'s non-negative arc weights, exactly as graph-DTW §3.1 — with the difference
+that the seed is now the **summed** predecessor contribution, not a single row:
 
 ```
-base[v] = E(a, v) + min( A-advance(a, v), both-advance(a, v) )   # the two finished terms
-D[a][·] = base[·];  push all (base[v], v)
-pop (c, u); for each GB arc u -> w:  cand = D[a][u] + E(a, w)
+seed[v] = E(a, v) + Σ_{a'∈Apred(a)} D[a'][v]    # A-advance part of every incoming branch, at v
+D[a][·] = seed[·];  push all (seed[v], v)
+pop (c, u); for each GB arc u -> w:  cand = D[a][u] + E(a, w)     # let a run of B pay E(a,·)
                                      if cand < D[a][w]: D[a][w] = cand; push
 ```
 
-So the whole algorithm is **one topological sweep of A**, and **one Dijkstra per A-vertex** over B —
-the exact structure of graph-DTW, with graph-DTW's "row `i`" generalized to "A-vertex `a` in
-topological order."
+(The diagonal `v'∈Bpred(v)` choices are subsumed: a one-arc B-walk from a predecessor's vertex is
+just the first Dijkstra relaxation.) So the whole algorithm is **one topological sweep of A**, and
+**one Dijkstra per A-vertex** over B — the exact structure of graph-DTW, with graph-DTW's "row `i`"
+generalised to "A-vertex `a` in topological order," and its single-row seed generalised to the
+**sum over incoming A-branches**.
 
 ### 3.2 From a warping *path* to a warping *DAG* — junction consistency
 
@@ -245,6 +273,7 @@ coloured A-edges, the joint correspondence, and `φ` at each junction.
 |---------|-------------------|--------------------|
 | source | one directed **path** (`coords_a`) | a directed **DAG** `GA` (topologically ordered A-edges) |
 | source sweep | left → right (`i-1`) | **topological order** (`Apred(a)`) |
+| predecessor combine | trivial (one predecessor) | **min-sum**: `Σ` over `Apred(a)` (cover all branches), `min` over B-positions |
 | target | directed graph `GB` (Dijkstra) | directed graph `GB` (Dijkstra) — unchanged |
 | result | one B-route per A-edge | junction-consistent B-route per A-edge + label map `φ` |
 | entry / exit | free entry row 0 / exit last row | free entry at **sources** / exit at **sinks** |
