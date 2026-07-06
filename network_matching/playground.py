@@ -23,8 +23,7 @@ from shapely.geometry import LineString
 from .graph_dtw import match_edge_to_bgraph
 from .synthetic import SCENARIOS, apply_perturbation, as_array, get_scenario, reverse
 
-PLAYGROUND_VERSION = ("v5 -- match_and_draw() one-call helper; segment view needs the debug "
-                      "payload and match_and_draw always requests it")
+PLAYGROUND_VERSION = "v6 -- legend moved outside the axes (right side), never covers the map"
 
 PERTURB_ORDER = ["crop", "stretch", "rotate", "translate", "shift", "longitudinal", "noise"]
 
@@ -145,7 +144,10 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     if original_a is not None:
         handles.append(Line2D([], [], color="0.6", lw=1.4, ls="--",
                               label="A before perturbation"))
-    ax.legend(handles=handles, fontsize=8.5, loc="best", framealpha=0.95)
+    # legend OUTSIDE the axes (right side) so it never covers the drawing; the inline/widget
+    # backend saves with bbox_inches="tight", so the extra width is kept, not clipped
+    ax.legend(handles=handles, fontsize=8.5, loc="upper left", bbox_to_anchor=(1.01, 1.0),
+              borderaxespad=0.0, framealpha=0.95)
 
     view = "segment ↔ segment" if seg_mode else "point ↔ point"
     ttl = ("NO MATCH" if not np.isfinite(res["avg_distance"]) else
