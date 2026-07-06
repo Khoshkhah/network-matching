@@ -54,6 +54,21 @@ only the **target** to a graph. DAG-DTW generalizes the **source**:
 - `GA` has one or more **sources** (in-degree 0 — where a match may begin) and one or more
   **sinks** (out-degree 0 — where a match may end).
 
+**The topological order is laid out in three blocks — `[all sources] [the middle] [all sinks]`.**
+This is always achievable: sources have no incoming arcs, so they can always form a contiguous
+**prefix**; sinks have no outgoing arcs, so they can always form a contiguous **suffix**; the two
+never conflict and the rest fills the middle (an isolated vertex — both source and sink — goes in
+the sources block). The three blocks map one-to-one onto the DP's three phases (§3):
+
+```
+topological order:  [ all sources ] [ ──── the middle ──── ] [ all sinks ]
+DP phase:             free-entry        min-sum propagation      terminate
+                      seed E(a,v)       (§3 recurrence)          read C_total (§3.3)
+```
+
+It is the exact DAG widening of graph-DTW's own axis, where **row 0** is the single source (free
+entry) and **row N−1** the single sink (termination), with the middle rows propagating.
+
 Note the deliberate **asymmetry** with the target:
 
 | side | may contain cycles? | swept how |
