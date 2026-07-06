@@ -330,6 +330,12 @@ coloured A-edges, the joint correspondence, and `φ` at each junction.
 - **Directed A → B** only (no symmetric B→A reconciliation).
 - **Tree / polytree** source DAGs are handled exactly; **reconvergent** DAGs (diamonds) use the
   merge-agreement rule of §3.2 (exact joint optimisation of reconvergence is future work).
+- **v1 junction consistency is region-exact, not vertex-exact.** A junction is built as several
+  *coincident* per-edge A-vertices (docs §2), resolved independently at backtrack, so the branches
+  agree on the junction *region* (within a sample step) rather than the identical B-vertex. Merging
+  the coincident junction vertices for vertex-exact `φ` is a refinement. Implemented in
+  [`network_matching/dag_dtw.py`](../network_matching/dag_dtw.py); demo in
+  [`notebooks/dag_dtw_playground.ipynb`](../notebooks/dag_dtw_playground.ipynb).
 - Cost is **count-weighted** (inherited from graph-DTW): route choice depends on `step_meters`
   density; a length-weighted objective remains future work.
 

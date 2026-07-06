@@ -195,7 +195,7 @@ m.set_parameters(max_distance=25)
 |----------|--------|
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
-| [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) | DAG-DTW **(design/spec)** — DTW generalized so the *source* is a topologically-ordered DAG, matched jointly with consistent junctions. |
+| [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) | DAG-DTW — DTW generalized so the *source* is a topologically-ordered DAG, matched jointly with consistent junctions (spec + point-to-point v1; demo `notebooks/dag_dtw_playground.ipynb`). |
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
