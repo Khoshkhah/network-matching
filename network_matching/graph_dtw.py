@@ -275,7 +275,8 @@ def build_local_digraph(
 
 
 def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
-                      bearing_weight: float = 0.0) -> Optional[List[Tuple[int, int]]]:
+                      bearing_weight: float = 0.0,
+                      dbg: Optional[Dict[str, Any]] = None) -> Optional[List[Tuple[int, int]]]:
     """True segment-to-segment DP (``emission="segment"``): states are (A-segment i, B-arc u->v).
 
     Every state pays the endpoint-average distance between A-segment ``a_i -> a_{i+1}`` and its
@@ -287,6 +288,10 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
     Returns the vertex-level ``(a_index, vertex)`` pairs of the best alignment -- the same format
     the point-state backtrack yields, so all downstream grouping/metrics are shared -- or ``None``
     if no finite alignment exists.
+
+    ``dbg``: optional dict populated with the DP internals (``arcs``, ``ridable``, ``D``, ``E``,
+    ``arc_path``, ``terminal_state``, ``final_cost``) for algorithm debugging -- see
+    :func:`graph_dtw_align`'s ``debug`` flag.
     """
     V = gb.n_vertices
     N = len(ax)
@@ -327,6 +332,10 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
     INF = float("inf")
     D = np.full((NS, NA), INF)
     back: List[List[Optional[Tuple]]] = [[None] * NA for _ in range(NS)]
+    if dbg is not None:
+        dbg["arcs"] = list(zip(au, av))
+        dbg["ridable"] = ridable.copy()
+        _E_rows: List[np.ndarray] = []
 
     def emit_seg(i: int) -> np.ndarray:
         # E(i, e) = 1/2(|a_i - u| + |a_{i+1} - v|) [+ lambda * circular bearing diff]
@@ -334,6 +343,8 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
         if bw > 0.0:
             bd = np.abs(seg_bear[i] - arc_bear)
             e = e + bw * np.where(ridable, np.minimum(bd, 360.0 - bd), 0.0)
+        if dbg is not None:
+            _E_rows.append(e)         # rows arrive in order: emit_seg(0), emit_seg(1), ...
         return e
 
     def relax_row(i: int, ei: np.ndarray) -> None:
@@ -374,14 +385,21 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
         relax_row(i, ei)
 
     k_best = int(np.argmin(D[NS - 1]))
+    if dbg is not None:
+        dbg["D"] = D
+        dbg["E"] = np.vstack(_E_rows)
     if not np.isfinite(D[NS - 1][k_best]):
+        if dbg is not None:
+            dbg["reason"] = "no_finite_alignment"
         return None
 
     states: List[Tuple[int, int]] = []
+    moves: List[str] = []
     i, k = NS - 1, k_best
     while True:
         move, p = back[i][k]
         states.append((i, k))
+        moves.append(move)
         if move == "START":
             break
         if move == "V":
@@ -392,6 +410,11 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
         else:  # "H"
             k = p
     states.reverse()
+    moves.reverse()
+    if dbg is not None:
+        dbg["arc_path"] = [(si, sk, mv) for (si, sk), mv in zip(states, moves)]
+        dbg["terminal_state"] = k_best
+        dbg["final_cost"] = float(D[NS - 1][k_best])
 
     # States -> vertex pairs: the entry arc contributes its tail, every state its head.
     pairs: List[Tuple[int, int]] = [(states[0][0], au[states[0][1]])]
@@ -410,6 +433,7 @@ def graph_dtw_align(
     trim_ends_m: float = 0.0,
     emission: str = "point",
     bearing_weight: float = 0.0,
+    debug: bool = False,
 ) -> Tuple[float, List[Tuple[Coord, Coord]], Dict[str, Any]]:
     """Align A-edge ``coords_a`` to the local directed graph ``gb`` with projection-enriched
     points on both sides.
@@ -444,12 +468,41 @@ def graph_dtw_align(
     ``1/2(|a_i - u| + |a_{i+1} - v|)`` plus, with ``bearing_weight`` > 0, a per-state heading
     penalty ``lambda * circ_diff(bearing(seg), bearing(arc))``; no alignment move can bypass
     either term (see :func:`_segment_dp_pairs` and ``docs/weighted_emission.md`` §10).
+
+    ``debug=True`` attaches the raw algorithm internals under ``metrics["debug"]`` (also on
+    failure returns, with a ``reason``), for the debug tooling in
+    ``scripts/graph_dtw_debug_viz.py``:
+
+    - always: ``params``, ``a_pool`` (``(x, y, is_node)`` A-axis points), and -- once the DP ran --
+      ``D`` (accumulated-cost table), ``E`` (per-state emission table), ``final_cost``,
+      ``terminal_state``;
+    - on success: ``pairs_all`` (full untrimmed ``(a_index, vertex)`` alignment), ``kept_span``
+      (``(lo, hi)`` indices into it after overhang trimming), ``groups`` (per-B-edge runs over the
+      full alignment), ``drift_all`` (per-step drift, untrimmed);
+    - point mode: ``path`` = ``(a_index, vertex, move)`` per backtracked state, moves in
+      ``{"START", "V", "H", "D"}``; ``D``/``E`` are ``(N_A_points, V)``;
+    - segment mode: ``arcs`` (state axis: ``(u, v)`` vertex pairs), ``ridable`` (which arcs may
+      host a state), ``arc_path`` = ``(a_segment, arc, move)``; ``D``/``E`` are
+      ``(N_A_segments, N_arcs)``.
     """
     a_pool = _node_projection_pool(list(coords_a), gb.b_raw_nodes, step_meters)
     N = len(a_pool)
     V = gb.n_vertices
+    dbg: Optional[Dict[str, Any]] = None
+    if debug:
+        dbg = {"params": {"emission": emission, "bearing_weight": float(bearing_weight),
+                          "step_meters": step_meters, "trim_ends_m": trim_ends_m},
+               "a_pool": a_pool}
+
+    def _fail(reason: str) -> Tuple[float, List[Tuple[Coord, Coord]], Dict[str, Any]]:
+        mm = _inf_metrics()
+        if dbg is not None:
+            dbg.setdefault("reason", reason)
+            mm["debug"] = dbg
+        return float("inf"), [], mm
+
     if N < 1 or V < 1:
-        return float("inf"), [], _inf_metrics()
+        return _fail("empty_inputs")
 
     ax = np.asarray([p[0] for p in a_pool], float)
     ay = np.asarray([p[1] for p in a_pool], float)
@@ -460,9 +513,9 @@ def graph_dtw_align(
     if emission == "segment":
         # True segment-to-segment: states are (A-segment, B-arc); every state pays distance
         # (+ optional bearing). Yields vertex-level pairs in the same format as the point DP.
-        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight))
+        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight), dbg=dbg)
         if seg_pairs is None:
-            return INF, [], _inf_metrics()
+            return _fail("no_finite_alignment")
         pairs: List[Tuple[int, int]] = seg_pairs
     else:
         D = np.full((N, V), INF)
@@ -505,15 +558,21 @@ def graph_dtw_align(
                         heapq.heappush(heap, (cand, w))
 
         v_best = int(np.argmin(D[N - 1]))
+        if dbg is not None:
+            dbg["D"] = D
+            dbg["E"] = np.hypot(ax[:, None] - vx[None, :], ay[:, None] - vy[None, :])
+            dbg["terminal_state"] = v_best
         if not np.isfinite(D[N - 1][v_best]):
-            return INF, [], _inf_metrics()
+            return _fail("no_finite_alignment")
 
         # Backtrack -> ordered (a_index, vertex) pairs.
         pairs = []
+        moves: List[str] = []
         i, v = N - 1, v_best
         while True:
             move, u = back[i][v]
             pairs.append((i, v))
+            moves.append(move)
             if move == "START":
                 break
             if move == "V":
@@ -524,6 +583,10 @@ def graph_dtw_align(
             else:  # "H"
                 v = u
         pairs.reverse()
+        moves.reverse()
+        if dbg is not None:
+            dbg["path"] = [(pi, pv, mv) for (pi, pv), mv in zip(pairs, moves)]
+            dbg["final_cost"] = float(D[N - 1][v_best])
 
     # The edge each step sits on is read DIRECTLY from the vertex (``vert_edge``) -- no arc
     # inference, no shared-junction ambiguity: every vertex belongs to exactly one edge.
@@ -576,10 +639,15 @@ def graph_dtw_align(
             g1 -= 1
     lo, hi = groups[g0][0], groups[g1][1]
 
+    if dbg is not None:
+        dbg["pairs_all"] = pairs
+        dbg["groups"] = groups
+        dbg["kept_span"] = (lo, hi)
+
     # If B is never actually traversed (A only touches boundary vertices -- e.g. a stub that ends
     # at, but never runs along, a B-edge), there is no real match -> NO_MATCH.
     if _b_len(lo, hi) <= 1e-9:
-        return INF, [], _inf_metrics()
+        return _fail("zero_b_traversal")
 
     drift_all = [float(np.hypot(pa[0] - pb[0], pa[1] - pb[1])) for pa, pb in warping_all]
 
@@ -679,6 +747,9 @@ def graph_dtw_align(
         "warp_a_is_node": warp_a_is_node,
         "warp_edge": warp_edge,
     }
+    if dbg is not None:
+        dbg["drift_all"] = drift_all
+        metrics["debug"] = dbg
     return average, warping, metrics
 
 
@@ -694,6 +765,7 @@ def match_edge_to_bgraph(
     trim_ends_m: float = 0.0,
     emission: str = "point",
     bearing_weight: float = 0.0,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     """Map-match one A-edge to the local directed graph of nearby B-edges (continuous,
     projection-based DTW).
@@ -724,26 +796,33 @@ def match_edge_to_bgraph(
         the traversed A-/B-segments). See ``docs/weighted_emission.md``.
     bearing_weight:
         Optional λ for a length-independent heading penalty (segment mode only); ``0`` = off.
+    debug:
+        ``True`` additionally returns the raw DP internals (cost/emission tables, backtracked
+        path with move types, trim window) under the ``debug`` key -- see
+        :func:`graph_dtw_align`. Off by default; no extra work when off.
 
     Returns
     -------
     dict with keys ``route`` (``[(b_edge_id, direction, seq), ...]``), ``warping_path``,
     ``metrics`` (see :func:`graph_dtw_align`), ``avg_distance``, and ``graph`` (the
-    :class:`LocalBGraph`, handy for visualization).
+    :class:`LocalBGraph`, handy for visualization). With ``debug=True`` also ``debug``.
     """
     gb = build_local_digraph(
         b_edges, coords_a, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
     )
     avg, warping, metrics = graph_dtw_align(
         coords_a, gb, step_meters=step_meters, trim_ends_m=trim_ends_m,
-        emission=emission, bearing_weight=bearing_weight)
-    return {
+        emission=emission, bearing_weight=bearing_weight, debug=debug)
+    res = {
         "route": metrics["route"],
         "warping_path": warping,
         "metrics": metrics,
         "avg_distance": avg,
         "graph": gb,
     }
+    if debug:
+        res["debug"] = metrics.get("debug")
+    return res
 
 
 class GraphDTWMatcher:
@@ -763,7 +842,8 @@ class GraphDTWMatcher:
         self.bearing_weight = bearing_weight
 
     def match_edge(self, coords_a: Sequence[Coord],
-                   b_edges: Sequence[Tuple[Any, LineString]]) -> Dict[str, Any]:
+                   b_edges: Sequence[Tuple[Any, LineString]],
+                   debug: bool = False) -> Dict[str, Any]:
         return match_edge_to_bgraph(
             coords_a, b_edges,
             snap_tolerance_m=self.snap_tolerance_m,
@@ -771,4 +851,5 @@ class GraphDTWMatcher:
             trim_ends_m=self.trim_ends_m,
             emission=self.emission,
             bearing_weight=self.bearing_weight,
+            debug=debug,
         )

@@ -79,6 +79,15 @@ python scripts/graph_dtw_map.py                          # whole-network map
 python scripts/graph_dtw_edge_detail.py --edge-id 3597   # single-edge deep dive
 ```
 
+**Debug the algorithm** (DP cost tables + backtracked path on synthetic cases or real edges,
+and robustness sweeps under noise / shift / rotation / crop —
+see [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md)):
+
+```bash
+python scripts/graph_dtw_debug_viz.py --case parallel_trap --shift -6 --trace
+python scripts/graph_dtw_perturb_test.py --case split      # or --edge-id 1377
+```
+
 Full pipeline reference (init, steps, output schemas, parameters):
 [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md). The algorithm itself (DTW on a directed
 graph): [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md).
@@ -174,6 +183,7 @@ m.set_parameters(max_distance=25)
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
+| [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
 | [docs/algorithm.md](docs/algorithm.md) | The three-tier edge-to-edge architecture. |
 | [docs/symmetric_matching.md](docs/symmetric_matching.md) | Symmetric (two-way) split/merge reconciliation. |
@@ -184,8 +194,8 @@ m.set_parameters(max_distance=25)
 ## Project layout
 
 ```
-network_matching/   library — matcher, graph_dtw, bgraph_prep, logging_utils, dtw
-scripts/            CLI tools — graph_dtw_map.py, graph_dtw_edge_detail.py, ...
+network_matching/   library — matcher, graph_dtw, synthetic (test cases), bgraph_prep, dtw
+scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, graph_dtw_perturb_test.py, ...
 notebooks/          demos — route tables, real-data plots, synthetic cases
 docs/               documentation
 tests/              pytest suite
