@@ -91,11 +91,12 @@ the middle-to-middle segment distance `+ λ·Δbearing` (see [weighted_emission.
 through the DAG, and it dictates the combination operators:
 
 ```
-D[a][v] = E(a, v) +        Σ                min           D[a'][v']
-                      a' ∈ Apred(a)   v' ∈ Bpred(v) ∪ {v}
+D[a][v] = E(a, v) +        Σ         1/outdeg(a') ·      min           D[a'][v']
+                      a' ∈ Apred(a)                 v' ∈ Bpred(v) ∪ {v}
 ```
 
-Read it as **min-sum message passing** — two *different* combinations, on purpose:
+where `outdeg(a')` is the number of outgoing A-edges of `a'`. Read it as **min-sum message
+passing with a conserved cost-flow** — three deliberate pieces:
 
 - **`min` over `v' ∈ Bpred(v) ∪ {v}`** — a **choice** of where the predecessor `a'` sat in B:
   the same vertex `v` (A advanced, B stayed — the *vertical* move) or one arc back `v' ∈ Bpred(v)`
@@ -104,8 +105,12 @@ Read it as **min-sum message passing** — two *different* combinations, on purp
 - **`Σ` over `a' ∈ Apred(a)`** — **coverage**: every A-edge flowing into `a` must be aligned, none
   discarded, so at a merge you **add** both approaches' costs. A `min` here would optimise one
   incoming branch and leave the other **unmatched** — wrong, because the goal is to align the
-  *whole* DAG, not to find one best path through it. This is the crux: **sum over branches, min
-  over B-positions.**
+  *whole* DAG, not to find one best path through it. **Sum over branches, min over B-positions.**
+- **`1/outdeg(a')` — the split factor.** A vertex divides its accumulated cost **equally among its
+  outgoing edges**, so the cost is *conserved* as it flows downstream. Without it, a shared prefix
+  feeding several sinks would be counted once per sink; with it, each vertex's `E` contributes
+  **exactly once** across all sinks (§3.3). At chain/merge vertices `outdeg = 1` (factor `1`,
+  nothing changes); only splits divide.
 
 It reduces correctly at the two ends:
 
@@ -124,14 +129,14 @@ Other properties:
   *run* of B-vertices (graph-DTW's *horizontal* move, when B is sampled finer than A), that
   one-step `min` generalises to a within-`a` shortest-B-**walk** — the Dijkstra of §3.1 — each
   intermediate B-vertex re-paying its `E(a, ·)`. Same idea, multi-step.
-- **Termination — at the sinks.** A single path terminates at one point (`argmin_v D[N-1][v]`). A
-  DAG has several **sinks**; because the sum already forced every branch to be covered, the result
-  is read at **each sink `t`** as `argmin_v D[t][v]` (§3.2 assembles them into one consistent
-  labelling).
-- **Exactness.** Min-sum is **exact on a tree / forest** (a Y-split is an out-tree, a merge is an
-  in-tree — the common junction cases). A **diamond** (split then re-merge) makes the sum
-  double-count the shared ancestor above the split; reconvergent DAGs need a shared-prefix
-  correction (future work — see §3.2).
+- **Termination — total cost at the sinks (§3.3).** Because the split factor conserves the
+  cost-flow, the total map-match cost is the sum over **sinks** of `min_v D[t][v]`, and it equals
+  `Σ over A-vertices E(a, φ(a))` — every edge counted **once, for any DAG shape** (diamonds
+  included).
+- **Exactness — cost vs. labelling.** The split factor makes the **cost total** exact on any DAG.
+  What remains for **reconvergent** DAGs (diamonds) is the **labelling**: a shared junction must
+  resolve to a single `φ`, which the forward mins do not by themselves couple — it is fixed at
+  backtrack (§3.2), and globally-optimal joint labelling of a reconvergence is future work.
 
 ### 3.1 The one-step term becomes a Dijkstra (B may cycle, B may be denser)
 
@@ -143,7 +148,7 @@ should be free to ride a run of B-vertices). Both are handled by fixing `a` and 
 that the seed is now the **summed** predecessor contribution, not a single row:
 
 ```
-seed[v] = E(a, v) + Σ_{a'∈Apred(a)} D[a'][v]    # A-advance part of every incoming branch, at v
+seed[v] = E(a, v) + Σ_{a'∈Apred(a)} D[a'][v]/outdeg(a')   # summed, split-scaled incoming branches
 D[a][·] = seed[·];  push all (seed[v], v)
 pop (c, u); for each GB arc u -> w:  cand = D[a][u] + E(a, w)     # let a run of B pay E(a,·)
                                      if cand < D[a][w]: D[a][w] = cand; push
@@ -173,9 +178,43 @@ junction-neighbourhood case once edges are oriented by travel direction and a sm
 is taken), the per-A-vertex `φ` is globally optimal and the backtrack above is exact. When `GA`
 **reconverges** (a *diamond*: split then merge), the merge vertex is reached by two branches that
 must **agree** on `φ(merge)`; the forward DP already pins `φ(merge) = argmin_v D[merge][v]`, and
-both branches back-trace from that shared label — an explicit agreement point. (Exact joint
-optimisation of a reconvergent DAG has the usual shared-ancestor subtlety; the debug cases in §4
-start as trees to validate the core, then add a diamond to exercise the merge rule.)
+both branches back-trace from that shared label — an explicit agreement point. (The split factor
+already makes the *cost total* exact here (§3.3); what remains is only globally-optimal *labelling*
+at the reconvergence — future work. The debug cases in §4 start as trees, then add a diamond to
+exercise the merge rule.)
+
+### 3.3 The objective — total map-match cost
+
+The algorithm minimises the **total match cost of the whole DAG**: the sum of the local costs over
+every matched step, i.e. every A-vertex paired with its assigned B-vertex `φ(a)`:
+
+```
+C_total = Σ over A-vertices a   E(a, φ(a))          # each A-edge's drift, summed, once
+```
+
+The **split factor `1/outdeg`** is exactly what lets you read this off the DP at the terminals:
+because it conserves the cost-flow (from each vertex, `1/outdeg` of the value goes to each
+successor — a uniform walk whose weight sums to 1 at the sinks, since `GA` is acyclic), each
+vertex's `E` reaches the sinks with total weight 1. Hence
+
+```
+C_total  =  Σ over sinks t   min_v D[t][v]          # exact for ANY DAG shape (diamonds included)
+```
+
+with **no double-counting** of shared prefixes. Worked check — Y-split (`a0→a1`, `a1→a2`,
+`a1→a3`), every vertex drifting 0.2, `outdeg(a1)=2`:
+
+```
+D[a0]=0.2   D[a1]=0.4   D[a2]=0.2+½·0.4=0.4   D[a3]=0.4
+Σ sinks {a2,a3} = 0.8 = 0.2·4 = C_total        (a naive sum without the split gives 1.2 — wrong)
+```
+
+**Reported quality metric.** `C_total` is a *count-weighted sum* (more vertices ⇒ larger), so —
+exactly like graph-DTW's raw `D` value — it is **not** the number you report. The reported quality
+is the **average drift** `C_total / (number of matched steps)` (meters, comparable to graph-DTW's
+`avg_distance` and the `resolve_routes` thresholds), plus the **per-A-edge** breakdown (each
+A-edge's own avg/max/min drift and coverage — the `routes_long` slice) and **coverage %**.
+Junction consistency is a structural guarantee, not part of the cost.
 
 ---
 
