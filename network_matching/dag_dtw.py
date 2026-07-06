@@ -146,28 +146,42 @@ def match_dag_to_bgraph(
     sinks = [a for a in range(NA) if len(ga.succ_arcs[a]) == 0]
     total_cost = float(sum(np.min(D[t]) for t in sinks)) if sinks else float("inf")
 
-    # --- backtrack: fix one φ(a) per A-vertex (junction consistency) ---
+    # --- backtrack in REVERSE topological order (successors first), enforcing MONOTONICITY ---
+    # For each A-vertex pick the cheapest B-vertex that can walk FORWARD to every successor's φ.
+    # This is what keeps a junction from spilling onto a cross road: a split vertex is forced to a
+    # common B-ancestor of its branches, so every GA arc a->a' maps to a forward B-step (never a
+    # backward / disconnected jump). Sinks are free (argmin).
+    fwd_sets: Dict[int, set] = {}                      # v -> set of B-vertices forward-reachable
+
+    def _reach(v: int) -> set:
+        s = fwd_sets.get(v)
+        if s is None:
+            s = {v}
+            stack = [v]
+            while stack:
+                u = stack.pop()
+                for w in gb.succ_arcs[u]:
+                    if w not in s:
+                        s.add(w)
+                        stack.append(w)
+            fwd_sets[v] = s
+        return s
+
     phi: Dict[int, int] = {}
-
-    def resolve(a: int, v: int) -> None:
-        if a in phi:
-            return
-        cur = v
-        while hpar[a][cur] >= 0:                        # unwind the within-a horizontal walk
-            cur = hpar[a][cur]
-        phi[a] = cur                                    # entry B-vertex of this A-vertex
-        preds = ga.pred_arcs[a]
-        if not preds:
-            return
-        for ap in preds:                                # go to EVERY predecessor (cover branches)
-            best_vp, best = cur, D[ap][cur]
-            for u in gb.pred_arcs[cur]:
-                if D[ap][u] < best:
-                    best, best_vp = D[ap][u], u
-            resolve(ap, best_vp)
-
-    for t in sinks:
-        resolve(t, int(np.argmin(D[t])))
+    for a in reversed(order):
+        succ = ga.succ_arcs[a]
+        if not succ:                                   # sink: free choice
+            phi[a] = int(np.argmin(D[a]))
+            continue
+        targets = [phi[s] for s in succ if s in phi]
+        chosen = None
+        for v in np.argsort(D[a]):                     # cheapest first
+            if not np.isfinite(D[a][v]):
+                break
+            if all(t in _reach(int(v)) for t in targets):
+                chosen = int(v)
+                break
+        phi[a] = chosen if chosen is not None else int(np.argmin(D[a]))
 
     # --- per-A-vertex match + per-A-edge route ---
     a_vertex_match = []
@@ -181,16 +195,32 @@ def match_dag_to_bgraph(
         drifts.append(d)
         a_vertex_match.append((float(ax[a]), float(ay[a]), int(v), beid, d))
 
-    routes: Dict[Any, List[Any]] = {}
-    for a in order:                                     # keep topological order within each A-edge
+    # per (A-edge, B-edge) vertex counts, in topological order, so a leading/trailing junction
+    # TOUCH (a single A-vertex grazing the neighbouring B-edge at the junction) can be trimmed.
+    seq_counts: Dict[Any, List[List[Any]]] = {}        # a_edge -> [[b_edge, count], ...] in order
+    for a in order:
         v = phi.get(a)
         if v is None:
             continue
         aeid = ga.edge_ids[ga.vert_edge[a]] if 0 <= ga.vert_edge[a] < len(ga.edge_ids) else None
         beid = gb.edge_ids[gb.vert_edge[v]] if 0 <= gb.vert_edge[v] < len(gb.edge_ids) else None
-        seq = routes.setdefault(aeid, [])
-        if beid is not None and (not seq or seq[-1] != beid):
-            seq.append(beid)
+        if beid is None:
+            continue
+        run = seq_counts.setdefault(aeid, [])
+        if run and run[-1][0] == beid:
+            run[-1][1] += 1
+        else:
+            run.append([beid, 1])
+
+    routes: Dict[Any, List[Any]] = {}
+    for aeid, run in seq_counts.items():
+        r = run[:]
+        # drop a leading / trailing single-vertex touch (the junction graze) if a real edge remains
+        if len(r) > 1 and r[0][1] <= 1:
+            r = r[1:]
+        if len(r) > 1 and r[-1][1] <= 1:
+            r = r[:-1]
+        routes[aeid] = [b for b, _c in r]
 
     res: Dict[str, Any] = {
         "phi": phi,

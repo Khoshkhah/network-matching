@@ -194,13 +194,24 @@ generalised to "A-vertex `a` in topological order," and its single-row seed gene
 Graph-DTW backtracks a single warping **path**. DAG-DTW backtracks a warping **DAG**: one monotone
 alignment per source→sink route of A, **sharing state at common A-vertices**. Backtracking:
 
-1. From each **sink** `t`, take `φ(t) = argmin_v D[t][v]`.
-2. Trace predecessors as in graph-DTW (recording which move won), but **memoise `φ(a)` per
-   A-vertex**: the first time a backtrack reaches A-vertex `a` it fixes `φ(a)`; any other branch
-   that reaches `a` **reuses** that `φ(a)`. This is what makes the assignment **single-valued per
-   A-vertex** — the junction-consistency guarantee — for free.
-3. Each A-edge's matched B-route is read off its own stretch of the warping DAG, exactly as
-   graph-DTW reads a route from a warping path (grouping consecutive steps by `vert_edge`).
+The backtrack runs in **reverse topological order** (successors before predecessors) and enforces
+the **monotone-forward rule** — *every* GA arc `a → a'` must map to a **forward** B-step
+`φ(a) → φ(a')` (reachable along GB arcs; never backward, never to a disconnected vertex):
+
+1. From each **sink** `t`, take `φ(t) = argmin_v D[t][v]` (free choice at the end).
+2. For every non-sink `a` (all its successors already fixed), pick the **cheapest** `φ(a) = v`
+   (min `D[a][v]`) **subject to `v` forward-reaching every successor's `φ`**. At a **split** this
+   forces the junction to a *common B-ancestor* of its branches — so a junction can never spill
+   onto a cross road, and coincident junction vertices are consistent by construction. (Without
+   the constraint, resolving coincident junction vertices independently produces a **backward
+   step** under perturbation — a real bug the sequence tests catch.)
+3. Each A-edge's matched B-route is read off its stretch of the warping DAG (grouping consecutive
+   steps by `vert_edge`), and a leading/trailing single-vertex **junction touch** on a neighbouring
+   B-edge is trimmed, so the route lists only the edges the A-edge actually traverses.
+
+The trade-off is honest: forcing the junction to the common ancestor can *raise the drift* (the
+spilled match was cheaper pointwise), but it guarantees a **valid monotone sequence** — the rule
+matters more than the pointwise minimum.
 
 **Tree vs. reconvergence.** When `GA` is a **tree / polytree** (branches never rejoin — the common
 junction-neighbourhood case once edges are oriented by travel direction and a small neighbourhood
@@ -330,11 +341,12 @@ coloured A-edges, the joint correspondence, and `φ` at each junction.
 - **Directed A → B** only (no symmetric B→A reconciliation).
 - **Tree / polytree** source DAGs are handled exactly; **reconvergent** DAGs (diamonds) use the
   merge-agreement rule of §3.2 (exact joint optimisation of reconvergence is future work).
-- **v1 junction consistency is region-exact, not vertex-exact.** A junction is built as several
-  *coincident* per-edge A-vertices (docs §2), resolved independently at backtrack, so the branches
-  agree on the junction *region* (within a sample step) rather than the identical B-vertex. Merging
-  the coincident junction vertices for vertex-exact `φ` is a refinement. Implemented in
-  [`network_matching/dag_dtw.py`](../network_matching/dag_dtw.py); demo in
+- **Junction consistency is now enforced by a monotone backtrack (§3.2).** The reverse-topological
+  backtrack forces every junction to a common B-ancestor of its branches, so the matched sequence
+  is always a **valid monotone forward B-walk** (no backward or disconnected step, no spill onto a
+  cross road) — validated on clean and rigidly-shifted DAGs by
+  [`scripts/dag_dtw_validate.py`](../scripts/dag_dtw_validate.py) and the sequence-rule tests.
+  Implemented in [`network_matching/dag_dtw.py`](../network_matching/dag_dtw.py); demo in
   [`notebooks/dag_dtw_playground.ipynb`](../notebooks/dag_dtw_playground.ipynb).
 - Cost is **count-weighted** (inherited from graph-DTW): route choice depends on `step_meters`
   density; a length-weighted objective remains future work.

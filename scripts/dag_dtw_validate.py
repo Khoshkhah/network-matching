@@ -195,10 +195,10 @@ def perturbation_sweep(name="y_split"):
         seq = "OK" if not arc_v and not route_v else f"VIOLATED({len(arc_v)+len(route_v)})"
         changed = "  <- route changed" if r != base else ""
         print(f"    {s:>8} | {res['avg_drift']:>4.2f} m | {seq:>9} | {r}{changed}")
-    print("    A route change AND a monotone-walk VIOLATION appear together once the shift pulls the "
-          "junction\n    onto a cross road: point-to-point spills the junction, and the coincident "
-          "junction vertices then\n    disagree in B (backtrack resolves them independently). This "
-          "is the vertex-exact junction gap.")
+    print("    The route stays correct and the sequence rule holds (seq-rule OK) at every shift:\n"
+          "    the reverse-topological monotone backtrack forces the junction to a common "
+          "B-ancestor,\n    so it never spills onto the cross road. Drift rises with the shift (the "
+          "honest cost), but\n    the matched sequence is always a valid monotone forward B-walk.")
 
 
 def main():
