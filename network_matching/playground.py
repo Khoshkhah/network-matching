@@ -23,7 +23,8 @@ from shapely.geometry import LineString
 from .graph_dtw import match_edge_to_bgraph
 from .synthetic import SCENARIOS, apply_perturbation, as_array, get_scenario, reverse
 
-PLAYGROUND_VERSION = "v2 -- segment mode draws segment-middle <-> segment-middle links"
+PLAYGROUND_VERSION = ("v3 -- points stay at their true locations; segment mode only re-routes "
+                      "the links middle-to-middle")
 
 PERTURB_ORDER = ["crop", "stretch", "rotate", "translate", "shift", "longitudinal", "noise"]
 
@@ -87,9 +88,14 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     seg_mode = (bool(dbg) and dbg.get("params", {}).get("emission") == "segment"
                 and "arc_path" in dbg)
     if seg_mode:
-        # SEGMENT-TO-SEGMENT: one DP state = (A-segment, B-arc). Drawn like the point view,
-        # but each link runs from the MIDDLE of the A-segment to the MIDDLE of its matched
-        # B-segment (one link per matched segment pair).
+        # SEGMENT-TO-SEGMENT: the matched POINTS are drawn exactly like the point view (dots at
+        # their true locations); only the CONNECTION LINES differ -- one per DP state
+        # (A-segment, B-arc), running from the middle of the A-segment to the middle of its
+        # matched B-segment. No markers at the midpoints.
+        for k, (pa, pb) in enumerate(wp):
+            c = color.get(step_edge[k], "0.55")
+            ax.plot(pb[0], pb[1], "o", ms=5, color=c, zorder=5)
+            ax.plot(pa[0], pa[1], "o", ms=7, color=c, mec="white", mew=1.0, zorder=7)
         gb = res["graph"]
         ap = dbg["a_pool"]
         arcs = dbg["arcs"]
@@ -105,8 +111,6 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
             ma = ((a0[0] + a1[0]) / 2, (a0[1] + a1[1]) / 2)   # A-segment midpoint
             mb = ((b0[0] + b1[0]) / 2, (b0[1] + b1[1]) / 2)   # B-segment midpoint
             ax.plot([ma[0], mb[0]], [ma[1], mb[1]], color=c, lw=1.2, alpha=0.8, zorder=4)
-            ax.plot(mb[0], mb[1], "o", ms=5, color=c, zorder=5)
-            ax.plot(ma[0], ma[1], "o", ms=7, color=c, mec="white", mew=1.0, zorder=7)
     else:
         # POINT-TO-POINT: one link per matched pair, A point painted in its B-edge color
         for k, (pa, pb) in enumerate(wp):
@@ -124,8 +128,8 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     handles += [Line2D([], [], color=color[eid], lw=3, label=f"matched → {eid}")
                 for eid in route]
     if seg_mode:
-        handles.append(Line2D([], [], color="0.55", lw=1.2, marker="o", ms=5,
-                              label="segment-middle ↔ segment-middle link"))
+        handles.append(Line2D([], [], color="0.55", lw=1.2,
+                              label="link: segment middle ↔ segment middle"))
     if any(eid not in color for eid, _ in b_edges):
         handles.append(Line2D([], [], color="0.72", lw=2, label="candidate (unmatched)"))
     if original_a is not None:
