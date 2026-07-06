@@ -91,17 +91,29 @@ the middle-to-middle segment distance `+ λ·Δbearing` (see [weighted_emission.
 through the DAG, and it dictates the combination operators:
 
 ```
-D[a][v] = E(a, v) +        Σ         1/outdeg(a') ·      min           D[a'][v']
-                      a' ∈ Apred(a)                 v' ∈ Bpred(v) ∪ {v}
+D[a][v] = E(a, v) + min(
+
+       min          D[a][v'],                                     # (H) B-advance, A STAYS at a
+    v' ∈ Bpred(v)
+
+         Σ        1/outdeg(a') ·      min           D[a'][v']     # (A) A-advance from predecessors
+    a' ∈ Apred(a)                v' ∈ Bpred(v) ∪ {v}
+)
 ```
 
-where `outdeg(a')` is the number of outgoing A-edges of `a'`. Read it as **min-sum message
-passing with a conserved cost-flow** — three deliberate pieces:
+These are DTW's three moves again, split into the two branches of the outer `min`:
 
-- **`min` over `v' ∈ Bpred(v) ∪ {v}`** — a **choice** of where the predecessor `a'` sat in B:
-  the same vertex `v` (A advanced, B stayed — the *vertical* move) or one arc back `v' ∈ Bpred(v)`
-  (both advanced — the *diagonal*). Cheapest option wins, so `min`. (`∪ {v}` folds vertical and
-  diagonal into one term.)
+- **(H) horizontal — B advances, A stays.** `min over v' ∈ Bpred(v) of D[a][v']`: still on the
+  **same** A-vertex `a`, step one B-arc `v'→v`. Staying on `a` crosses **no** A-edge, so this term
+  carries **no split factor and no sum** — it is a plain `min`. It is what lets one A-vertex ride a
+  *run* of B-vertices (B sampled finer than A). It self-references `D[a][·]`, so it is resolved by
+  the within-`a` **Dijkstra** of §3.1 (giving the multi-step B-run), each B-step re-paying `E(a,·)`.
+- **(A) vertical + diagonal — A advances from its predecessors.** For each incoming A-edge, choose
+  where the predecessor sat: `v' = v` (A advanced, B stayed — *vertical*) or `v' ∈ Bpred(v)` (both
+  advanced — *diagonal*); `∪ {v}` folds the two into one `min`.
+
+The (A) term carries the two DAG-specific pieces:
+
 - **`Σ` over `a' ∈ Apred(a)`** — **coverage**: every A-edge flowing into `a` must be aligned, none
   discarded, so at a merge you **add** both approaches' costs. A `min` here would optimise one
   incoming branch and leave the other **unmatched** — wrong, because the goal is to align the
@@ -112,23 +124,25 @@ passing with a conserved cost-flow** — three deliberate pieces:
   **exactly once** across all sinks (§3.3). At chain/merge vertices `outdeg = 1` (factor `1`,
   nothing changes); only splits divide.
 
+So on a **chain** (`|Apred(a)| = 1`, `outdeg = 1`) this reads
+`E(a,v) + min(D[a][v'] , D[a'][v] , D[a'][v'])` — graph-DTW's exact three moves
+(horizontal / vertical / diagonal). The DAG only adds the `Σ` + split on the (A) branch.
+
 It reduces correctly at the two ends:
 
-- **Chain** (`|Apred(a)| = 1`): the sum is a single term, so `Σ` and `min` coincide and the
-  recurrence collapses to graph-DTW. The sum only ever *differs* from a min at a **merge**.
-- **Source** (`Apred(a) = ∅`): the empty sum is `0`, leaving `D[a][v] = E(a, v)` — **free entry**
-  at every A-source (any B-vertex), the DAG analog of graph-DTW's free row 0. No special case
-  needed.
+- **Chain** (`|Apred(a)| = 1`): the (A) sum is a single term, so it collapses to graph-DTW's
+  vertical+diagonal, and the (H) term supplies the horizontal — full graph-DTW. The `Σ` only ever
+  *differs* from a min at a **merge**.
+- **Source** (`Apred(a) = ∅`): the (A) sum is empty (`0`), leaving `D[a][v] = E(a, v)` seeded, then
+  the (H) Dijkstra spreads along B — **free entry** at every A-source, the DAG analog of graph-DTW's
+  free row 0. No special case needed.
 
 Other properties:
 
 - **Sweep order.** Process A-vertices in **topological order**. When `a` is reached every `a' ∈
-  Apred(a)` is already final, so each summand reads a finished value — no iteration to convergence,
-  because `GA` is acyclic. (This is exactly why the source must be a DAG.)
-- **B denser than A.** The inner term steps B by **one** arc (`Bpred(v)`). To let one A-arc ride a
-  *run* of B-vertices (graph-DTW's *horizontal* move, when B is sampled finer than A), that
-  one-step `min` generalises to a within-`a` shortest-B-**walk** — the Dijkstra of §3.1 — each
-  intermediate B-vertex re-paying its `E(a, ·)`. Same idea, multi-step.
+  Apred(a)` is already final, so each (A) summand reads a finished value — no iteration to
+  convergence, because `GA` is acyclic. (This is exactly why the source must be a DAG.) The (H)
+  term is within `a` and is resolved by that A-vertex's own Dijkstra (§3.1).
 - **Termination — total cost at the sinks (§3.3).** Because the split factor conserves the
   cost-flow, the total map-match cost is the sum over **sinks** of `min_v D[t][v]`, and it equals
   `Σ over A-vertices E(a, φ(a))` — every edge counted **once, for any DAG shape** (diamonds
