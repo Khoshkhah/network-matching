@@ -86,6 +86,7 @@ def match_dag_to_bgraph(
 ) -> Dict[str, Any]:
     """Align the source DAG made of ``a_edges`` to the local directed graph of ``b_edges``.
 
+    Point-to-point v1: the emission is ``E(a, v) = dist(a, v)`` (no direction term).
     ``a_edges`` / ``b_edges``: lists of ``(id, shapely LineString)`` in a projected CRS (meters).
     Returns a dict with:
 
