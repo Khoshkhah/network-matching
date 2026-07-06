@@ -14,7 +14,8 @@ from .graph_dtw import match_edge_to_bgraph
 logger = logging.getLogger("network_matching.matcher")
 
 
-def _graph_dtw_group(task, snap_tolerance_m, step_meters, trim_ends_m):
+def _graph_dtw_group(task, snap_tolerance_m, step_meters, trim_ends_m,
+                     emission="point", bearing_weight=0.0):
     """Pure, picklable worker: run graph-DTW for one A-edge group.
 
     ``task`` is ``(id_a, coords_a, b_edges)`` where ``b_edges`` is a list of
@@ -26,7 +27,7 @@ def _graph_dtw_group(task, snap_tolerance_m, step_meters, trim_ends_m):
     res = match_edge_to_bgraph(
         coords_a, b_edges,
         snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
-        trim_ends_m=trim_ends_m,
+        trim_ends_m=trim_ends_m, emission=emission, bearing_weight=bearing_weight,
     )
     if not res["route"]:
         return id_a, None
@@ -70,7 +71,11 @@ class DuckDBMapMatcher:
         self.columns_a = {}
         self.columns_b = {}
         self.utm_srid = None
-        
+        # ST_Transform axis handling. True treats EPSG:4326 coords as (lon, lat) = (x, y) — correct
+        # for lon/lat WKT and required on DuckDB/PROJ builds that otherwise return POINT(inf inf)
+        # for a 4326->UTM transform. Set False for the pre-`always_xy` behaviour.
+        self.always_xy = True
+
         # Default thresholds
         self.max_distance = 25.0       # search radius in meters to find candidate segments
         self.max_angle = 180.0         # max allowed bearing difference in degrees (180 = no angle filter)
@@ -80,7 +85,8 @@ class DuckDBMapMatcher:
     def from_wkt_csv(cls, csv_a: str, csv_b: str, *, id_a: str, id_b: str, utm_srid: int,
                      geom_col: str = "geometry", id_cast: Optional[str] = "BIGINT",
                      max_distance: float = 25.0, keep_cols_a=None, keep_cols_b=None,
-                     table_a: str = "network_a", table_b: str = "network_b") -> "DuckDBMapMatcher":
+                     table_a: str = "network_a", table_b: str = "network_b",
+                     always_xy: bool = True) -> "DuckDBMapMatcher":
         """Build and fully configure a matcher from two CSVs whose ``geom_col`` holds WKT
         geometry in EPSG:4326. One-call replacement for the usual
         ``CREATE TABLE ... ST_GeomFromText`` + :meth:`configure_sources` +
@@ -119,14 +125,15 @@ class DuckDBMapMatcher:
         m.configure_sources(source_a=table_a, id_col_a=id_a, geom_col_a="geometry",
                             source_b=table_b, id_col_b=id_b, geom_col_b="geometry",
                             utm_srid=utm_srid)
-        m.set_parameters(max_distance=max_distance)
+        m.set_parameters(max_distance=max_distance, always_xy=always_xy)
         return m
 
     @classmethod
     def from_geofiles(cls, path_a: str, path_b: str, *, id_a: str, id_b: str, utm_srid: int,
                       src_srid: int = 4326, max_distance: float = 25.0,
                       keep_cols_a=None, keep_cols_b=None,
-                      table_a: str = "network_a", table_b: str = "network_b") -> "DuckDBMapMatcher":
+                      table_a: str = "network_a", table_b: str = "network_b",
+                      always_xy: bool = True) -> "DuckDBMapMatcher":
         """Same as :meth:`from_wkt_csv` but reads GIS files (GeoPackage / GeoJSON / Shapefile /
         FlatGeobuf, anything DuckDB ``ST_Read`` supports) instead of WKT CSVs::
 
@@ -138,11 +145,12 @@ class DuckDBMapMatcher:
         load (the rest of the pipeline transforms 4326 -> ``utm_srid``).
         """
         m = cls()
+        axy = f", always_xy := {'true' if always_xy else 'false'}"
         srcs = ((path_a, table_a, id_a, keep_cols_a or []),
                 (path_b, table_b, id_b, keep_cols_b or []))
         for path, table, idc, keep in srcs:
             geom = ("geom" if src_srid == 4326
-                    else f"ST_Transform(geom, 'EPSG:{src_srid}', 'EPSG:4326')")
+                    else f"ST_Transform(geom, 'EPSG:{src_srid}', 'EPSG:4326'{axy})")
             extra = "".join(f"{c}, " for c in keep)
             m.conn.execute(
                 f"CREATE OR REPLACE TABLE {table} AS "
@@ -151,7 +159,7 @@ class DuckDBMapMatcher:
         m.configure_sources(source_a=table_a, id_col_a=id_a, geom_col_a="geometry",
                             source_b=table_b, id_col_b=id_b, geom_col_b="geometry",
                             utm_srid=utm_srid)
-        m.set_parameters(max_distance=max_distance)
+        m.set_parameters(max_distance=max_distance, always_xy=always_xy)
         return m
 
     def configure_sources(self,
@@ -178,7 +186,8 @@ class DuckDBMapMatcher:
         
     def set_parameters(self, max_distance: Optional[float] = None,
                        max_angle: Optional[float] = None,
-                       min_overlap: Optional[float] = None):
+                       min_overlap: Optional[float] = None,
+                       always_xy: Optional[bool] = None):
         """Override matching thresholds.
 
         Parameters
@@ -191,6 +200,10 @@ class DuckDBMapMatcher:
         min_overlap:
             Minimum required corridor overlap fraction (0-1) for a pair to
             qualify as a match (Tier 3 reconciliation).
+        always_xy:
+            ST_Transform axis handling for the 4326->UTM candidate projection.
+            ``True`` (default) treats 4326 coords as (lon, lat); set ``False``
+            for the legacy behaviour.
         """
         if max_distance is not None:
             self.max_distance = max_distance
@@ -198,6 +211,8 @@ class DuckDBMapMatcher:
             self.max_angle = max_angle
         if min_overlap is not None:
             self.min_overlap = min_overlap
+        if always_xy is not None:
+            self.always_xy = always_xy
             
     def _get_all_ids_a(self) -> pd.DataFrame:
         """
@@ -218,20 +233,20 @@ class DuckDBMapMatcher:
         if not self.source_a or not self.source_b or not self.utm_srid:
             raise ValueError("Matcher sources and UTM SRID must be configured first.")
             
-        # Spatial query uses ST_DWithin to leverage DuckDB's internal R-Tree index
-        # We transform both geometries to the local UTM meter-based projection
+        # Spatial query uses ST_DWithin to leverage DuckDB's internal R-Tree index.
+        # We transform both geometries to the local UTM meter-based projection; `always_xy` keeps
+        # lon/lat WKT in (x, y) order (see __init__ / set_parameters).
+        axy = f", always_xy := {'true' if self.always_xy else 'false'}"
+        tA = f"ST_Transform(A.{self.columns_a['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}'{axy})"
+        tB = f"ST_Transform(B.{self.columns_b['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}'{axy})"
         query = f"""
             SELECT DISTINCT
                 A.{self.columns_a['id']} AS id_a,
-                ST_AsText(ST_Transform(A.{self.columns_a['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}')) AS wkt_a,
+                ST_AsText({tA}) AS wkt_a,
                 B.{self.columns_b['id']} AS id_b,
-                ST_AsText(ST_Transform(B.{self.columns_b['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}')) AS wkt_b
+                ST_AsText({tB}) AS wkt_b
             FROM {self.source_a} AS A, {self.source_b} AS B
-            WHERE ST_DWithin(
-                ST_Transform(A.{self.columns_a['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}'),
-                ST_Transform(B.{self.columns_b['geom']}, 'EPSG:4326', 'EPSG:{self.utm_srid}'),
-                {self.max_distance}
-            );
+            WHERE ST_DWithin({tA}, {tB}, {self.max_distance});
         """
         return self.conn.execute(query).df()
 
@@ -719,7 +734,8 @@ class DuckDBMapMatcher:
 
     def compute_graph_dtw_routes(self, candidates_df: Optional[pd.DataFrame] = None,
                                  snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                                 trim_ends_m: float = 0.0, n_jobs: int = 1):
+                                 trim_ends_m: float = 0.0, n_jobs: int = 1,
+                                 emission: str = "point", bearing_weight: float = 0.0):
         """Route-based matching: align each Source-A edge to the local directed graph of its
         candidate B-edges (graph-DTW), returning one connected B-edge route per A-edge.
 
@@ -781,7 +797,8 @@ class DuckDBMapMatcher:
             from joblib import Parallel, delayed
             logger.info("graph-DTW: aligning in parallel (n_jobs=%d)...", n_jobs)
             outcomes = Parallel(n_jobs=n_jobs)(
-                delayed(_graph_dtw_group)(t, snap_tolerance_m, step_meters, trim_ends_m)
+                delayed(_graph_dtw_group)(t, snap_tolerance_m, step_meters, trim_ends_m,
+                                          emission, bearing_weight)
                 for t in tasks
             )
         else:
@@ -790,7 +807,7 @@ class DuckDBMapMatcher:
             step = max(1, n_tasks // 10)
             for k, t in enumerate(tasks):
                 outcomes.append(_graph_dtw_group(t, snap_tolerance_m, step_meters,
-                                                 trim_ends_m))
+                                                 trim_ends_m, emission, bearing_weight))
                 if (k + 1) % step == 0 or (k + 1) == n_tasks:
                     logger.info("graph-DTW: aligned %d/%d A-edges (%.0f%%)",
                                 k + 1, n_tasks, 100.0 * (k + 1) / max(1, n_tasks))
@@ -864,14 +881,19 @@ class DuckDBMapMatcher:
         return routes_long, routes_summary
 
     def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                     trim_ends_m: float = 0.0, n_jobs: int = 1):
+                     trim_ends_m: float = 0.0, n_jobs: int = 1,
+                     emission: str = "point", bearing_weight: float = 0.0):
         """Run the full route-based (graph-DTW) pipeline: generate candidates, then align each
         Source-A edge to the local B-graph. Returns ``(routes_long, routes_summary)`` -- the
-        graph-DTW analogue of :meth:`match`. See :meth:`compute_graph_dtw_routes`."""
+        graph-DTW analogue of :meth:`match`. See :meth:`compute_graph_dtw_routes`.
+
+        ``emission="segment"`` uses the endpoint-average segment cost (optionally with
+        ``bearing_weight``); default ``"point"`` is unchanged. See ``docs/weighted_emission.md``."""
         candidates_df = self.generate_candidate_pairs()
         return self.compute_graph_dtw_routes(
             candidates_df, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
             trim_ends_m=trim_ends_m, n_jobs=n_jobs,
+            emission=emission, bearing_weight=bearing_weight,
         )
 
     def resolve_routes(self, routes_summary: pd.DataFrame, routes_long: Optional[pd.DataFrame] = None,

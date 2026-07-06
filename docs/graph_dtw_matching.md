@@ -158,6 +158,18 @@ direction).
 
 ---
 
+### 3.4 Local cost — point-to-point vs segment-to-segment
+
+The recurrence above is the **point-to-point** model (`emission="point"`, the default): states are
+(A-point, B-vertex) and each cell adds `dist(a_i, v)`. `emission="segment"` switches to a **true
+segment-to-segment DP**: the states become (A-**segment**, B-**arc**), and *every* state pays the
+endpoint-average `½(‖aᵢ−u‖ + ‖aᵢ₊₁−v‖)` — plus, with `bearing_weight` λ > 0, a per-state heading
+penalty `λ·Δbearing(segment, arc)`. Because both sides of every pairing are segments, no alignment
+move can bypass either term. Junction-snap stitches are connectivity, not segments: they are
+passed through within a row, never ridden by an A-segment. `"point"` is byte-for-byte unchanged;
+see [weighted_emission.md](weighted_emission.md) (§10) for the design, the failure mode of the
+earlier transition-cost variant, and validation results.
+
 ## 4. Output
 
 `graph_dtw_align(coords_a, gb)` returns `(average_distance, warping_path, metrics)` — the same

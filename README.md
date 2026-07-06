@@ -59,6 +59,11 @@ routes_long, routes_summary = m.match_routes(n_jobs=-1)   # parallel over A-edge
 **Key parameters:** `snap_tolerance_m` (junction snapping / connectivity), `step_meters` (sampling
 density), `n_jobs` (parallel cores). (`trim_ends_m`, an optional end-edge remover, is off by default.)
 
+**Local cost (`emission`).** Defaults to `"point"` (point-to-point drift). Pass `emission="segment"`
+for the endpoint-average **segment-to-segment** cost (direction-aware), with an optional
+`bearing_weight` heading term — see [docs/weighted_emission.md](docs/weighted_emission.md). `"point"`
+is unchanged, so existing results are unaffected.
+
 `match_routes` returns a route for every A-edge; keep only confident matches by filtering on
 thresholds (failures become `NO_MATCH`):
 
@@ -168,6 +173,7 @@ m.set_parameters(max_distance=25)
 |----------|--------|
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
+| [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
 | [docs/algorithm.md](docs/algorithm.md) | The three-tier edge-to-edge architecture. |
 | [docs/symmetric_matching.md](docs/symmetric_matching.md) | Symmetric (two-way) split/merge reconciliation. |

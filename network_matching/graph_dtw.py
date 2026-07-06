@@ -274,6 +274,132 @@ def build_local_digraph(
                        np.asarray(vert_edge, int), b_raw_nodes, edge_len)
 
 
+def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
+                      bearing_weight: float = 0.0) -> Optional[List[Tuple[int, int]]]:
+    """True segment-to-segment DP (``emission="segment"``): states are (A-segment i, B-arc u->v).
+
+    Every state pays the endpoint-average distance between A-segment ``a_i -> a_{i+1}`` and its
+    arc -- plus, with ``bearing_weight`` > 0, a per-state heading penalty -- so NO alignment move
+    can bypass the local cost. (The earlier point-state formulation charged bearing only on
+    diagonal moves, letting the DP escape via stalls and collapse the route; see
+    ``docs/weighted_emission.md`` §9-§10.) Moves: A-advance on the same arc (N segments : 1 arc),
+    arc-advance within a row (1 segment : N arcs; Dijkstra, each arc entered pays), or both.
+    Returns the vertex-level ``(a_index, vertex)`` pairs of the best alignment -- the same format
+    the point-state backtrack yields, so all downstream grouping/metrics are shared -- or ``None``
+    if no finite alignment exists.
+    """
+    V = gb.n_vertices
+    N = len(ax)
+    if N < 2:
+        return None
+    # Enumerate the arcs once; a DP state indexes this list.
+    au: List[int] = []
+    av: List[int] = []
+    for u in range(V):
+        for w in gb.succ_arcs[u]:
+            au.append(u)
+            av.append(w)
+    NA = len(au)
+    if NA == 0:
+        return None
+    auv = np.asarray(au, int)
+    avv = np.asarray(av, int)
+    arcs_from: List[List[int]] = [[] for _ in range(V)]   # arcs starting at a vertex
+    arcs_to: List[List[int]] = [[] for _ in range(V)]     # arcs ending at a vertex
+    for k in range(NA):
+        arcs_from[au[k]].append(k)
+        arcs_to[av[k]].append(k)
+
+    vx, vy = gb.vx, gb.vy
+    ux, uy = vx[auv], vy[auv]
+    hx, hy = vx[avv], vy[avv]
+    arc_len = np.hypot(hx - ux, hy - uy)
+    # A junction-snap stitch (sub-half-metre end->start connector) is CONNECTIVITY, not a segment:
+    # it has no meaningful heading and an A-segment must never pair with it. Non-ridable arcs can
+    # only be passed through within a row (H); they carry no (A-segment : arc) state of their own.
+    ridable = arc_len >= 0.5
+    bw = float(bearing_weight)
+    if bw > 0.0:
+        arc_bear = (np.degrees(np.arctan2(hx - ux, hy - uy)) + 360.0) % 360.0
+        seg_bear = (np.degrees(np.arctan2(np.diff(ax), np.diff(ay))) + 360.0) % 360.0
+
+    NS = N - 1                        # number of A-segments
+    INF = float("inf")
+    D = np.full((NS, NA), INF)
+    back: List[List[Optional[Tuple]]] = [[None] * NA for _ in range(NS)]
+
+    def emit_seg(i: int) -> np.ndarray:
+        # E(i, e) = 1/2(|a_i - u| + |a_{i+1} - v|) [+ lambda * circular bearing diff]
+        e = 0.5 * (np.hypot(ax[i] - ux, ay[i] - uy) + np.hypot(ax[i + 1] - hx, ay[i + 1] - hy))
+        if bw > 0.0:
+            bd = np.abs(seg_bear[i] - arc_bear)
+            e = e + bw * np.where(ridable, np.minimum(bd, 360.0 - bd), 0.0)
+        return e
+
+    def relax_row(i: int, ei: np.ndarray) -> None:
+        # 1 A-segment : N arcs -- Dijkstra within the row; every arc entered pays its emission.
+        heap = [(D[i][k], k) for k in range(NA)]
+        heapq.heapify(heap)
+        while heap:
+            c, k = heapq.heappop(heap)
+            if c > D[i][k]:
+                continue
+            for nb in arcs_from[av[k]]:
+                cand = D[i][k] + ei[nb]
+                if cand < D[i][nb]:
+                    D[i][nb] = cand
+                    back[i][nb] = ("H", k)
+                    heapq.heappush(heap, (cand, nb))
+
+    e0 = emit_seg(0)
+    for k in range(NA):
+        if ridable[k]:                              # a stitch cannot host an (A-segment : arc) state
+            D[0][k] = e0[k]
+            back[0][k] = ("START", -1)
+    relax_row(0, e0)
+    for i in range(1, NS):
+        ei = emit_seg(i)
+        for k in range(NA):
+            if not ridable[k]:                      # stitches are reachable only via H (pass-through)
+                continue
+            best = D[i - 1][k]                      # A-advance: next segment stays on this arc
+            bmove: Tuple = ("V", k)
+            for p in arcs_to[au[k]]:                # both advance: arrive from a predecessor arc
+                if D[i - 1][p] < best:
+                    best = D[i - 1][p]
+                    bmove = ("D", p)
+            if np.isfinite(best):
+                D[i][k] = ei[k] + best
+                back[i][k] = bmove
+        relax_row(i, ei)
+
+    k_best = int(np.argmin(D[NS - 1]))
+    if not np.isfinite(D[NS - 1][k_best]):
+        return None
+
+    states: List[Tuple[int, int]] = []
+    i, k = NS - 1, k_best
+    while True:
+        move, p = back[i][k]
+        states.append((i, k))
+        if move == "START":
+            break
+        if move == "V":
+            i -= 1
+        elif move == "D":
+            i -= 1
+            k = p
+        else:  # "H"
+            k = p
+    states.reverse()
+
+    # States -> vertex pairs: the entry arc contributes its tail, every state its head.
+    pairs: List[Tuple[int, int]] = [(states[0][0], au[states[0][1]])]
+    for (i, k) in states:
+        pairs.append((i + 1, av[k]))
+    return pairs
+
+
 # --------------------------------------------------------------------------------------
 # Graph-DTW alignment (the dynamic table)
 # --------------------------------------------------------------------------------------
@@ -282,6 +408,8 @@ def graph_dtw_align(
     gb: LocalBGraph,
     step_meters: float = 10.0,
     trim_ends_m: float = 0.0,
+    emission: str = "point",
+    bearing_weight: float = 0.0,
 ) -> Tuple[float, List[Tuple[Coord, Coord]], Dict[str, Any]]:
     """Align A-edge ``coords_a`` to the local directed graph ``gb`` with projection-enriched
     points on both sides.
@@ -309,6 +437,13 @@ def graph_dtw_align(
     Row 0 is free-entry (``D[0][v] = dist(a_0, v)``). The horizontal term is resolved per row by
     a Dijkstra relaxation over the (non-negative-weight) arcs, exact even with cycles.
     Termination covers all of A (``min_v D[N-1][v]``); backtrack for the best matching.
+
+    ``emission`` selects the local cost MODEL. ``"point"`` (default): the recurrence above --
+    states are (A-point, B-vertex), each cell adds ``dist(a_i, v)``. ``"segment"``: true
+    segment-to-segment -- states are (A-segment, B-arc) and EVERY state pays the endpoint-average
+    ``1/2(|a_i - u| + |a_{i+1} - v|)`` plus, with ``bearing_weight`` > 0, a per-state heading
+    penalty ``lambda * circ_diff(bearing(seg), bearing(arc))``; no alignment move can bypass
+    either term (see :func:`_segment_dp_pairs` and ``docs/weighted_emission.md`` §10).
     """
     a_pool = _node_projection_pool(list(coords_a), gb.b_raw_nodes, step_meters)
     N = len(a_pool)
@@ -322,65 +457,73 @@ def graph_dtw_align(
     vx, vy = gb.vx, gb.vy
     INF = float("inf")
 
-    D = np.full((N, V), INF)
-    back: List[List[Optional[Tuple]]] = [[None] * V for _ in range(N)]
+    if emission == "segment":
+        # True segment-to-segment: states are (A-segment, B-arc); every state pays distance
+        # (+ optional bearing). Yields vertex-level pairs in the same format as the point DP.
+        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight))
+        if seg_pairs is None:
+            return INF, [], _inf_metrics()
+        pairs: List[Tuple[int, int]] = seg_pairs
+    else:
+        D = np.full((N, V), INF)
+        back: List[List[Optional[Tuple]]] = [[None] * V for _ in range(N)]
 
-    def emit(i: int) -> np.ndarray:
-        return np.hypot(ax[i] - vx, ay[i] - vy)  # length-V vector of A[i]->vertex distances
+        def emit(i: int) -> np.ndarray:
+            return np.hypot(ax[i] - vx, ay[i] - vy)  # length-V vector of A[i]->vertex distances
 
-    # Row 0 -- free choice of B entry vertex.
-    e0 = emit(0)
-    for v in range(V):
-        D[0][v] = e0[v]
-        back[0][v] = ("START", -1)
-
-    for i in range(1, N):
-        ei = emit(i)
-        # base = vertical + diagonal (depend only on row i-1)
+        # Row 0 -- free choice of B entry vertex.
+        e0 = emit(0)
         for v in range(V):
-            best = D[i - 1][v]
-            bmove: Tuple = ("V", v)
-            for u in gb.pred_arcs[v]:
-                if D[i - 1][u] < best:
-                    best = D[i - 1][u]
-                    bmove = ("D", u)
-            D[i][v] = ei[v] + best
-            back[i][v] = bmove
+            D[0][v] = e0[v]
+            back[0][v] = ("START", -1)
 
-        # horizontal relaxation within row i (Dijkstra; arc weight = emission at landed vertex)
-        heap = [(D[i][v], v) for v in range(V)]
-        heapq.heapify(heap)
-        while heap:
-            c, v = heapq.heappop(heap)
-            if c > D[i][v]:
-                continue
-            for w in gb.succ_arcs[v]:
-                cand = D[i][v] + ei[w]
-                if cand < D[i][w]:
-                    D[i][w] = cand
-                    back[i][w] = ("H", v)
-                    heapq.heappush(heap, (cand, w))
+        for i in range(1, N):
+            ei = emit(i)
+            # base = vertical + diagonal (depend only on row i-1)
+            for v in range(V):
+                best = D[i - 1][v]
+                bmove: Tuple = ("V", v)
+                for u in gb.pred_arcs[v]:
+                    if D[i - 1][u] < best:
+                        best = D[i - 1][u]
+                        bmove = ("D", u)
+                D[i][v] = ei[v] + best
+                back[i][v] = bmove
 
-    v_best = int(np.argmin(D[N - 1]))
-    if not np.isfinite(D[N - 1][v_best]):
-        return INF, [], _inf_metrics()
+            # horizontal relaxation within row i (Dijkstra; arc weight = emission at landed vertex)
+            heap = [(D[i][v], v) for v in range(V)]
+            heapq.heapify(heap)
+            while heap:
+                c, v = heapq.heappop(heap)
+                if c > D[i][v]:
+                    continue
+                for w in gb.succ_arcs[v]:
+                    cand = D[i][v] + ei[w]
+                    if cand < D[i][w]:
+                        D[i][w] = cand
+                        back[i][w] = ("H", v)
+                        heapq.heappush(heap, (cand, w))
 
-    # Backtrack -> ordered (a_index, vertex) pairs.
-    pairs: List[Tuple[int, int]] = []
-    i, v = N - 1, v_best
-    while True:
-        move, u = back[i][v]
-        pairs.append((i, v))
-        if move == "START":
-            break
-        if move == "V":
-            i -= 1
-        elif move == "D":
-            i -= 1
-            v = u
-        else:  # "H"
-            v = u
-    pairs.reverse()
+        v_best = int(np.argmin(D[N - 1]))
+        if not np.isfinite(D[N - 1][v_best]):
+            return INF, [], _inf_metrics()
+
+        # Backtrack -> ordered (a_index, vertex) pairs.
+        pairs = []
+        i, v = N - 1, v_best
+        while True:
+            move, u = back[i][v]
+            pairs.append((i, v))
+            if move == "START":
+                break
+            if move == "V":
+                i -= 1
+            elif move == "D":
+                i -= 1
+                v = u
+            else:  # "H"
+                v = u
+        pairs.reverse()
 
     # The edge each step sits on is read DIRECTLY from the vertex (``vert_edge``) -- no arc
     # inference, no shared-junction ambiguity: every vertex belongs to exactly one edge.
@@ -549,6 +692,8 @@ def match_edge_to_bgraph(
     snap_tolerance_m: float = 0.75,
     step_meters: float = 10.0,
     trim_ends_m: float = 0.0,
+    emission: str = "point",
+    bearing_weight: float = 0.0,
 ) -> Dict[str, Any]:
     """Map-match one A-edge to the local directed graph of nearby B-edges (continuous,
     projection-based DTW).
@@ -574,6 +719,11 @@ def match_edge_to_bgraph(
         Default ``0`` (off). Optional cleanup that *removes* a leading/trailing route edge
         covering less than this many meters of A. Not a gap-filler (use ``snap_tolerance_m`` for
         connectivity); off by default because it can delete legitimate corridor edges.
+    emission:
+        Local cost: ``"point"`` (default, point-to-point) or ``"segment"`` (endpoint-average of
+        the traversed A-/B-segments). See ``docs/weighted_emission.md``.
+    bearing_weight:
+        Optional λ for a length-independent heading penalty (segment mode only); ``0`` = off.
 
     Returns
     -------
@@ -585,7 +735,8 @@ def match_edge_to_bgraph(
         b_edges, coords_a, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
     )
     avg, warping, metrics = graph_dtw_align(
-        coords_a, gb, step_meters=step_meters, trim_ends_m=trim_ends_m)
+        coords_a, gb, step_meters=step_meters, trim_ends_m=trim_ends_m,
+        emission=emission, bearing_weight=bearing_weight)
     return {
         "route": metrics["route"],
         "warping_path": warping,
@@ -604,10 +755,12 @@ class GraphDTWMatcher:
     """
 
     def __init__(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
-                 trim_ends_m: float = 0.0):
+                 trim_ends_m: float = 0.0, emission: str = "point", bearing_weight: float = 0.0):
         self.snap_tolerance_m = snap_tolerance_m
         self.step_meters = step_meters
         self.trim_ends_m = trim_ends_m
+        self.emission = emission
+        self.bearing_weight = bearing_weight
 
     def match_edge(self, coords_a: Sequence[Coord],
                    b_edges: Sequence[Tuple[Any, LineString]]) -> Dict[str, Any]:
@@ -616,4 +769,6 @@ class GraphDTWMatcher:
             snap_tolerance_m=self.snap_tolerance_m,
             step_meters=self.step_meters,
             trim_ends_m=self.trim_ends_m,
+            emission=self.emission,
+            bearing_weight=self.bearing_weight,
         )
