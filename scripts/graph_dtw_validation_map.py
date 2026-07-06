@@ -184,6 +184,10 @@ def main():
     ap.add_argument("--utm-srid", type=int, default=3006)
     ap.add_argument("--max-distance", type=float, default=30.0)
     ap.add_argument("--n-jobs", type=int, default=-1)
+    ap.add_argument("--emission", choices=["point", "segment"], default="point",
+                    help="local cost: point-to-point (default) or segment (endpoint-average)")
+    ap.add_argument("--bearing-weight", type=float, default=0.0,
+                    help="optional heading penalty lambda (segment mode only)")
     ap.add_argument("--offset", type=float, default=0.00035,
                     help="degrees to shift network B north-east")
     ap.add_argument("--a-cover", type=float, default=95.0, help="A under-covered threshold (%)")
@@ -204,7 +208,8 @@ def main():
                                       keep_cols_b=["name"], table_a="driving_edges",
                                       table_b="vehicle_edges_directed")
     log.info("running match_routes...")
-    routes_long, routes_summary = m.match_routes(n_jobs=args.n_jobs)
+    routes_long, routes_summary = m.match_routes(n_jobs=args.n_jobs,
+                                                 emission=args.emission, bearing_weight=args.bearing_weight)
     mode = "raw result"
     if args.resolved or args.auto_thresholds:
         if args.auto_thresholds:
@@ -219,11 +224,16 @@ def main():
                 min_overlap_pct=args.min_overlap)
             mode = f"resolved (max_dist={args.max_match_dist:g}, max_bearing={args.max_bearing_diff:g}"
             mode += f", min_overlap={args.min_overlap:g})" if args.min_overlap is not None else ")"
-        if args.out == ap.get_default("out"):
-            args.out = "output/graph_dtw_validation_map_resolved.html"
     log.info("building validation map (%s)...", mode)
     fmap = build_map(m, routes_long, routes_summary, offset=args.offset, a_cover=args.a_cover,
                      b_under=args.b_under, b_over=args.b_over, boundary=args.boundary, mode=mode)
+    if args.out == ap.get_default("out"):
+        parts = ["output/graph_dtw_validation_map"]
+        if args.emission != "point":
+            parts.append(args.emission)
+        if args.resolved or args.auto_thresholds:
+            parts.append("resolved")
+        args.out = "_".join(parts) + ".html"
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     fmap.save(args.out)
     log.info("saved -> %s", args.out)

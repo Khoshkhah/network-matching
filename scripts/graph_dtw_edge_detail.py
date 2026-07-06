@@ -278,6 +278,10 @@ def main():
     ap.add_argument("--max-distance", type=float, default=30.0)
     ap.add_argument("--snap", type=float, default=0.5)
     ap.add_argument("--step", type=float, default=10.0)
+    ap.add_argument("--emission", choices=["point", "segment"], default="point",
+                    help="local cost: point-to-point (default) or segment (endpoint-average)")
+    ap.add_argument("--bearing-weight", type=float, default=0.0,
+                    help="optional heading penalty lambda (segment mode only)")
     ap.add_argument("--a-shift", type=float, default=0.00012,
                     help="degrees to shift edge A (north-east) so its point matches are visible")
     args = ap.parse_args()
@@ -299,7 +303,8 @@ def main():
             b_edges.append((r.id_b, g))
     log.info("edge %s: %d candidate B-edges", args.edge_id, len(b_edges))
 
-    res = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=args.snap, step_meters=args.step)
+    res = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=args.snap, step_meters=args.step,
+                               emission=args.emission, bearing_weight=args.bearing_weight)
 
     # 4326 geometries for drawing
     a4326 = load_wkt(m.conn.execute(
@@ -312,7 +317,7 @@ def main():
     fmap = build_detail_map(res, a4326, b4326, args.edge_id, m.conn, args.utm_srid,
                             a_shift=args.a_shift)
 
-    out = args.out or f"output/graph_dtw_edge_{args.edge_id}.html"
+    out = args.out or f"output/graph_dtw_edge_{args.edge_id}_{args.emission}.html"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     fmap.save(out)
     log.info("saved -> %s", out)
