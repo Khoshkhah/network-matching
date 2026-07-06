@@ -408,9 +408,10 @@ def main():
     ap.add_argument("--list-cases", action="store_true", help="list scenarios and exit")
     # perturbations (composable; applied crop -> stretch -> rotate -> shift -> long. -> noise)
     ap.add_argument("--shift", type=float, default=0,
-                    help="lateral shift m along the road's local normal (+ = left of travel)")
+                    help="rigid lateral shift m perpendicular to the overall heading "
+                         "(+ = left of travel; shape preserved)")
     ap.add_argument("--longitudinal", type=float, default=0,
-                    help="lengthwise slide m along the road's local tangent")
+                    help="rigid lengthwise slide m along the overall heading (shape preserved)")
     ap.add_argument("--translate", type=float, default=0,
                     help="rigid translation m in an ABSOLUTE compass direction "
                          "(see --translate-bearing)")

@@ -75,7 +75,8 @@ res = match_edge_to_bgraph(sc["coords_a"], sc["b_edges"], debug=True, **sc["defa
 ```
 
 **Perturbation families** distort the A-edge (B never changes): `shift` (lateral along the
-road's local normal, + = left of travel), `longitudinal` (along the local tangent), `translate`
+edge's overall heading, + = left of travel, shape preserved), `longitudinal` (rigid slide along
+the overall heading), `translate`
 (rigid move in an **absolute compass direction** — `bearing` kwarg / `--translate-bearing`,
 0 = north, 90 = east, 180 = south, 270 = west), `noise` (Gaussian σ, densified to 5 m first),
 `rotate` (about the centroid), `crop` (% removed, half per end), `stretch` (m extrapolated per

@@ -167,25 +167,40 @@ def _local_frames(P: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return T, Nrm
 
 
+def _overall_direction(P: np.ndarray) -> np.ndarray:
+    """Unit vector of the edge's overall heading: the start->end chord, falling back to the mean
+    local tangent when the chord is degenerate (e.g. a closed loop)."""
+    d = P[-1] - P[0]
+    if np.hypot(d[0], d[1]) < 1e-9:
+        T, _ = _local_frames(P)
+        d = T.mean(axis=0)
+    n = np.hypot(d[0], d[1]) or 1.0
+    return d / n
+
+
 def lateral_shift(coords: Sequence[Coord], meters: float) -> np.ndarray:
-    """Move every vertex ``meters`` along its local LEFT normal (negative = right)."""
+    """RIGIDLY translate the whole edge ``meters`` perpendicular to its overall direction (left of
+    travel; negative = right). Shape is preserved exactly -- every vertex moves by the SAME vector
+    (unlike a per-vertex local-normal offset, which bends corners). For a move in a fixed compass
+    direction use :func:`translate`."""
     P = as_array(coords)
-    _, Nrm = _local_frames(P)
-    return P + Nrm * meters
+    tx, ty = _overall_direction(P)
+    return P + meters * np.array([-ty, tx])          # left normal of the overall heading
 
 
 def longitudinal_shift(coords: Sequence[Coord], meters: float) -> np.ndarray:
-    """Slide every vertex ``meters`` along its local tangent (a lengthwise misregistration)."""
+    """RIGIDLY slide the whole edge ``meters`` along its overall direction (a lengthwise
+    misregistration). Shape is preserved -- every vertex moves by the same vector."""
     P = as_array(coords)
-    T, _ = _local_frames(P)
-    return P + T * meters
+    return P + meters * _overall_direction(P)
 
 
 def translate(coords: Sequence[Coord], meters: float, bearing_deg: float = 90.0) -> np.ndarray:
     """Rigid translation of the whole edge ``meters`` toward compass ``bearing_deg``
     (0 = north/+y, 90 = east/+x, 180 = south, 270 = west) -- an absolute-direction shift,
-    independent of the edge's own orientation (unlike :func:`lateral_shift` /
-    :func:`longitudinal_shift`, which follow the local normal / tangent)."""
+    independent of the edge's own orientation (whereas :func:`lateral_shift` /
+    :func:`longitudinal_shift` move relative to the edge's overall heading). All three preserve
+    shape."""
     P = as_array(coords)
     a = np.radians(bearing_deg)
     return P + meters * np.array([np.sin(a), np.cos(a)])
@@ -244,11 +259,12 @@ def reverse(coords: Sequence[Coord]) -> np.ndarray:
 PERTURBATIONS: Dict[str, Dict[str, Any]] = {
     "shift": dict(
         fn=lambda P, m, seed=0: lateral_shift(P, m), unit="m",
-        description="lateral offset along the local normal (+ = left of travel)",
+        description="rigid lateral offset perpendicular to the overall heading "
+                    "(+ = left of travel); shape preserved",
         grid=[0.0, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0]),
     "longitudinal": dict(
         fn=lambda P, m, seed=0: longitudinal_shift(P, m), unit="m",
-        description="lengthwise slide along the local tangent",
+        description="rigid lengthwise slide along the overall heading; shape preserved",
         grid=[0.0, 2.0, 4.0, 6.0, 8.0, 12.0]),
     "translate": dict(
         fn=lambda P, m, seed=0, bearing=90.0: translate(P, m, bearing), unit="m",
