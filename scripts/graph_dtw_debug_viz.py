@@ -193,7 +193,7 @@ def _state_bands(res):
     state, stitch mask). Point mode states are vertices; segment mode states are arcs."""
     gb = res["graph"]
     dbg = res["debug"]
-    if dbg["params"]["emission"] == "segment":
+    if dbg["params"]["emission"] in ("segment", "midpoint"):
         arcs = dbg["arcs"]
         state_edge = np.asarray([gb.vert_edge[u] for (u, _w) in arcs])
         stitch = np.asarray([gb.vert_edge[u] != gb.vert_edge[w] for (u, w) in arcs])
@@ -213,7 +213,7 @@ def draw_table(ax, res, which, norm_dummy):
     by B-edge, A on x, with the backtracked path overlaid and moves classified."""
     dbg = res["debug"]
     M = np.array(dbg[which], float)
-    seg_mode = dbg["params"]["emission"] == "segment"
+    seg_mode = dbg["params"]["emission"] in ("segment", "midpoint")
     disp = M.copy()
     if which == "D":
         # subtract each row's finite minimum: shows which states are COMPETITIVE at each A step
@@ -376,7 +376,7 @@ def print_trace(res):
     """Stdout table: one row per backtracked DP state, with emission/accumulated cost."""
     dbg = res["debug"]
     gb = res["graph"]
-    seg = dbg["params"]["emission"] == "segment"
+    seg = dbg["params"]["emission"] in ("segment", "midpoint")
     path = dbg.get("arc_path" if seg else "path") or []
     D, E = np.array(dbg["D"]), np.array(dbg["E"])
     print(f"\n{'t':>4} {'move':>5} {'A':>4} {'state':>6}  {'on edge':<14} "
@@ -424,7 +424,7 @@ def main():
     ap.add_argument("--reverse", action="store_true", help="reverse A's digitized direction")
     ap.add_argument("--seed", type=int, default=0)
     # algorithm parameters
-    ap.add_argument("--emission", choices=["point", "segment"], default="point")
+    ap.add_argument("--emission", choices=["point", "segment", "midpoint"], default="point")
     ap.add_argument("--bearing-weight", type=float, default=0.0)
     ap.add_argument("--snap", type=float, default=None, help="snap tolerance m")
     ap.add_argument("--step", type=float, default=None, help="gap-fill step m")

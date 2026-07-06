@@ -41,13 +41,13 @@ def _routes(res):
 # --------------------------------------------------------------------------------------
 # 1. Debug payload invariants
 # --------------------------------------------------------------------------------------
-@pytest.mark.parametrize("emission", ["point", "segment"])
+@pytest.mark.parametrize("emission", ["point", "segment", "midpoint"])
 def test_debug_payload_decomposes_costs(emission):
     res = _match("split", emission=emission, debug=True)
     dbg = res["debug"]
     D, E = np.asarray(dbg["D"]), np.asarray(dbg["E"])
     assert D.shape == E.shape
-    path = dbg["arc_path"] if emission == "segment" else dbg["path"]
+    path = dbg["arc_path"] if emission in ("segment", "midpoint") else dbg["path"]
     assert path[0][2] == "START"
     for t, (i, s, move) in enumerate(path):
         if move == "START":
@@ -59,7 +59,7 @@ def test_debug_payload_decomposes_costs(emission):
     assert np.isclose(dbg["final_cost"], D[-1][dbg["terminal_state"]])
 
 
-@pytest.mark.parametrize("emission", ["point", "segment"])
+@pytest.mark.parametrize("emission", ["point", "segment", "midpoint"])
 def test_debug_alignment_is_monotone_in_a(emission):
     res = _match("split", emission=emission, debug=True)
     dbg = res["debug"]
@@ -143,6 +143,51 @@ def test_reversed_edge_is_no_match_on_directed_table():
     res = _match("split", coords_a=rev)
     assert not np.isfinite(res["avg_distance"])
     assert res["route"] == []
+
+
+# --------------------------------------------------------------------------------------
+# Midpoint emission + sliver-free segment pools
+# --------------------------------------------------------------------------------------
+def test_midpoint_mode_reports_middle_to_middle_distance():
+    # a pure 0.2 m lateral offset: every A-segment middle is exactly 0.2 m from its matched
+    # B-segment middle, so avg == max == min == 0.2 (the metric IS that one distance)
+    res = _match("split", emission="midpoint")
+    assert _routes(res) == ["B1", "B2", "B3"]
+    assert res["avg_distance"] == pytest.approx(0.2, abs=1e-6)
+    assert res["metrics"]["max"] == pytest.approx(0.2, abs=1e-6)
+    assert res["metrics"]["min"] == pytest.approx(0.2, abs=1e-6)
+
+
+@pytest.mark.parametrize("emission", ["segment", "midpoint"])
+def test_segment_states_are_never_point_like(emission):
+    # segment modes must pair genuine segments: with the default min_pool_gap (step/2) no
+    # matched state may sit on a sliver shorter than that on either side
+    sc = get_scenario("curve")
+    step = sc["defaults"]["step_meters"]
+    noisy = apply_perturbation(sc["coords_a"], "noise", 1.5, seed=3)
+    res = _match("curve", coords_a=noisy, emission=emission, debug=True)
+    dbg, gb = res["debug"], res["graph"]
+    ap, arcs, rid = dbg["a_pool"], dbg["arcs"], dbg["ridable"]
+    lo, hi = dbg["kept_span"]
+    for t, (i, k, _mv) in enumerate(dbg["arc_path"]):
+        if not (lo <= t + 1 <= hi) or not rid[k]:
+            continue
+        u, w = arcs[k]
+        a_len = np.hypot(ap[i + 1][0] - ap[i][0], ap[i + 1][1] - ap[i][1])
+        b_len = np.hypot(gb.vx[w] - gb.vx[u], gb.vy[w] - gb.vy[u])
+        assert a_len >= step / 2 - 1e-6
+        assert b_len >= step / 2 - 1e-6
+
+
+def test_gap_fill_is_even():
+    # fill points spread evenly over each gap: consecutive spacing in (step/2, step], never a
+    # leftover sliver next to the following pool point
+    from network_matching.graph_dtw import _node_projection_pool
+    pool = _node_projection_pool([(0.0, 0.0), (31.0, 0.0)], [], step_meters=2.0)
+    xs = [p[0] for p in pool]
+    gaps = np.diff(xs)
+    assert gaps.max() <= 2.0 + 1e-9
+    assert gaps.min() > 1.0 - 1e-9
 
 
 # --------------------------------------------------------------------------------------

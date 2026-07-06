@@ -60,9 +60,11 @@ routes_long, routes_summary = m.match_routes(n_jobs=-1)   # parallel over A-edge
 density), `n_jobs` (parallel cores). (`trim_ends_m`, an optional end-edge remover, is off by default.)
 
 **Local cost (`emission`).** Defaults to `"point"` (point-to-point drift). Pass `emission="segment"`
-for the endpoint-average **segment-to-segment** cost (direction-aware), with an optional
-`bearing_weight` heading term — see [docs/weighted_emission.md](docs/weighted_emission.md). `"point"`
-is unchanged, so existing results are unaffected.
+for the endpoint-average **segment-to-segment** cost (direction-aware), or `emission="midpoint"`
+for one middle-to-middle distance per matched segment pair (sliver-free pools, free junction
+crossings, reported distances = those middle distances); both take an optional `bearing_weight`
+heading term — see [docs/weighted_emission.md](docs/weighted_emission.md). `"point"` is
+unchanged, so existing results are unaffected.
 
 `match_routes` returns a route for every A-edge; keep only confident matches by filtering on
 thresholds (failures become `NO_MATCH`):

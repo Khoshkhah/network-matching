@@ -53,6 +53,7 @@ def _node_projection_pool(
     coords: Sequence[Coord],
     other_nodes: Sequence[Coord],
     step_meters: Optional[float] = 10.0,
+    min_gap_m: float = 0.0,
 ) -> List[PoolPoint]:
     """Build a projection-enriched point pool along the polyline ``coords`` (mirrors the point
     pools in :func:`dtw_align`).
@@ -62,8 +63,14 @@ def _node_projection_pool(
       - the projection (foot of perpendicular) of every point in ``other_nodes`` that falls
         strictly inside the line -> ``is_node=False``;
       - optional gap-fill samples wherever consecutive pool points are farther apart than
-        ``step_meters`` (keeps long straight stretches from being coarse). Pass ``step_meters``
-        falsy to disable.
+        ``step_meters``, distributed EVENLY within each gap (resulting spacing is always in
+        ``(step_meters/2, step_meters]``, never a leftover sliver). Pass ``step_meters`` falsy
+        to disable.
+
+    ``min_gap_m`` > 0 additionally drops added (non-node) points that land closer than this to
+    a kept neighbour, so no pool segment shorter than ``min_gap_m`` is created by enrichment --
+    the segment-emission modes use this to guarantee genuine segment-to-segment states.
+    Original geometry vertices are never dropped.
 
     Returns a list of ``(x, y, is_node)``.
     """
@@ -94,9 +101,12 @@ def _node_projection_pool(
                 s0, s1 = ent[0], entries[idx + 1][0]
                 gap = s1 - s0
                 if gap > step_meters:
-                    n = int(gap // step_meters)
+                    # spread the fill EVENLY over the gap (spacing in (step/2, step]) instead of
+                    # stepping from s0 and leaving a leftover sliver before the next point
+                    n = int(np.ceil(gap / step_meters)) - 1
+                    spacing = gap / (n + 1)
                     for j in range(1, n + 1):
-                        filled.append((s0 + j * step_meters, False))
+                        filled.append((s0 + j * spacing, False))
         entries = sorted(filled, key=lambda t: t[0])
 
     # de-duplicate by arc-length, preferring is_node=True when points coincide
@@ -107,6 +117,19 @@ def _node_projection_pool(
                 pool[-1] = (pool[-1][0], True)
             continue
         pool.append((s, isn))
+
+    # merge away enrichment slivers: a non-node closer than min_gap_m to its kept predecessor
+    # (or to a following node) is dropped; real geometry nodes are always kept
+    if min_gap_m > 0 and len(pool) > 2:
+        kept: List[Tuple[float, bool]] = [pool[0]]
+        for s, isn in pool[1:]:
+            if isn:
+                if not kept[-1][1] and s - kept[-1][0] < min_gap_m and len(kept) > 1:
+                    kept.pop()                       # non-node crowding a real node: drop it
+                kept.append((s, isn))
+            elif s - kept[-1][0] >= min_gap_m:
+                kept.append((s, isn))
+        pool = kept
 
     out: List[PoolPoint] = []
     for s, isn in pool:
@@ -181,6 +204,7 @@ def build_local_digraph(
     a_coords: Sequence[Coord],
     snap_tolerance_m: float = 0.75,
     step_meters: float = 10.0,
+    min_gap_m: float = 0.0,
 ) -> LocalBGraph:
     """Build the local **directed** graph ``GB`` from ``(b_edge_id, LineString)`` edges.
 
@@ -207,7 +231,7 @@ def build_local_digraph(
         if len(coords) < 2:
             continue  # skip degenerate edges
         edge_ids.append(eid)
-        edge_pools.append(_node_projection_pool(coords, a_nodes, step_meters))
+        edge_pools.append(_node_projection_pool(coords, a_nodes, step_meters, min_gap_m))
         b_raw_nodes.extend((float(c[0]), float(c[1])) for c in coords)
 
     # --- vertices: every pool point is its own vertex, owned by exactly one edge ---
@@ -276,7 +300,8 @@ def build_local_digraph(
 
 def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
                       bearing_weight: float = 0.0,
-                      dbg: Optional[Dict[str, Any]] = None) -> Optional[List[Tuple[int, int]]]:
+                      dbg: Optional[Dict[str, Any]] = None,
+                      midpoint: bool = False) -> Optional[List[Tuple[int, int]]]:
     """True segment-to-segment DP (``emission="segment"``): states are (A-segment i, B-arc u->v).
 
     Every state pays the endpoint-average distance between A-segment ``a_i -> a_{i+1}`` and its
@@ -292,6 +317,11 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
     ``dbg``: optional dict populated with the DP internals (``arcs``, ``ridable``, ``D``, ``E``,
     ``arc_path``, ``terminal_state``, ``final_cost``) for algorithm debugging -- see
     :func:`graph_dtw_align`'s ``debug`` flag.
+
+    ``midpoint=True`` (``emission="midpoint"``) replaces the endpoint-average by ONE distance
+    between the two segment MIDDLES, ``|mid(a_i, a_{i+1}) - mid(u, v)|``, and makes non-ridable
+    stitch arcs free (pure connectivity: a zero-length junction connector is not a segment, so
+    crossing it carries no point-to-segment cost).
     """
     V = gb.n_vertices
     N = len(ax)
@@ -338,9 +368,17 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
         _E_rows: List[np.ndarray] = []
 
     def emit_seg(i: int) -> np.ndarray:
-        # E(i, e) = 1/2(|a_i - u| + |a_{i+1} - v|) [+ lambda * circular bearing diff]
-        e = 0.5 * (np.hypot(ax[i] - ux, ay[i] - uy) + np.hypot(ax[i + 1] - hx, ay[i + 1] - hy))
-        if bw > 0.0:
+        if midpoint:
+            # E(i, e) = |mid(a_i, a_{i+1}) - mid(u, v)| -- one middle-to-middle distance;
+            # stitches (non-ridable) are free: connectivity, not a segment to pay for
+            e = np.hypot(0.5 * (ax[i] + ax[i + 1]) - 0.5 * (ux + hx),
+                         0.5 * (ay[i] + ay[i + 1]) - 0.5 * (uy + hy))
+            e = np.where(ridable, e, 0.0)
+        else:
+            # E(i, e) = 1/2(|a_i - u| + |a_{i+1} - v|) (endpoint average)
+            e = 0.5 * (np.hypot(ax[i] - ux, ay[i] - uy)
+                       + np.hypot(ax[i + 1] - hx, ay[i + 1] - hy))
+        if bw > 0.0:                  # [+ lambda * circular bearing diff, ridable arcs only]
             bd = np.abs(seg_bear[i] - arc_bear)
             e = e + bw * np.where(ridable, np.minimum(bd, 360.0 - bd), 0.0)
         if dbg is not None:
@@ -434,6 +472,7 @@ def graph_dtw_align(
     emission: str = "point",
     bearing_weight: float = 0.0,
     debug: bool = False,
+    min_gap_m: float = 0.0,
 ) -> Tuple[float, List[Tuple[Coord, Coord]], Dict[str, Any]]:
     """Align A-edge ``coords_a`` to the local directed graph ``gb`` with projection-enriched
     points on both sides.
@@ -468,6 +507,11 @@ def graph_dtw_align(
     ``1/2(|a_i - u| + |a_{i+1} - v|)`` plus, with ``bearing_weight`` > 0, a per-state heading
     penalty ``lambda * circ_diff(bearing(seg), bearing(arc))``; no alignment move can bypass
     either term (see :func:`_segment_dp_pairs` and ``docs/weighted_emission.md`` §10).
+    ``"midpoint"``: same segment-state DP, but the local cost is ONE distance between the two
+    segment MIDDLES, junction stitches are free (pure connectivity), and the reported
+    ``average``/``max``/``min`` (overall and per route edge) are statistics of those
+    middle-to-middle distances over the matched states -- fully segment-to-segment.
+    ``min_gap_m`` is forwarded to the A-axis pool (see :func:`_node_projection_pool`).
 
     ``debug=True`` attaches the raw algorithm internals under ``metrics["debug"]`` (also on
     failure returns, with a ``reason``), for the debug tooling in
@@ -485,7 +529,7 @@ def graph_dtw_align(
       host a state), ``arc_path`` = ``(a_segment, arc, move)``; ``D``/``E`` are
       ``(N_A_segments, N_arcs)``.
     """
-    a_pool = _node_projection_pool(list(coords_a), gb.b_raw_nodes, step_meters)
+    a_pool = _node_projection_pool(list(coords_a), gb.b_raw_nodes, step_meters, min_gap_m)
     N = len(a_pool)
     V = gb.n_vertices
     dbg: Optional[Dict[str, Any]] = None
@@ -510,10 +554,14 @@ def graph_dtw_align(
     vx, vy = gb.vx, gb.vy
     INF = float("inf")
 
-    if emission == "segment":
+    seg_dbg: Optional[Dict[str, Any]] = None
+    if emission in ("segment", "midpoint"):
         # True segment-to-segment: states are (A-segment, B-arc); every state pays distance
         # (+ optional bearing). Yields vertex-level pairs in the same format as the point DP.
-        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight), dbg=dbg)
+        # Midpoint mode always collects the state path -- its metrics are computed from it.
+        seg_dbg = dbg if dbg is not None else ({} if emission == "midpoint" else None)
+        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight), dbg=seg_dbg,
+                                      midpoint=(emission == "midpoint"))
         if seg_pairs is None:
             return _fail("no_finite_alignment")
         pairs: List[Tuple[int, int]] = seg_pairs
@@ -732,10 +780,37 @@ def graph_dtw_align(
     bearing_diff = abs(_bearing(a0, a1) - _bearing(b0, b1))
     bearing_diff = float(min(bearing_diff, 360 - bearing_diff))
 
+    # Midpoint mode: the reported distances ARE the segment-state costs -- one distance per
+    # matched (A-segment, B-arc) state, middle to middle. Kept states are those whose produced
+    # alignment pair (state t -> pair t+1) lies in the kept span; free stitches are skipped.
+    mid_stats: Optional[Dict[Any, List[float]]] = None
+    if emission == "midpoint" and seg_dbg is not None and "arc_path" in seg_dbg:
+        arcs_l = seg_dbg["arcs"]
+        rid = seg_dbg["ridable"]
+        mid_stats = {}
+        for t, (i, k, _mv) in enumerate(seg_dbg["arc_path"]):
+            if not (lo <= t + 1 <= hi) or not rid[k]:
+                continue
+            u, w = arcs_l[k]
+            d = float(np.hypot(0.5 * (ax[i] + ax[i + 1]) - 0.5 * (vx[u] + vx[w]),
+                               0.5 * (ay[i] + ay[i + 1]) - 0.5 * (vy[u] + vy[w])))
+            mid_stats.setdefault(gb.edge_ids[gb.vert_edge[u]], []).append(d)
+        all_d = [d for ds in mid_stats.values() for d in ds]
+        if all_d:
+            average = float(np.mean(all_d))
+            for re in route_edges:
+                ds = mid_stats.get(re["dest_id"])
+                if ds:
+                    re["match_dist_avg"] = float(np.mean(ds))
+                    re["match_dist_max"] = float(np.max(ds))
+                    re["match_dist_min"] = float(np.min(ds))
+
     metrics = {
         "average": average,
-        "max": float(np.max(drift)) if drift else float("inf"),
-        "min": float(np.min(drift)) if drift else float("inf"),
+        "max": (float(np.max(all_d)) if mid_stats is not None and all_d
+                else float(np.max(drift)) if drift else float("inf")),
+        "min": (float(np.min(all_d)) if mid_stats is not None and all_d
+                else float(np.min(drift)) if drift else float("inf")),
         "overlap_pct": overlap_pct,
         "matched_len": matched_len,
         "route": route,
@@ -766,6 +841,7 @@ def match_edge_to_bgraph(
     emission: str = "point",
     bearing_weight: float = 0.0,
     debug: bool = False,
+    min_pool_gap_m: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Map-match one A-edge to the local directed graph of nearby B-edges (continuous,
     projection-based DTW).
@@ -792,14 +868,21 @@ def match_edge_to_bgraph(
         covering less than this many meters of A. Not a gap-filler (use ``snap_tolerance_m`` for
         connectivity); off by default because it can delete legitimate corridor edges.
     emission:
-        Local cost: ``"point"`` (default, point-to-point) or ``"segment"`` (endpoint-average of
-        the traversed A-/B-segments). See ``docs/weighted_emission.md``.
+        Local cost: ``"point"`` (default, point-to-point), ``"segment"`` (endpoint-average of
+        the traversed A-/B-segments), or ``"midpoint"`` (ONE distance between the two segment
+        middles; stitches free; reported distances are those middle-to-middle distances).
+        See ``docs/weighted_emission.md``.
     bearing_weight:
-        Optional λ for a length-independent heading penalty (segment mode only); ``0`` = off.
+        Optional λ for a length-independent heading penalty (segment modes only); ``0`` = off.
     debug:
         ``True`` additionally returns the raw DP internals (cost/emission tables, backtracked
         path with move types, trim window) under the ``debug`` key -- see
         :func:`graph_dtw_align`. Off by default; no extra work when off.
+    min_pool_gap_m:
+        Minimum spacing of enrichment (non-node) pool points -- prevents sliver segments so
+        segment states are genuinely segment-to-segment. Default ``None`` = ``0`` for
+        ``emission="point"`` (unchanged behaviour) and ``step_meters / 2`` for the segment
+        modes; pass an explicit value to override.
 
     Returns
     -------
@@ -807,12 +890,16 @@ def match_edge_to_bgraph(
     ``metrics`` (see :func:`graph_dtw_align`), ``avg_distance``, and ``graph`` (the
     :class:`LocalBGraph`, handy for visualization). With ``debug=True`` also ``debug``.
     """
+    if min_pool_gap_m is None:
+        min_pool_gap_m = 0.0 if emission == "point" else 0.5 * step_meters
     gb = build_local_digraph(
         b_edges, coords_a, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
+        min_gap_m=min_pool_gap_m,
     )
     avg, warping, metrics = graph_dtw_align(
         coords_a, gb, step_meters=step_meters, trim_ends_m=trim_ends_m,
-        emission=emission, bearing_weight=bearing_weight, debug=debug)
+        emission=emission, bearing_weight=bearing_weight, debug=debug,
+        min_gap_m=min_pool_gap_m)
     res = {
         "route": metrics["route"],
         "warping_path": warping,

@@ -215,3 +215,24 @@ cannot occur — hence +145 matches (to be quality-validated before changing any
 Regression (2401 shifted ±20 m, λ=0.5): **no collapse** — routes are directional subsets or the
 full corridor; on the unshifted edge, bearing now *improves* the match (full 6-edge corridor at
 100% coverage vs point's 89%). `point` remains the default.
+
+## 11. Midpoint emission variant (`emission="midpoint"`, 2026-07-06)
+
+A third mode built for fully segment-based semantics, developed while debugging the segment
+correspondence in the playground notebook. Three changes relative to `"segment"`:
+
+1. **The local cost is ONE distance between the two segment MIDDLES**,
+   `E(i, e) = |mid(a_i, a_{i+1}) − mid(u, v)|` (+ optional λ·bearing as before) — not the
+   endpoint average. Note the trade-off: the midpoint distance is blind to a segment rotating
+   about its own middle, so pair it with `bearing_weight` when heading matters.
+2. **Stitch arcs are free.** A zero-length junction connector is connectivity, not a segment;
+   crossing it carries no point-to-segment cost (in `"segment"` mode it pays its distance).
+3. **The reported distances ARE the state costs.** `average`/`max`/`min` (overall and per route
+   edge) are statistics of the middle-to-middle distances over the matched states — what the
+   playground's segment view draws is literally what is scored.
+
+Supporting pool changes (apply to *both* segment modes via `min_pool_gap_m`, default
+`step_meters/2`; `emission="point"` unchanged at `0`): gap-fill points are spread **evenly**
+over each gap (spacing in `(step/2, step]`, no leftover slivers), and added (non-node) pool
+points closer than `min_pool_gap_m` to a kept neighbour are dropped — so every DP state pairs
+two genuine segments, never a centimeter sliver whose position/heading is noise.

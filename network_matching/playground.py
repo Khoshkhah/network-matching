@@ -23,7 +23,8 @@ from shapely.geometry import LineString
 from .graph_dtw import match_edge_to_bgraph
 from .synthetic import SCENARIOS, apply_perturbation, as_array, get_scenario, reverse
 
-PLAYGROUND_VERSION = "v6 -- legend moved outside the axes (right side), never covers the map"
+PLAYGROUND_VERSION = ("v7 -- emission='midpoint': one middle-to-middle distance per segment "
+                      "pair, no sliver states, evenly spread sample points")
 
 PERTURB_ORDER = ["crop", "stretch", "rotate", "translate", "shift", "longitudinal", "noise"]
 
@@ -84,8 +85,8 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
 
     # the correspondence itself -- drawn the way the chosen emission actually matches:
     dbg = res.get("debug")
-    seg_mode = (bool(dbg) and dbg.get("params", {}).get("emission") == "segment"
-                and "arc_path" in dbg)
+    emission = (dbg or {}).get("params", {}).get("emission")
+    seg_mode = bool(dbg) and emission in ("segment", "midpoint") and "arc_path" in dbg
     if seg_mode:
         # SEGMENT-TO-SEGMENT: the matched POINTS are drawn exactly like the point view (dots at
         # their true locations); only the CONNECTION LINES differ -- one per DP state
@@ -112,10 +113,10 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
             mb = ((b0[0] + b1[0]) / 2, (b0[1] + b1[1]) / 2)   # B-segment midpoint
             if ridable[k]:
                 ax.plot([ma[0], mb[0]], [ma[1], mb[1]], color=c, lw=1.2, alpha=0.8, zorder=4)
-            else:
-                # pass-through over a non-ridable arc (junction stitch / sub-0.5 m sliver):
-                # NOT a segment match -- the DP only crosses it (paying its distance emission),
-                # so its target is effectively a point. Drawn dotted gray to tell it apart.
+            elif lb := float(np.hypot(b1[0] - b0[0], b1[1] - b0[1])):
+                # pass-through over a non-ridable arc (junction stitch / sliver): NOT a segment
+                # match -- the DP only crosses it. Drawn dotted gray; zero-length connectors
+                # (lb == 0) are pure bookkeeping and not drawn at all.
                 ax.plot([ma[0], mb[0]], [ma[1], mb[1]], color="0.5", lw=1.0, ls=":",
                         alpha=0.9, zorder=4)
     else:
@@ -149,7 +150,8 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     ax.legend(handles=handles, fontsize=8.5, loc="upper left", bbox_to_anchor=(1.01, 1.0),
               borderaxespad=0.0, framealpha=0.95)
 
-    view = "segment ↔ segment" if seg_mode else "point ↔ point"
+    view = (f"segment ↔ segment ({'middle dist' if emission == 'midpoint' else 'endpoint avg'})"
+            if seg_mode else "point ↔ point")
     ttl = ("NO MATCH" if not np.isfinite(res["avg_distance"]) else
            " → ".join(str(e) for e in route)
            + f"   ·   avg distance {res['avg_distance']:.2f} m"
@@ -203,7 +205,7 @@ def playground(coords_a=None, b_edges=None, snap=0.5, step=2.0):
     if not custom:
         k["case"] = w.Dropdown(options=sorted(SCENARIOS), value="split", description="case",
                                style=sl["style"], layout=sl["layout"])
-    k["emission"] = w.Dropdown(options=["point", "segment"], description="emission",
+    k["emission"] = w.Dropdown(options=["point", "segment", "midpoint"], description="emission",
                                style=sl["style"], layout=sl["layout"])
     k["shift"] = w.FloatSlider(0, min=-16, max=16, step=0.5, description="shift m", **sl)
     k["longitudinal"] = w.FloatSlider(0, min=-16, max=16, step=0.5, description="along m", **sl)
