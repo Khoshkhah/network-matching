@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from network_matching import match_edge_to_bgraph  # noqa: E402
 from network_matching.synthetic import (SCENARIOS, apply_perturbation,  # noqa: E402
                                         crop_ends, get_scenario, lateral_shift,
-                                        resample, reverse, rotate)
+                                        resample, reverse, rotate, translate)
 
 
 def _match(name, coords_a=None, **overrides):
@@ -151,6 +151,12 @@ def test_reversed_edge_is_no_match_on_directed_table():
 def test_perturbation_geometry():
     P = [(0.0, 0.0), (30.0, 0.0)]
     np.testing.assert_allclose(lateral_shift(P, 3.0), [(0, 3), (30, 3)])
+    # translate is absolute: east/west move x, north/south move y, any bearing works
+    np.testing.assert_allclose(translate(P, 5.0, 90.0), [(5, 0), (35, 0)], atol=1e-12)
+    np.testing.assert_allclose(translate(P, 5.0, 270.0), [(-5, 0), (25, 0)], atol=1e-12)
+    np.testing.assert_allclose(translate(P, 5.0, 0.0), [(0, 5), (30, 5)], atol=1e-12)
+    np.testing.assert_allclose(apply_perturbation(P, "translate", 5.0, bearing=180.0),
+                               [(0, -5), (30, -5)], atol=1e-12)
     R = rotate(P, 90.0)
     assert np.hypot(*(R[-1] - R[0])) == pytest.approx(30.0)      # rigid: length preserved
     C = crop_ends(P, 20.0)

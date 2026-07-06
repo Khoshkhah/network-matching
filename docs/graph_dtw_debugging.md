@@ -74,10 +74,15 @@ sc = get_scenario("parallel_trap")
 res = match_edge_to_bgraph(sc["coords_a"], sc["b_edges"], debug=True, **sc["defaults"])
 ```
 
-**Perturbation families** distort the A-edge (B never changes): `shift` (lateral, + = left),
-`longitudinal`, `noise` (Gaussian σ, densified to 5 m first), `rotate` (about the centroid),
-`crop` (% removed, half per end), `stretch` (m extrapolated per end); plus `reverse()`. Each
-family carries a unit and a default magnitude grid (`PERTURBATIONS[name]["grid"]`).
+**Perturbation families** distort the A-edge (B never changes): `shift` (lateral along the
+road's local normal, + = left of travel), `longitudinal` (along the local tangent), `translate`
+(rigid move in an **absolute compass direction** — `bearing` kwarg / `--translate-bearing`,
+0 = north, 90 = east, 180 = south, 270 = west), `noise` (Gaussian σ, densified to 5 m first),
+`rotate` (about the centroid), `crop` (% removed, half per end), `stretch` (m extrapolated per
+end); plus `reverse()`. Each family carries a unit and a default magnitude grid
+(`PERTURBATIONS[name]["grid"]`). Note `shift`/`longitudinal` are orientation-relative (on an
+east–west road they move the edge north–south / east–west respectively); use `translate` to
+move the edge in any fixed direction regardless of its orientation.
 
 ```python
 from network_matching.synthetic import apply_perturbation

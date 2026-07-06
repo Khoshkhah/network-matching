@@ -33,11 +33,11 @@ from network_matching import match_edge_to_bgraph, setup_logging  # noqa: E402
 from network_matching.synthetic import PERTURBATIONS, apply_perturbation  # noqa: E402
 
 
-def run_family(case, kwargs, fam, grid, seed):
+def run_family(case, kwargs, fam, grid, seed, fam_kwargs=None):
     """Match the case's A-edge at every magnitude of one family; returns list of row dicts."""
     rows = []
     for mag in grid:
-        P = apply_perturbation(case["coords_a"], fam, mag, seed=seed)
+        P = apply_perturbation(case["coords_a"], fam, mag, seed=seed, **(fam_kwargs or {}))
         res = match_edge_to_bgraph(P.tolist(), case["b_edges"], **kwargs)
         M = res["metrics"]
         rows.append(dict(
@@ -114,6 +114,9 @@ def main():
                     help="comma list of perturbation families (default: all)")
     ap.add_argument("--negate", action="store_true",
                     help="flip magnitude signs (e.g. shift toward the other side)")
+    ap.add_argument("--translate-bearing", type=float, default=90.0,
+                    help="compass direction for the translate family (0=north, 90=east, "
+                         "180=south, 270=west)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--emission", choices=["point", "segment"], default="point")
     ap.add_argument("--bearing-weight", type=float, default=0.0)
@@ -147,7 +150,8 @@ def main():
     print(f"{'family':<13} {'mag':>7} | {'drift':>6} {'overlap':>7} {'bearD':>6}  route")
     for fam in families:
         grid = [(-m if args.negate else m) for m in PERTURBATIONS[fam]["grid"]]
-        rows = run_family(case, kwargs, fam, grid, args.seed)
+        fam_kwargs = {"bearing": args.translate_bearing} if fam == "translate" else None
+        rows = run_family(case, kwargs, fam, grid, args.seed, fam_kwargs)
         results[fam] = rows
         for r in rows:
             mark = ("  <-- NO MATCH" if not r["ok"]

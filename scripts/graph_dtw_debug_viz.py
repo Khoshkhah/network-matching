@@ -47,7 +47,7 @@ MOVES = {"START": ("#111827", "*", "start (free entry)"),
          "D": ("#10b981", "d", "D: both advance")}
 
 # Perturbations compose in this order (structural cuts first, then rigid moves, then jitter).
-PERTURB_ORDER = ["crop", "stretch", "rotate", "shift", "longitudinal", "noise"]
+PERTURB_ORDER = ["crop", "stretch", "rotate", "translate", "shift", "longitudinal", "noise"]
 
 
 # --------------------------------------------------------------------------------------
@@ -84,8 +84,10 @@ def perturb(coords_a, args):
     for fam in PERTURB_ORDER:
         mag = getattr(args, fam)
         if mag:
-            P = apply_perturbation(P, fam, mag, seed=args.seed)
-            applied.append(f"{fam}={mag:g}")
+            kw = {"bearing": args.translate_bearing} if fam == "translate" else {}
+            P = apply_perturbation(P, fam, mag, seed=args.seed, **kw)
+            applied.append(f"{fam}={mag:g}"
+                           + (f"@{args.translate_bearing:g}deg" if fam == "translate" else ""))
     if args.reverse:
         P = reverse(P)
         applied.append("reverse")
@@ -405,8 +407,16 @@ def main():
     src.add_argument("--edge-id", type=int, help="real OSM A-edge (uses --osm/--sweden data)")
     ap.add_argument("--list-cases", action="store_true", help="list scenarios and exit")
     # perturbations (composable; applied crop -> stretch -> rotate -> shift -> long. -> noise)
-    ap.add_argument("--shift", type=float, default=0, help="lateral shift m (+ = left)")
-    ap.add_argument("--longitudinal", type=float, default=0, help="lengthwise slide m")
+    ap.add_argument("--shift", type=float, default=0,
+                    help="lateral shift m along the road's local normal (+ = left of travel)")
+    ap.add_argument("--longitudinal", type=float, default=0,
+                    help="lengthwise slide m along the road's local tangent")
+    ap.add_argument("--translate", type=float, default=0,
+                    help="rigid translation m in an ABSOLUTE compass direction "
+                         "(see --translate-bearing)")
+    ap.add_argument("--translate-bearing", type=float, default=90.0,
+                    help="translate direction deg: 0=north, 90=east (default), 180=south, "
+                         "270=west")
     ap.add_argument("--noise", type=float, default=0, help="Gaussian jitter sigma m")
     ap.add_argument("--rotate", type=float, default=0, help="rotation deg about centroid")
     ap.add_argument("--crop", type=float, default=0, help="remove this %% of length (ends)")

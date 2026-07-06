@@ -181,6 +181,16 @@ def longitudinal_shift(coords: Sequence[Coord], meters: float) -> np.ndarray:
     return P + T * meters
 
 
+def translate(coords: Sequence[Coord], meters: float, bearing_deg: float = 90.0) -> np.ndarray:
+    """Rigid translation of the whole edge ``meters`` toward compass ``bearing_deg``
+    (0 = north/+y, 90 = east/+x, 180 = south, 270 = west) -- an absolute-direction shift,
+    independent of the edge's own orientation (unlike :func:`lateral_shift` /
+    :func:`longitudinal_shift`, which follow the local normal / tangent)."""
+    P = as_array(coords)
+    a = np.radians(bearing_deg)
+    return P + meters * np.array([np.sin(a), np.cos(a)])
+
+
 def gaussian_noise(coords: Sequence[Coord], sigma: float, seed: int = 0,
                    densify_step: float = 5.0) -> np.ndarray:
     """IID Gaussian jitter of ``sigma`` meters per coordinate. The line is first resampled at
@@ -240,6 +250,11 @@ PERTURBATIONS: Dict[str, Dict[str, Any]] = {
         fn=lambda P, m, seed=0: longitudinal_shift(P, m), unit="m",
         description="lengthwise slide along the local tangent",
         grid=[0.0, 2.0, 4.0, 6.0, 8.0, 12.0]),
+    "translate": dict(
+        fn=lambda P, m, seed=0, bearing=90.0: translate(P, m, bearing), unit="m",
+        description="rigid translation toward a fixed compass bearing "
+                    "(bearing=... kwarg; 0 = north, 90 = east [default], 180 = south, 270 = west)",
+        grid=[0.0, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0]),
     "noise": dict(
         fn=lambda P, m, seed=0: gaussian_noise(P, m, seed=seed), unit="m sigma",
         description="per-vertex Gaussian jitter (edge densified to 5 m first)",
@@ -260,9 +275,10 @@ PERTURBATIONS: Dict[str, Dict[str, Any]] = {
 
 
 def apply_perturbation(coords: Sequence[Coord], name: str, magnitude: float,
-                       seed: int = 0) -> np.ndarray:
-    """Apply one named perturbation at ``magnitude`` and return the distorted copy of the edge."""
+                       seed: int = 0, **kwargs) -> np.ndarray:
+    """Apply one named perturbation at ``magnitude`` and return the distorted copy of the edge.
+    Extra ``kwargs`` go to the family (e.g. ``bearing=270.0`` for ``translate``)."""
     if name not in PERTURBATIONS:
         raise KeyError(f"unknown perturbation {name!r}; "
                        f"available: {', '.join(sorted(PERTURBATIONS))}")
-    return PERTURBATIONS[name]["fn"](as_array(coords), float(magnitude), seed=seed)
+    return PERTURBATIONS[name]["fn"](as_array(coords), float(magnitude), seed=seed, **kwargs)
