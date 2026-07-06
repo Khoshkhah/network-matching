@@ -300,28 +300,24 @@ def build_local_digraph(
 
 def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
                       bearing_weight: float = 0.0,
-                      dbg: Optional[Dict[str, Any]] = None,
-                      midpoint: bool = False) -> Optional[List[Tuple[int, int]]]:
+                      dbg: Optional[Dict[str, Any]] = None) -> Optional[List[Tuple[int, int]]]:
     """True segment-to-segment DP (``emission="segment"``): states are (A-segment i, B-arc u->v).
 
-    Every state pays the endpoint-average distance between A-segment ``a_i -> a_{i+1}`` and its
-    arc -- plus, with ``bearing_weight`` > 0, a per-state heading penalty -- so NO alignment move
-    can bypass the local cost. (The earlier point-state formulation charged bearing only on
-    diagonal moves, letting the DP escape via stalls and collapse the route; see
-    ``docs/weighted_emission.md`` §9-§10.) Moves: A-advance on the same arc (N segments : 1 arc),
-    arc-advance within a row (1 segment : N arcs; Dijkstra, each arc entered pays), or both.
-    Returns the vertex-level ``(a_index, vertex)`` pairs of the best alignment -- the same format
-    the point-state backtrack yields, so all downstream grouping/metrics are shared -- or ``None``
-    if no finite alignment exists.
+    Every state pays ONE distance between the two segment MIDDLES,
+    ``|mid(a_i, a_{i+1}) - mid(u, v)|`` -- plus, with ``bearing_weight`` > 0, a per-state heading
+    penalty -- so NO alignment move can bypass the local cost. (The earlier point-state
+    formulation charged bearing only on diagonal moves, letting the DP escape via stalls and
+    collapse the route; see ``docs/weighted_emission.md`` §9-§11.) Non-ridable stitch arcs are
+    free (pure connectivity: a zero-length junction connector is not a segment, so crossing it
+    carries no cost) and can never host a state. Moves: A-advance on the same arc (N segments :
+    1 arc), arc-advance within a row (1 segment : N arcs; Dijkstra, each arc entered pays), or
+    both. Returns the vertex-level ``(a_index, vertex)`` pairs of the best alignment -- the same
+    format the point-state backtrack yields, so all downstream grouping/metrics are shared -- or
+    ``None`` if no finite alignment exists.
 
     ``dbg``: optional dict populated with the DP internals (``arcs``, ``ridable``, ``D``, ``E``,
     ``arc_path``, ``terminal_state``, ``final_cost``) for algorithm debugging -- see
     :func:`graph_dtw_align`'s ``debug`` flag.
-
-    ``midpoint=True`` (``emission="midpoint"``) replaces the endpoint-average by ONE distance
-    between the two segment MIDDLES, ``|mid(a_i, a_{i+1}) - mid(u, v)|``, and makes non-ridable
-    stitch arcs free (pure connectivity: a zero-length junction connector is not a segment, so
-    crossing it carries no point-to-segment cost).
     """
     V = gb.n_vertices
     N = len(ax)
@@ -368,16 +364,11 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
         _E_rows: List[np.ndarray] = []
 
     def emit_seg(i: int) -> np.ndarray:
-        if midpoint:
-            # E(i, e) = |mid(a_i, a_{i+1}) - mid(u, v)| -- one middle-to-middle distance;
-            # stitches (non-ridable) are free: connectivity, not a segment to pay for
-            e = np.hypot(0.5 * (ax[i] + ax[i + 1]) - 0.5 * (ux + hx),
-                         0.5 * (ay[i] + ay[i + 1]) - 0.5 * (uy + hy))
-            e = np.where(ridable, e, 0.0)
-        else:
-            # E(i, e) = 1/2(|a_i - u| + |a_{i+1} - v|) (endpoint average)
-            e = 0.5 * (np.hypot(ax[i] - ux, ay[i] - uy)
-                       + np.hypot(ax[i + 1] - hx, ay[i + 1] - hy))
+        # E(i, e) = |mid(a_i, a_{i+1}) - mid(u, v)| -- one middle-to-middle distance;
+        # stitches (non-ridable) are free: connectivity, not a segment to pay for.
+        e = np.hypot(0.5 * (ax[i] + ax[i + 1]) - 0.5 * (ux + hx),
+                     0.5 * (ay[i] + ay[i + 1]) - 0.5 * (uy + hy))
+        e = np.where(ridable, e, 0.0)
         if bw > 0.0:                  # [+ lambda * circular bearing diff, ridable arcs only]
             bd = np.abs(seg_bear[i] - arc_bear)
             e = e + bw * np.where(ridable, np.minimum(bd, 360.0 - bd), 0.0)
@@ -503,15 +494,14 @@ def graph_dtw_align(
 
     ``emission`` selects the local cost MODEL. ``"point"`` (default): the recurrence above --
     states are (A-point, B-vertex), each cell adds ``dist(a_i, v)``. ``"segment"``: true
-    segment-to-segment -- states are (A-segment, B-arc) and EVERY state pays the endpoint-average
-    ``1/2(|a_i - u| + |a_{i+1} - v|)`` plus, with ``bearing_weight`` > 0, a per-state heading
-    penalty ``lambda * circ_diff(bearing(seg), bearing(arc))``; no alignment move can bypass
-    either term (see :func:`_segment_dp_pairs` and ``docs/weighted_emission.md`` §10).
-    ``"midpoint"``: same segment-state DP, but the local cost is ONE distance between the two
-    segment MIDDLES, junction stitches are free (pure connectivity), and the reported
+    segment-to-segment -- states are (A-segment, B-arc) and EVERY state pays ONE distance between
+    the two segment MIDDLES ``|mid(a_i, a_{i+1}) - mid(u, v)|`` plus, with ``bearing_weight`` > 0,
+    a per-state heading penalty ``lambda * circ_diff(bearing(seg), bearing(arc))``; no alignment
+    move can bypass either term (see :func:`_segment_dp_pairs` and ``docs/weighted_emission.md``
+    §11). Junction stitches are free (pure connectivity), and the reported
     ``average``/``max``/``min`` (overall and per route edge) are statistics of those
-    middle-to-middle distances over the matched states -- fully segment-to-segment.
-    ``min_gap_m`` is forwarded to the A-axis pool (see :func:`_node_projection_pool`).
+    middle-to-middle distances over the matched states. ``min_gap_m`` is forwarded to the A-axis
+    pool (see :func:`_node_projection_pool`), keeping segment states sliver-free.
 
     ``debug=True`` attaches the raw algorithm internals under ``metrics["debug"]`` (also on
     failure returns, with a ``reason``), for the debug tooling in
@@ -529,6 +519,8 @@ def graph_dtw_align(
       host a state), ``arc_path`` = ``(a_segment, arc, move)``; ``D``/``E`` are
       ``(N_A_segments, N_arcs)``.
     """
+    if emission == "midpoint":                # deprecated alias -> the one segment mode
+        emission = "segment"
     a_pool = _node_projection_pool(list(coords_a), gb.b_raw_nodes, step_meters, min_gap_m)
     N = len(a_pool)
     V = gb.n_vertices
@@ -555,13 +547,13 @@ def graph_dtw_align(
     INF = float("inf")
 
     seg_dbg: Optional[Dict[str, Any]] = None
-    if emission in ("segment", "midpoint"):
-        # True segment-to-segment: states are (A-segment, B-arc); every state pays distance
-        # (+ optional bearing). Yields vertex-level pairs in the same format as the point DP.
-        # Midpoint mode always collects the state path -- its metrics are computed from it.
-        seg_dbg = dbg if dbg is not None else ({} if emission == "midpoint" else None)
-        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight), dbg=seg_dbg,
-                                      midpoint=(emission == "midpoint"))
+    if emission == "segment":
+        # True segment-to-segment: states are (A-segment, B-arc); every state pays the
+        # middle-to-middle distance (+ optional bearing). Yields vertex-level pairs in the same
+        # format as the point DP. Always collect the state path -- the metrics are computed from
+        # it (the reported distances ARE the middle-to-middle state costs).
+        seg_dbg = dbg if dbg is not None else {}
+        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight), dbg=seg_dbg)
         if seg_pairs is None:
             return _fail("no_finite_alignment")
         pairs: List[Tuple[int, int]] = seg_pairs
@@ -780,11 +772,11 @@ def graph_dtw_align(
     bearing_diff = abs(_bearing(a0, a1) - _bearing(b0, b1))
     bearing_diff = float(min(bearing_diff, 360 - bearing_diff))
 
-    # Midpoint mode: the reported distances ARE the segment-state costs -- one distance per
+    # Segment mode: the reported distances ARE the segment-state costs -- one distance per
     # matched (A-segment, B-arc) state, middle to middle. Kept states are those whose produced
     # alignment pair (state t -> pair t+1) lies in the kept span; free stitches are skipped.
     mid_stats: Optional[Dict[Any, List[float]]] = None
-    if emission == "midpoint" and seg_dbg is not None and "arc_path" in seg_dbg:
+    if emission == "segment" and seg_dbg is not None and "arc_path" in seg_dbg:
         arcs_l = seg_dbg["arcs"]
         rid = seg_dbg["ridable"]
         mid_stats = {}
@@ -868,12 +860,15 @@ def match_edge_to_bgraph(
         covering less than this many meters of A. Not a gap-filler (use ``snap_tolerance_m`` for
         connectivity); off by default because it can delete legitimate corridor edges.
     emission:
-        Local cost: ``"point"`` (default, point-to-point), ``"segment"`` (endpoint-average of
-        the traversed A-/B-segments), or ``"midpoint"`` (ONE distance between the two segment
-        middles; stitches free; reported distances are those middle-to-middle distances).
-        See ``docs/weighted_emission.md``.
+        Local cost: ``"point"`` (default, point-to-point) or ``"segment"`` (true
+        segment-to-segment: ONE distance between the two segment middles
+        ``|mid(A-seg) - mid(B-arc)|``, junction stitches free, sliver-free pools, and the
+        reported distances are those middle-to-middle distances). ``"midpoint"`` is accepted as
+        a deprecated alias for ``"segment"``. See ``docs/weighted_emission.md``.
     bearing_weight:
-        Optional λ for a length-independent heading penalty (segment modes only); ``0`` = off.
+        Optional λ for a length-independent heading penalty (segment mode only); ``0`` = off.
+        Recommended with ``emission="segment"`` (λ ≈ 1-5): a middle-to-middle distance is blind
+        to a segment rotating about its own middle, so the bearing term is what pins heading.
     debug:
         ``True`` additionally returns the raw DP internals (cost/emission tables, backtracked
         path with move types, trim window) under the ``debug`` key -- see
@@ -881,8 +876,8 @@ def match_edge_to_bgraph(
     min_pool_gap_m:
         Minimum spacing of enrichment (non-node) pool points -- prevents sliver segments so
         segment states are genuinely segment-to-segment. Default ``None`` = ``0`` for
-        ``emission="point"`` (unchanged behaviour) and ``step_meters / 2`` for the segment
-        modes; pass an explicit value to override.
+        ``emission="point"`` (unchanged behaviour) and ``step_meters / 2`` for ``"segment"``;
+        pass an explicit value to override.
 
     Returns
     -------
@@ -890,6 +885,8 @@ def match_edge_to_bgraph(
     ``metrics`` (see :func:`graph_dtw_align`), ``avg_distance``, and ``graph`` (the
     :class:`LocalBGraph`, handy for visualization). With ``debug=True`` also ``debug``.
     """
+    if emission == "midpoint":                # deprecated alias -> the one segment mode
+        emission = "segment"
     if min_pool_gap_m is None:
         min_pool_gap_m = 0.0 if emission == "point" else 0.5 * step_meters
     gb = build_local_digraph(

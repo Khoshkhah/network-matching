@@ -59,12 +59,13 @@ routes_long, routes_summary = m.match_routes(n_jobs=-1)   # parallel over A-edge
 **Key parameters:** `snap_tolerance_m` (junction snapping / connectivity), `step_meters` (sampling
 density), `n_jobs` (parallel cores). (`trim_ends_m`, an optional end-edge remover, is off by default.)
 
-**Local cost (`emission`).** Defaults to `"point"` (point-to-point drift). Pass `emission="segment"`
-for the endpoint-average **segment-to-segment** cost (direction-aware), or `emission="midpoint"`
-for one middle-to-middle distance per matched segment pair (sliver-free pools, free junction
-crossings, reported distances = those middle distances); both take an optional `bearing_weight`
-heading term — see [docs/weighted_emission.md](docs/weighted_emission.md). `"point"` is
-unchanged, so existing results are unaffected.
+**Local cost (`emission`).** Two modes. Defaults to `"point"` (point-to-point drift). Pass
+`emission="segment"` for the **segment-to-segment** cost: one distance between the two segment
+middles per matched (A-segment, B-arc) pair, with sliver-free pools and free junction crossings,
+and the reported distances *are* those middle-to-middle distances. Because a middle-to-middle
+distance is blind to a segment rotating about its own middle, pair `"segment"` with a
+`bearing_weight` heading term (λ ≈ 1–5) — see [docs/weighted_emission.md](docs/weighted_emission.md).
+`"point"` is unchanged, so existing results are unaffected.
 
 `match_routes` returns a route for every A-edge; keep only confident matches by filtering on
 thresholds (failures become `NO_MATCH`):

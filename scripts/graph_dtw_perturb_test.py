@@ -118,7 +118,7 @@ def main():
                     help="compass direction for the translate family (0=north, 90=east, "
                          "180=south, 270=west)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--emission", choices=["point", "segment", "midpoint"], default="point")
+    ap.add_argument("--emission", choices=["point", "segment"], default="point")
     ap.add_argument("--bearing-weight", type=float, default=0.0)
     ap.add_argument("--snap", type=float, default=None)
     ap.add_argument("--step", type=float, default=None)

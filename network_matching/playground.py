@@ -23,8 +23,8 @@ from shapely.geometry import LineString
 from .graph_dtw import match_edge_to_bgraph
 from .synthetic import SCENARIOS, apply_perturbation, as_array, get_scenario, reverse
 
-PLAYGROUND_VERSION = ("v7 -- emission='midpoint': one middle-to-middle distance per segment "
-                      "pair, no sliver states, evenly spread sample points")
+PLAYGROUND_VERSION = ("v8 -- two modes: 'point' and 'segment' (segment = middle-to-middle "
+                      "distance, sliver-free pools; pair with bearing_weight 1-5)")
 
 PERTURB_ORDER = ["crop", "stretch", "rotate", "translate", "shift", "longitudinal", "noise"]
 
@@ -86,7 +86,7 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     # the correspondence itself -- drawn the way the chosen emission actually matches:
     dbg = res.get("debug")
     emission = (dbg or {}).get("params", {}).get("emission")
-    seg_mode = bool(dbg) and emission in ("segment", "midpoint") and "arc_path" in dbg
+    seg_mode = bool(dbg) and emission == "segment" and "arc_path" in dbg
     if seg_mode:
         # SEGMENT-TO-SEGMENT: the matched POINTS are drawn exactly like the point view (dots at
         # their true locations); only the CONNECTION LINES differ -- one per DP state
@@ -150,8 +150,7 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     ax.legend(handles=handles, fontsize=8.5, loc="upper left", bbox_to_anchor=(1.01, 1.0),
               borderaxespad=0.0, framealpha=0.95)
 
-    view = (f"segment ↔ segment ({'middle dist' if emission == 'midpoint' else 'endpoint avg'})"
-            if seg_mode else "point ↔ point")
+    view = "segment ↔ segment (middle-to-middle)" if seg_mode else "point ↔ point"
     ttl = ("NO MATCH" if not np.isfinite(res["avg_distance"]) else
            " → ".join(str(e) for e in route)
            + f"   ·   avg distance {res['avg_distance']:.2f} m"
@@ -205,8 +204,8 @@ def playground(coords_a=None, b_edges=None, snap=0.5, step=2.0):
     if not custom:
         k["case"] = w.Dropdown(options=sorted(SCENARIOS), value="split", description="case",
                                style=sl["style"], layout=sl["layout"])
-    k["emission"] = w.Dropdown(options=["point", "segment", "midpoint"], description="emission",
-                               style=sl["style"], layout=sl["layout"])
+    k["emission"] = w.Dropdown(options=["point", "segment"], value="segment",
+                               description="emission", style=sl["style"], layout=sl["layout"])
     k["shift"] = w.FloatSlider(0, min=-16, max=16, step=0.5, description="shift m", **sl)
     k["longitudinal"] = w.FloatSlider(0, min=-16, max=16, step=0.5, description="along m", **sl)
     k["translate"] = w.FloatSlider(0, min=0, max=16, step=0.5, description="translate m", **sl)
@@ -220,7 +219,7 @@ def playground(coords_a=None, b_edges=None, snap=0.5, step=2.0):
     k["reverse_dir"] = w.Checkbox(False, description="reverse direction")
     k["snap"] = w.FloatSlider(snap, min=0.1, max=3, step=0.1, description="snap tol m", **sl)
     k["step"] = w.FloatSlider(step, min=1, max=20, step=1, description="sample m", **sl)
-    k["bearing_w"] = w.FloatSlider(0, min=0, max=1, step=0.05, description="bearing λ", **sl)
+    k["bearing_w"] = w.FloatSlider(2, min=0, max=5, step=0.25, description="bearing λ", **sl)
 
     def update(**v):
         if custom:
