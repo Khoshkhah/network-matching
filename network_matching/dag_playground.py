@@ -139,34 +139,49 @@ def match_and_draw_dag(a_edges, b_edges, ax=None, snap_tolerance_m=0.5, step_met
     return res
 
 
-def dag_playground():
-    """Interactive panel: pick a DAG scenario, move the whole DAG with sliders, watch the match."""
+def dag_playground(a_edges=None, b_edges=None):
+    """Interactive panel: move the whole DAG with sliders and watch the joint match.
+
+    No args -> a dropdown over the built-in scenarios (chain / y_split / merge / diamond).
+    Pass your **own** DAG -- ``a_edges=[(id, [(x, y), ...]), ...]`` and the target
+    ``b_edges=[...]`` the same way -- to drive the sliders on it (like the graph-DTW
+    ``playground(my_a, my_b_edges)``). The perturbations move the whole source rigidly so its
+    junctions stay stitched.
+    """
     import ipywidgets as w
     import matplotlib.pyplot as plt
     from IPython.display import display
 
+    custom = a_edges is not None
+    if custom:
+        a_edges, b_edges = _edges_to_ls(a_edges), _edges_to_ls(b_edges)
+
     sl = dict(continuous_update=False, style={"description_width": "90px"},
               layout=w.Layout(width="340px"))
-    k = {
-        "case": w.Dropdown(options=sorted(DAG_SCENARIOS), value="y_split", description="DAG",
-                           style=sl["style"], layout=sl["layout"]),
-        "shift": w.FloatSlider(0, min=-8, max=8, step=0.5, description="shift m", **sl),
-        "bearing": w.FloatSlider(90, min=0, max=360, step=15, description="direction °", **sl),
-        "rotate": w.FloatSlider(0, min=-30, max=30, step=1, description="rotate °", **sl),
-        "noise": w.FloatSlider(0, min=0, max=3, step=0.25, description="noise σ m", **sl),
-        "seed": w.IntSlider(0, min=0, max=20, description="noise seed", **sl),
-        "step": w.FloatSlider(2.0, min=1, max=8, step=0.5, description="sample m", **sl),
-    }
+    k = {}
+    if not custom:
+        k["case"] = w.Dropdown(options=sorted(DAG_SCENARIOS), value="y_split", description="DAG",
+                               style=sl["style"], layout=sl["layout"])
+    k["shift"] = w.FloatSlider(0, min=-8, max=8, step=0.5, description="shift m", **sl)
+    k["bearing"] = w.FloatSlider(90, min=0, max=360, step=15, description="direction °", **sl)
+    k["rotate"] = w.FloatSlider(0, min=-30, max=30, step=1, description="rotate °", **sl)
+    k["noise"] = w.FloatSlider(0, min=0, max=3, step=0.25, description="noise σ m", **sl)
+    k["seed"] = w.IntSlider(0, min=0, max=20, description="noise seed", **sl)
+    k["step"] = w.FloatSlider(2.0, min=1, max=8, step=0.5, description="sample m", **sl)
 
     def update(**v):
-        sc = get_dag(v["case"])
-        a = perturb_dag(sc["a_edges"], shift=v["shift"], rotate=v["rotate"], noise=v["noise"],
+        if custom:
+            a0, b0 = a_edges, b_edges
+        else:
+            sc = get_dag(v["case"])
+            a0, b0 = sc["a_edges"], sc["b_edges"]
+        a = perturb_dag(a0, shift=v["shift"], rotate=v["rotate"], noise=v["noise"],
                         seed=v["seed"], bearing_deg=v["bearing"])
         fig, ax = plt.subplots(figsize=(11, 7.5))
-        match_and_draw_dag(a, sc["b_edges"], ax=ax, step_meters=v["step"])
+        match_and_draw_dag(a, b0, ax=ax, step_meters=v["step"])
         plt.show()
 
     out = w.interactive_output(update, k)
-    rows = [w.HBox([k[n] for n in names]) for names in
+    rows = [w.HBox([k[n] for n in names if n in k]) for names in
             (["case", "step"], ["shift", "bearing", "rotate"], ["noise", "seed"])]
     display(w.VBox(rows), out)
