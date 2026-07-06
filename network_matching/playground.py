@@ -23,8 +23,8 @@ from shapely.geometry import LineString
 from .graph_dtw import match_edge_to_bgraph
 from .synthetic import SCENARIOS, apply_perturbation, as_array, get_scenario, reverse
 
-PLAYGROUND_VERSION = ("v4 -- midpoint links; junction/sliver pass-throughs drawn dotted gray "
-                      "(they are crossings, not segment matches)")
+PLAYGROUND_VERSION = ("v5 -- match_and_draw() one-call helper; segment view needs the debug "
+                      "payload and match_and_draw always requests it")
 
 PERTURB_ORDER = ["crop", "stretch", "rotate", "translate", "shift", "longitudinal", "noise"]
 
@@ -163,6 +163,25 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     ax.grid(alpha=0.15)
     ax.tick_params(labelsize=8)
     return ax
+
+
+def match_and_draw(coords_a, b_edges, original_a=None, ax=None, **match_kwargs):
+    """One call: match + draw, always requesting the debug payload so the segment view works.
+
+    Prefer this over calling ``match_edge_to_bgraph`` + ``draw_match`` yourself -- with
+    ``emission="segment"`` the segment-to-segment view NEEDS ``debug=True``, and forgetting it
+    silently falls back to the point view. Returns the match result.
+    """
+    import matplotlib.pyplot as plt
+
+    coords = coords_a.tolist() if hasattr(coords_a, "tolist") else list(coords_a)
+    b = to_edges(b_edges)
+    match_kwargs.pop("debug", None)
+    res = match_edge_to_bgraph(coords, b, debug=True, **match_kwargs)
+    draw_match(coords_a, b, res, original_a=original_a, ax=ax)
+    if ax is None:
+        plt.show()
+    return res
 
 
 def playground(coords_a=None, b_edges=None, snap=0.5, step=2.0):
