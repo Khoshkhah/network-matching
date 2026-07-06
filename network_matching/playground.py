@@ -23,8 +23,8 @@ from shapely.geometry import LineString
 from .graph_dtw import match_edge_to_bgraph
 from .synthetic import SCENARIOS, apply_perturbation, as_array, get_scenario, reverse
 
-PLAYGROUND_VERSION = ("v3 -- points stay at their true locations; segment mode only re-routes "
-                      "the links middle-to-middle")
+PLAYGROUND_VERSION = ("v4 -- midpoint links; junction/sliver pass-throughs drawn dotted gray "
+                      "(they are crossings, not segment matches)")
 
 PERTURB_ORDER = ["crop", "stretch", "rotate", "translate", "shift", "longitudinal", "noise"]
 
@@ -100,6 +100,7 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
         ap = dbg["a_pool"]
         arcs = dbg["arcs"]
         lo, hi = dbg.get("kept_span", (0, len(dbg["pairs_all"]) - 1))
+        ridable = dbg["ridable"]
         for t, (i, k, _mv) in enumerate(dbg["arc_path"]):
             if not (lo <= t + 1 <= hi):               # state t produced alignment pair t+1
                 continue                              # -> outside = trimmed overhang
@@ -110,7 +111,14 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
             b0, b1 = (gb.vx[u], gb.vy[u]), (gb.vx[w_], gb.vy[w_])
             ma = ((a0[0] + a1[0]) / 2, (a0[1] + a1[1]) / 2)   # A-segment midpoint
             mb = ((b0[0] + b1[0]) / 2, (b0[1] + b1[1]) / 2)   # B-segment midpoint
-            ax.plot([ma[0], mb[0]], [ma[1], mb[1]], color=c, lw=1.2, alpha=0.8, zorder=4)
+            if ridable[k]:
+                ax.plot([ma[0], mb[0]], [ma[1], mb[1]], color=c, lw=1.2, alpha=0.8, zorder=4)
+            else:
+                # pass-through over a non-ridable arc (junction stitch / sub-0.5 m sliver):
+                # NOT a segment match -- the DP only crosses it (paying its distance emission),
+                # so its target is effectively a point. Drawn dotted gray to tell it apart.
+                ax.plot([ma[0], mb[0]], [ma[1], mb[1]], color="0.5", lw=1.0, ls=":",
+                        alpha=0.9, zorder=4)
     else:
         # POINT-TO-POINT: one link per matched pair, A point painted in its B-edge color
         for k, (pa, pb) in enumerate(wp):
@@ -130,6 +138,8 @@ def draw_match(coords_a, b_edges, res, original_a=None, ax=None):
     if seg_mode:
         handles.append(Line2D([], [], color="0.55", lw=1.2,
                               label="link: segment middle ↔ segment middle"))
+        handles.append(Line2D([], [], color="0.5", lw=1.0, ls=":",
+                              label="junction/sliver pass-through (not a segment match)"))
     if any(eid not in color for eid, _ in b_edges):
         handles.append(Line2D([], [], color="0.72", lw=2, label="candidate (unmatched)"))
     if original_a is not None:
