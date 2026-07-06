@@ -371,21 +371,30 @@ diagonal). The DAG-specific machinery — the `Σ` and the `1/outdeg` split — 
 `O(#junctions)` branch/merge vertices. The interior is neither the complex part nor an extra cost;
 it is the code that already exists.
 
-### 9.2 Contract to the junction graph; reuse the graph-DTW primitive
+### 9.2 Exploit linearity, but keep **one joint DP** — never collapse a chain to a route
 
-Collapse each degree-1 chain into a single **macro-edge** between two junctions, and work on that
-much smaller graph:
+The interior being graph-DTW-shaped (§9.1) does **not** license running the existing
+`match_edge_to_bgraph` on each macro-edge and stitching the routes. That standalone primitive takes
+the `argmin` at its end and returns a **single route per edge** — discarding the cost-over-all-B
+vector and choosing each edge's B-alignment **independently**. Stitching those is exactly the
+per-edge matching DAG-DTW exists to replace: it loses the shared `φ` at junctions and the min-sum /
+split joint optimisation. **If that were accurate there would be no reason to match a DAG at all** —
+so it is not a valid optimisation, it is the bug.
 
-- **Along a macro-edge** — propagate the incoming **message vector** (accumulated cost over
-  B-vertices) *as the seed row* of a linear graph-DTW pass, instead of free entry. One linear DP
-  per chain, driven by the existing `match_edge_to_bgraph` machinery.
-- **At a junction only** — apply the `Σ` (merge, sum incoming messages) and the `1/outdeg` split
-  (branch, divide the outgoing message), then pin `φ` at backtrack.
+The correct implementation is **one joint DP over the whole DAG** (§3). What §9.1 buys is only
+*cheapness*, not decomposition: on an interior chain the per-vertex step is the plain linear
+recurrence (no sum, no split), but the **full cost vector `D[a][·]` keeps flowing** and the `Σ` +
+`1/outdeg` split at junctions stays live throughout. Concretely:
 
-Payoff: the new DAG code is tiny — the min-sum/split logic runs on a graph with `O(#junctions)`
-nodes — and everything heavy and correctness-critical stays the **already-tested graph-DTW
-primitive**. This is also the natural staging: Phase 1 can literally decompose at junctions and
-reuse `match_edge_to_bgraph`, before Phase 2 fuses it into one solver.
+- propagate the cost **vector** through chains, and combine **vectors** at junctions (sum the
+  incoming, split the outgoing) — only the final backtrack turns vectors into routes;
+- you may reuse graph-DTW's **inner machinery** as shared helpers — the projection-pool builder and
+  the per-A-vertex Dijkstra over `GB` — but **not** the route-returning primitive as a black box on
+  sub-edges.
+
+So chain-contraction is fine purely as an internal DP *organisation* (fewer bookkeeping points),
+but it must carry the vector and keep the junction combination in the loop — it is the joint DP,
+not independent stitching.
 
 ### 9.3 Band the B-candidates per A-vertex (the real FLOP cut)
 
@@ -402,6 +411,7 @@ Two existing knobs trade interior nodes for accuracy: `step_meters` (gap-fill de
 `min_pool_gap_m` (sliver removal). Coarser sampling = fewer interior vertices = faster. This is
 tuning, not structure, but it is the quickest win if a DAG is very large.
 
-**Recommended build order.** Ship §9.2 (junction-graph contraction over the existing graph-DTW
-primitive) first — it reuses tested code and keeps the new logic small — then add §9.3 (per-vertex
-banding) if profiling shows the interior Dijkstras dominate. §9.4 stays a tuning fallback.
+**Recommended build order.** Build the **one joint DP** directly (point-to-point, §3) — do **not**
+route each edge and stitch (§9.2). Add **banding** (§9.3) if profiling shows the interior Dijkstras
+dominate, and use **sampling density** (§9.4) as a tuning fallback. The only decomposition that is
+ever valid is the lossless vector-propagation of §9.2, which *is* the joint DP.
