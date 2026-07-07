@@ -649,6 +649,23 @@ target(<var>v</var><sub><var>i</var></sub>) = entry + (exit − entry) · <span 
   <li><strong><var>α</var> &lt; 1 genuinely extends coverage</strong> — on the shifted <span class="mono">diamond</span>, <var>α</var> = 0.3 produces different (more 1:<var>N</var>) routes than <var>α</var> = 1.0, confirming it is a real, controllable knob orthogonal to junction labelling.</li>
 </ul>
 
+<h3 id="sec-9-7"><span class="no">9.7</span> Comparison with baseline conflation on real data</h3>
+
+<p>To situate the method against the conflation literature we run it on a real OpenStreetMap network against the Swedish national road register (NVDB) over Sundbyberg, Stockholm — <strong>3,948</strong> directed OSM edges against <strong>2,535</strong> directed NVDB edges — and compare it with two representative baselines we implement ourselves (not the original authors' code or parameters): an <em>undirected nearest-edge / buffer</em> matcher in the spirit of node–arc conflation (Saalfeld, 1988), which snaps each source edge to the geometrically closest target edge within a 30&nbsp;m buffer; and an <em>independent per-edge shape (DTW) matcher with no junction coupling</em> — the very failure mode that iterative multiple-representation matching sets out to repair (Volz, 2006). Lacking a labelled gold standard, we report <strong>intrinsic</strong> metrics that isolate the three properties the method is built for: directedness, route-valued coverage under divergent segmentation, and junction consistency.</p>
+
+<div class="tblwrap"><table>
+<caption id="tbl-12"><b><a href="#tbl-1">Table 1</a>2 —</b> Conflation of OpenStreetMap against the Swedish road register (NVDB), Sundbyberg (Stockholm). <em>Wrong-heading</em> is the share of matches whose target edge runs more than 90° from the source edge's heading (a wrong-direction match); <em>1:N</em> is the share of source edges mapped to a multi-edge target route. The two baselines are our own representative reimplementations of the cited families, not the original methods.</caption>
+<thead><tr><th>Method</th><th>coverage&nbsp;%</th><th>drift&nbsp;(m)</th><th>wrong-heading&nbsp;%</th><th>1:N&nbsp;%</th><th>route-valued</th><th>junction-consistent</th><th>time&nbsp;(s)</th></tr></thead>
+<tbody>
+<tr><td>Undirected nearest-edge, buffer (Saalfeld-family)</td><td>91.5</td><td>0.00</td><td>46.5</td><td>0.0</td><td>no</td><td>no</td><td>—</td></tr>
+<tr><td>Per-edge shape DTW, no junction (Volz-family)</td><td>91.5</td><td>1.09</td><td>11.5</td><td>0.0</td><td>no</td><td>no</td><td>13.5</td></tr>
+<tr><td><strong>Graph-DTW routes (ours)</strong></td><td>87.8</td><td>1.79</td><td><strong>0.2</strong></td><td>40.5</td><td>yes</td><td>yes</td><td>5.6</td></tr>
+</tbody></table></div>
+
+<p>The undirected baseline attains ~0&nbsp;m drift <em>by construction</em> — it returns the nearest edge — yet <strong>46.5%</strong> of its matches run against the road's direction: a two-way street is two opposing directed edges (NVDB <span class="mono">is_reverse</span> twins) that are geometrically coincident, so nearest-by-distance is a coin flip between them. This is exactly the error a directed matcher must avoid, and it shows why minimum distance alone is a poor conflation objective. Adding shape (per-edge DTW) more than halves wrong-heading to <strong>11.5%</strong>, but cannot recover the rest at ambiguous overlaps and — being one-to-one — structurally cannot serve the <strong>40.5%</strong> of source edges that a divergent segmentation maps onto a <em>multi-edge</em> target route; it conflates only one of the several register edges such an OSM edge spans. Our directed route matcher drives wrong-heading to <strong>0.2%</strong>, returns connected multi-edge routes that are junction-consistent by construction, and does so faster (5.6&nbsp;s vs 13.5&nbsp;s over the whole network). Its costs are honest: a higher shape drift (1.79&nbsp;m — the true geometric offset between the two maps, not an artificially-zero nearest distance) and a more conservative coverage (87.8% vs 91.5%), declining a match where evidence is weak rather than committing a wrong-direction one.</p>
+
+<div class="note">The baselines are faithful to the <em>family</em> of the cited methods, not to their exact algorithms, data, or parameters (which we do not have); the metrics are intrinsic (no external ground truth). The comparison measures <em>which failure modes each design admits</em> — direction, segmentation, junction coupling — rather than accuracy against a gold standard.</div>
+
 <h2 id="sec-10"><span class="no">10</span> Discussion &amp; Limitations</h2>
 
 <p>The evaluation supports a specific, bounded claim: on directed source DAGs whose undirected skeleton is a <strong>tree/polytree</strong> (<var>&#124;F&#124;</var> = 0), the shipped point-mode matcher produces junction-consistent, sequence-rule-clean matchings and is robust to large rigid perturbation; and the two conditioning solvers form an exact, mutually-validated oracle for the labelling problem on <em>any</em> DAG. The limitations below are equally important and are stated so the reader can calibrate what the method does and does not yet deliver.</p>
@@ -918,7 +935,7 @@ seed[<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <span class="qp3-
 <p><var>α</var> = 1 recovers today's per-<var>B</var>-point charge <var>δ</var><var>N</var> (bit-for-bit unchanged); <var>α</var> → 0 charges the coverage essentially <strong>once</strong> (<var>δ</var>, sampling-independent). Verified directly against <span class="mono">_relax_alpha</span> at <var>δ</var> = 0.4:</p>
 
 <div class="tblwrap"><table>
-<caption id="tbl-12"><b><a href="#tbl-1">Table 1</a>2 —</b> Coverage cost <var>δ</var>(1 + <var>α</var><var>k</var>) vs sampling density <var>N</var> at <var>δ</var> = 0.4.</caption>
+<caption id="tbl-13"><b><a href="#tbl-1">Table 1</a>3 —</b> Coverage cost <var>δ</var>(1 + <var>α</var><var>k</var>) vs sampling density <var>N</var> at <var>δ</var> = 0.4.</caption>
 <thead><tr><th><var>N</var></th><th><var>α</var> = 1.0</th><th><var>α</var> = 0.5</th><th><var>α</var> = 0.0</th></tr></thead>
 <tbody>
 <tr><td>1</td><td>0.40</td><td>0.40</td><td>0.40</td></tr>
@@ -1006,7 +1023,7 @@ seed[<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <span class="qp3-
 <p>Five scenarios span the structural axis from trivial to two-loop, indexed by minimum-FVS size |<var>F</var>| (|<var>F</var>| = 0 ⇔ tree ⇔ shipped solver already exact):</p>
 
 <div class="tblwrap"><table>
-<caption id="tbl-13"><b><a href="#tbl-1">Table 1</a>3 —</b> Synthetic scenario ladder, indexed by minimum-FVS size.</caption>
+<caption id="tbl-14"><b><a href="#tbl-1">Table 1</a>4 —</b> Synthetic scenario ladder, indexed by minimum-FVS size.</caption>
 <thead><tr><th>Scenario</th><th><var>A</var>-edges</th><th>sources</th><th>sinks</th><th>|<var>F</var>|</th><th>clean <span class="mono">avg_drift</span> (m)</th><th>clean routing</th></tr></thead>
 <tbody>
 <tr><td><span class="mono">chain</span></td><td>2</td><td>1</td><td>1</td><td>0</td><td>0.40</td><td>all correct</td></tr>
@@ -1030,7 +1047,7 @@ seed[<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <span class="qp3-
 <p>The three trees stay clean at <strong>every</strong> shift (routing correct, all sequence rules OK). Representative tree <span class="mono">y_split</span>:</p>
 
 <div class="tblwrap"><table>
-<caption id="tbl-14"><b><a href="#tbl-1">Table 1</a>4 —</b> <span class="mono">y_split</span> (tree) under rigid-shift sweep — stays clean at every shift.</caption>
+<caption id="tbl-15"><b><a href="#tbl-1">Table 1</a>5 —</b> <span class="mono">y_split</span> (tree) under rigid-shift sweep — stays clean at every shift.</caption>
 <thead><tr><th>shift (m)</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>6</th><th>8</th></tr></thead>
 <tbody>
 <tr><td><span class="mono">avg_drift</span> (m)</td><td>0.37</td><td>0.88</td><td>1.84</td><td>2.64</td><td>3.49</td><td>5.15</td><td>6.87</td></tr>
@@ -1041,7 +1058,7 @@ seed[<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <span class="qp3-
 <p>The reconvergent <span class="mono">diamond</span> is the sole structure that eventually breaks:</p>
 
 <div class="tblwrap"><table>
-<caption id="tbl-15"><b><a href="#tbl-1">Table 1</a>5 —</b> <span class="mono">diamond</span> under rigid-shift sweep — collapses at shift = 8 m.</caption>
+<caption id="tbl-16"><b><a href="#tbl-1">Table 1</a>6 —</b> <span class="mono">diamond</span> under rigid-shift sweep — collapses at shift = 8 m.</caption>
 <thead><tr><th>shift (m)</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>6</th><th>8</th></tr></thead>
 <tbody>
 <tr><td><span class="mono">avg_drift</span> (m)</td><td>0.55</td><td>1.11</td><td>1.93</td><td>2.93</td><td>3.82</td><td>5.72</td><td>5.04</td></tr>
@@ -1076,7 +1093,7 @@ seed[<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <span class="qp3-
 <h3 id="appx-g-5">G.5 Suite totals</h3>
 
 <div class="tblwrap"><table>
-<caption id="tbl-16"><b><a href="#tbl-1">Table 1</a>6 —</b> Validation suite totals.</caption>
+<caption id="tbl-17"><b><a href="#tbl-1">Table 1</a>7 —</b> Validation suite totals.</caption>
 <thead><tr><th>Suite</th><th>Checks</th><th>Result</th></tr></thead>
 <tbody>
 <tr><td><span class="mono">tests/test_dag_dtw.py</span></td><td>23</td><td>23 passed</td></tr>
