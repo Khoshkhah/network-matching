@@ -28,8 +28,9 @@ import numpy as np
 from shapely.geometry import LineString
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from network_matching.dag_dtw import NotADAG, match_dag_to_bgraph, topological_order  # noqa: E402
-from network_matching.dag_dtw import build_local_digraph  # noqa: E402
+from network_matching.dag_dtw import (NotADAG, build_local_digraph,  # noqa: E402
+                                      check_sequence_rules, match_dag_to_bgraph,
+                                      topological_order)
 from network_matching.dag_synthetic import DAG_SCENARIOS, get_dag, list_dags  # noqa: E402
 from network_matching.dag_playground import perturb_dag  # noqa: E402
 
@@ -68,45 +69,10 @@ def _fwd_reachable(gb, src, dst):
 
 
 def sequence_rules(res, jump_tol=3.0):
-    """The matched sequence must obey the map-matching rules. Returns (arc_violations,
-    route_violations, jump_violations):
-
-      - **monotone forward B-walk**: every GA arc ``a -> a'`` maps to a forward B-step
-        ``φ(a) -> φ(a')`` (reachable along GB arcs, or equal) -- as A advances B never goes
-        backward or jumps to a disconnected vertex;
-      - **connected route**: consecutive B-edges in a route are graph-connected in GB;
-      - **no teleport (B-continuity)**: for every GA arc the B-position may not *jump* -- the
-        B-advance ``|φ(a) - φ(a')|`` must not exceed the A-advance ``|a - a'|`` by more than
-        ``jump_tol`` metres. This is the rule that catches a junction whose coincident A-vertices
-        map to far-apart B-positions (graph-reachable, but a discontinuity in B).
-    """
-    ga, gb, phi = res["GA"], res["GB"], res["phi"]
-    arc_viol, jump_viol = [], []
-    for a in range(ga.n_vertices):
-        if a not in phi:
-            continue
-        for a2 in ga.succ_arcs[a]:
-            if a2 not in phi:
-                continue
-            if not _fwd_reachable(gb, phi[a], phi[a2]):
-                arc_viol.append((ga.edge_ids[ga.vert_edge[a]], ga.edge_ids[ga.vert_edge[a2]]))
-            bdist = float(np.hypot(gb.vx[phi[a]] - gb.vx[phi[a2]], gb.vy[phi[a]] - gb.vy[phi[a2]]))
-            adist = float(np.hypot(ga.vx[a] - ga.vx[a2], ga.vy[a] - ga.vy[a2]))
-            if bdist - adist > jump_tol:
-                jump_viol.append((ga.edge_ids[ga.vert_edge[a]], ga.edge_ids[ga.vert_edge[a2]],
-                                  round(bdist - adist, 1)))
-    econ = set()                                       # B-edge -> B-edge connectivity in GB
-    for u in range(gb.n_vertices):
-        for w in gb.succ_arcs[u]:
-            eu, ew = gb.edge_ids[gb.vert_edge[u]], gb.edge_ids[gb.vert_edge[w]]
-            if eu != ew:
-                econ.add((eu, ew))
-    route_viol = []
-    for aeid, route in res["routes"].items():
-        for i in range(1, len(route)):
-            if (route[i - 1], route[i]) not in econ:
-                route_viol.append((aeid, route[i - 1], route[i]))
-    return arc_viol, route_viol, jump_viol
+    """Thin wrapper over the shared :func:`network_matching.dag_dtw.check_sequence_rules` so the
+    script and the notebook figure apply the *same* rules. Returns (arc, route, jump) lists."""
+    chk = check_sequence_rules(res, jump_tol=jump_tol)
+    return chk["arc_viol"], chk["route_viol"], chk["jump_viol"]
 
 
 def validate_case(name):

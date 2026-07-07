@@ -12,10 +12,11 @@ analysis panels.
 import numpy as np
 from shapely.geometry import LineString
 
-from .dag_dtw import match_dag_to_bgraph
+from .dag_dtw import check_sequence_rules, match_dag_to_bgraph
 from .dag_synthetic import DAG_SCENARIOS, get_dag
 
-DAG_PLAYGROUND_VERSION = "v1 -- point-to-point DAG-DTW correspondence view"
+DAG_PLAYGROUND_VERSION = ("v2 -- correspondence view that CHECKS the sequence rules "
+                          "(flags backward / jump / disconnected in the title + red arcs)")
 
 
 def _edges_to_ls(a_edges):
@@ -63,7 +64,7 @@ def draw_dag_match(res, a_edges, b_edges, ax=None):
     from matplotlib.lines import Line2D
 
     a_edges, b_edges = _edges_to_ls(a_edges), _edges_to_ls(b_edges)
-    ga, gb = res["GA"], res["GB"]
+    ga, gb, phi = res["GA"], res["GB"], res["phi"]
     routes = res["routes"]
     matched_b = [b for seq in routes.values() for b in seq]
     palette = [plt.cm.tab10(i) for i in (0, 1, 2, 4, 5, 6, 8, 9, 3, 7)]
@@ -111,16 +112,41 @@ def draw_dag_match(res, a_edges, b_edges, ax=None):
             ax.plot(ga.vx[a], ga.vy[a], marker="o", ms=13, mfc="none",
                     mec="#dc2626" if od > 1 else "#2563eb", mew=1.8, zorder=8)
 
+    # --- SEQUENCE-RULE CHECK: draw the offending arcs in red so the figure can't lie ---
+    chk = check_sequence_rules(res)
+    bad_arcs = [(a, a2) for (a, a2, *_r) in chk["jump_viol"]] + list(chk["arc_viol"])
+    for (a, a2) in bad_arcs:
+        va, va2 = phi.get(a), phi.get(a2)
+        if va is None or va2 is None:
+            continue
+        ax.plot([gb.vx[va], gb.vx[va2]], [gb.vy[va], gb.vy[va2]], color="#dc2626", lw=3.0,
+                ls=(0, (2, 1)), zorder=9)                # the jump/backward B-step, in red
+        ax.plot([ga.vx[a], ga.vx[a2]], [ga.vy[a], ga.vy[a2]], color="#dc2626", lw=3.0, zorder=9)
+
     handles = [Line2D([], [], color="#111111", lw=2.4, marker=">", ms=7, label="source A-edge (DAG)")]
     handles += [Line2D([], [], color=bcolor[b], lw=3, label=f"matched → {b}") for b in seen]
     handles += [Line2D([], [], marker="o", mfc="none", mec="#dc2626", lw=0, ms=10, label="branch junction"),
                 Line2D([], [], marker="o", mfc="none", mec="#2563eb", lw=0, ms=10, label="merge junction")]
+    if not chk["ok"]:
+        handles.append(Line2D([], [], color="#dc2626", lw=3, ls=(0, (2, 1)),
+                              label="RULE VIOLATION (jump / backward)"))
     ax.legend(handles=handles, fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1.0),
               borderaxespad=0.0, framealpha=0.95)
 
     na, nb = len(a_edges), len(seen)
-    ax.set_title(f"{na} A-edges → {nb} B-edges   ·   avg drift {res['avg_drift']:.2f} m"
-                 f"   ·   junction-consistent", fontsize=11)
+    if chk["ok"]:
+        status, col = "sequence OK (monotone, connected, no jump)", "#111111"
+    else:
+        bits = []
+        if chk["jump_viol"]:
+            bits.append(f"JUMP {max(j for *_p, j in chk['jump_viol']):.1f} m")
+        if chk["arc_viol"]:
+            bits.append(f"{len(chk['arc_viol'])} BACKWARD")
+        if chk["route_viol"]:
+            bits.append(f"{len(chk['route_viol'])} DISCONNECTED")
+        status, col = "RULE VIOLATED — " + ", ".join(bits), "#dc2626"
+    ax.set_title(f"{na} A-edges → {nb} B-edges   ·   avg drift {res['avg_drift']:.2f} m\n{status}",
+                 fontsize=11, color=col)
     ax.set_aspect("equal")
     ax.grid(alpha=0.15)
     ax.tick_params(labelsize=8)

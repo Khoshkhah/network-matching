@@ -39,6 +39,64 @@ class NotADAG(Exception):
     """Raised when the source graph GA contains a directed cycle (it must be acyclic)."""
 
 
+def check_sequence_rules(res: Dict[str, Any], jump_tol: float = 3.0) -> Dict[str, Any]:
+    """Verify the matched result obeys the map-matching **sequence rules** and return a report
+    ``{ok, arc_viol, route_viol, jump_viol}``. Used by both the validation script and the
+    playground figure so the drawing tells the truth about the match:
+
+    - **monotone forward B-walk** (``arc_viol``): every GA arc ``a -> a'`` maps to a forward
+      B-step ``φ(a) -> φ(a')`` (reachable along GB arcs); never backward / disconnected.
+    - **connected route** (``route_viol``): consecutive B-edges in a route are graph-connected.
+    - **no teleport** (``jump_viol``): the B-advance ``|φ(a) - φ(a')|`` may not exceed the
+      A-advance ``|a - a'|`` by more than ``jump_tol`` metres -- catches a junction whose
+      coincident A-vertices map to far-apart B-positions (graph-reachable, but a *jump* in B).
+
+    ``jump_viol`` entries are ``(a, a', metres)`` so the drawing can highlight the offending arc.
+    """
+    ga, gb, phi = res["GA"], res["GB"], res["phi"]
+
+    def reachable(src, dst):
+        if src == dst:
+            return True
+        seen, q = {src}, deque([src])
+        while q:
+            u = q.popleft()
+            for w in gb.succ_arcs[u]:
+                if w == dst:
+                    return True
+                if w not in seen:
+                    seen.add(w)
+                    q.append(w)
+        return False
+
+    arc_viol, jump_viol = [], []
+    for a in range(ga.n_vertices):
+        if a not in phi:
+            continue
+        for a2 in ga.succ_arcs[a]:
+            if a2 not in phi:
+                continue
+            if not reachable(phi[a], phi[a2]):
+                arc_viol.append((a, a2))
+            bdist = float(np.hypot(gb.vx[phi[a]] - gb.vx[phi[a2]], gb.vy[phi[a]] - gb.vy[phi[a2]]))
+            adist = float(np.hypot(ga.vx[a] - ga.vx[a2], ga.vy[a] - ga.vy[a2]))
+            if bdist - adist > jump_tol:
+                jump_viol.append((a, a2, round(bdist - adist, 1)))
+    econ = set()
+    for u in range(gb.n_vertices):
+        for w in gb.succ_arcs[u]:
+            eu, ew = gb.edge_ids[gb.vert_edge[u]], gb.edge_ids[gb.vert_edge[w]]
+            if eu != ew:
+                econ.add((eu, ew))
+    route_viol = []
+    for aeid, route in res.get("routes", {}).items():
+        for i in range(1, len(route)):
+            if (route[i - 1], route[i]) not in econ:
+                route_viol.append((aeid, route[i - 1], route[i]))
+    return {"ok": not (arc_viol or route_viol or jump_viol),
+            "arc_viol": arc_viol, "route_viol": route_viol, "jump_viol": jump_viol}
+
+
 # --------------------------------------------------------------------------------------
 # Topological order, laid out as [sources | middle | sinks] (docs §2)
 # --------------------------------------------------------------------------------------
