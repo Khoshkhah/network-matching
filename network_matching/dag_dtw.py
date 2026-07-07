@@ -22,13 +22,21 @@ Both GA (source) and GB (target) are built with the same :func:`build_local_digr
 graph-DTW, so the pooling / stitching / vertex-owns-its-edge machinery is shared. GA must be
 acyclic; a cyclic source raises :class:`NotADAG`.
 
-**Two stages.** The DP + monotone backtrack decide the **topology** -- which B-edges each A-edge
-maps to (the route). A second :func:`_arclength_rematch` pass then decides the **position** --
-each A-vertex is placed at its *arc-length* fraction along its route's B-polyline. Pure
-point-to-point picks the nearest B-vertex per A-vertex, which under a large offset *compresses*
-A onto part of a B-edge and *jumps* at junctions; arc-length re-placement makes the B-position
-advance proportionally to A, so the matched sequence is jump-free (drift becomes a uniform
-offset rather than a low-but-discontinuous one). Validated by ``scripts/dag_dtw_validate.py``.
+**Junction resolution -- forward + backward (docs §3.2a).** Two cost tables are built with the
+same :func:`_dp_table`: the **forward** ``D`` (sources -> a) and the **backward** ``B`` (a ->
+sinks, on the reversed graphs, with the symmetric ``1/indeg`` split). Each A-vertex is then labelled
+jointly, ``φ(a) = argmin_v (D[a][v] + B[a][v] - E(a,v))`` -- the label *all* routes through ``a``
+agree on, scored once for everyone. This replaces a greedy per-sink backtrack, which let two routes
+disagree at a shared junction (a backward step); forward+backward is **exact on tree-shaped source
+DAGs** (a reconvergent *diamond* is the remaining caveat).
+
+**Two stages.** The tables + joint labels decide the **topology** -- which B-edges each A-edge maps
+to (the route). A second :func:`_arclength_rematch` pass then decides the **position** -- each
+A-vertex is placed at its *arc-length* fraction along its route's B-polyline (free entry/exit at
+sources/sinks). Pure point-to-point picks the nearest B-vertex per A-vertex, which under a large
+offset *compresses* A onto part of a B-edge and *jumps* at junctions; arc-length re-placement makes
+the B-position advance proportionally to A, so the matched sequence is jump-free. Validated by
+``scripts/dag_dtw_validate.py``.
 """
 
 import heapq
@@ -140,6 +148,45 @@ def _gb_arcs(gb: LocalBGraph) -> Tuple[np.ndarray, np.ndarray]:
 
 
 # --------------------------------------------------------------------------------------
+# The DAG-DTW cost table (run forward, and backward on the reversed graphs)
+# --------------------------------------------------------------------------------------
+def _dp_table(pred_arcs, succ_arcs, outdeg, gb_succ, bu, bw, order, ax, ay, bx, by):
+    """Fill the DAG-DTW cost table for a graph in ONE direction (docs §3, §3.2a). Called forward
+    with (GA, GB) and backward with the reversed graphs; ``pred_arcs``/``succ_arcs`` are the A-graph
+    adjacency in the current direction, ``outdeg`` its out-degree (the split factor -- ``1/outdeg``
+    forward, ``1/indeg`` backward), and ``gb_succ``/``bu``/``bw`` the B-graph forward arcs in that
+    direction. Returns the ``(NA, NB)`` cost table."""
+    NA, NB = len(pred_arcs), len(bx)
+    D = np.full((NA, NB), float("inf"))
+    for a in order:
+        ei = np.hypot(bx - ax[a], by - ay[a])          # E(a, ·): point-to-point drift
+        preds = pred_arcs[a]
+        if not preds:
+            base = ei.copy()                           # source: free entry (empty A-sum = 0)
+        else:
+            acc = np.zeros(NB)
+            for ap in preds:
+                m = D[ap].copy()                       # v'=v (vertical)
+                if bu.size:
+                    np.minimum.at(m, bw, D[ap][bu])    # v'∈Bpred(v) (diagonal)
+                acc += m / outdeg[ap]                  # conserved-flow split factor
+            base = ei + acc
+        D[a] = base.copy()                             # (H) within-a Dijkstra over the B-arcs
+        heap = [(base[v], v) for v in range(NB)]
+        heapq.heapify(heap)
+        while heap:
+            c, u = heapq.heappop(heap)
+            if c > D[a][u]:
+                continue
+            for w in gb_succ[u]:
+                cand = D[a][u] + ei[w]
+                if cand < D[a][w]:
+                    D[a][w] = cand
+                    heapq.heappush(heap, (cand, w))
+    return D
+
+
+# --------------------------------------------------------------------------------------
 # Arc-length re-match: place each A-vertex proportionally along its route (jump-free)
 # --------------------------------------------------------------------------------------
 def _arclength_rematch(ga, gb, routes, a_geoms, b_geoms, phi0):
@@ -244,78 +291,30 @@ def match_dag_to_bgraph(
     bu, bw = _gb_arcs(gb)                               # GB forward arcs (tail, head)
     outdeg = np.array([max(1, len(ga.succ_arcs[a])) for a in range(NA)], float)
 
-    INF = float("inf")
-    D = np.full((NA, NB), INF)
-    hpar = np.full((NA, NB), -1, int)                  # horizontal (within-a) back-pointer
-
-    for a in order:
-        ei = np.hypot(bx - ax[a], by - ay[a])          # E(a, ·): point-to-point drift
-        preds = ga.pred_arcs[a]
-        if not preds:
-            base = ei.copy()                           # source: free entry (empty A-sum = 0)
-        else:
-            acc = np.zeros(NB)
-            for ap in preds:
-                # m[v] = min over v' in {v} ∪ Bpred(v) of D[ap][v']  (vertical + diagonal)
-                m = D[ap].copy()
-                if bu.size:
-                    np.minimum.at(m, bw, D[ap][bu])    # relax each arc tail into its head
-                acc += m / outdeg[ap]                  # split factor: divide by the branch count
-            base = ei + acc
-        # (H) horizontal: within-a Dijkstra over GB, each B-step re-paying E(a, ·)
-        D[a] = base.copy()
-        heap = [(base[v], v) for v in range(NB)]
-        heapq.heapify(heap)
-        while heap:
-            c, u = heapq.heappop(heap)
-            if c > D[a][u]:
-                continue
-            for w in gb.succ_arcs[u]:
-                cand = D[a][u] + ei[w]
-                if cand < D[a][w]:
-                    D[a][w] = cand
-                    hpar[a][w] = u
-                    heapq.heappush(heap, (cand, w))
+    # --- FORWARD + BACKWARD tables, then JOINT junction resolution (docs §3.2a) ---
+    # Forward D[a][v] = cheapest cost to align sources -> a with a at v.
+    outdeg_f = np.array([max(1, len(ga.succ_arcs[a])) for a in range(NA)], float)
+    D = _dp_table(ga.pred_arcs, ga.succ_arcs, outdeg_f, gb.succ_arcs, bu, bw,
+                  order, ax, ay, bx, by)
+    # Backward B[a][v] = cheapest cost to align a -> sinks with a at v: reverse BOTH graphs
+    # (GA sinks become sources; GB arcs flip) and run the same DP with the symmetric 1/indeg split.
+    outdeg_b = np.array([max(1, len(ga.pred_arcs[a])) for a in range(NA)], float)
+    B = _dp_table(ga.succ_arcs, ga.pred_arcs, outdeg_b, gb.pred_arcs, bw, bu,
+                  order[::-1], ax, ay, bx, by)
 
     sinks = [a for a in range(NA) if len(ga.succ_arcs[a]) == 0]
     total_cost = float(sum(np.min(D[t]) for t in sinks)) if sinks else float("inf")
 
-    # --- backtrack in REVERSE topological order (successors first), enforcing MONOTONICITY ---
-    # For each A-vertex pick the cheapest B-vertex that can walk FORWARD to every successor's φ.
-    # This is what keeps a junction from spilling onto a cross road: a split vertex is forced to a
-    # common B-ancestor of its branches, so every GA arc a->a' maps to a forward B-step (never a
-    # backward / disconnected jump). Sinks are free (argmin).
-    fwd_sets: Dict[int, set] = {}                      # v -> set of B-vertices forward-reachable
-
-    def _reach(v: int) -> set:
-        s = fwd_sets.get(v)
-        if s is None:
-            s = {v}
-            stack = [v]
-            while stack:
-                u = stack.pop()
-                for w in gb.succ_arcs[u]:
-                    if w not in s:
-                        s.add(w)
-                        stack.append(w)
-            fwd_sets[v] = s
-        return s
-
+    # φ(a) = argmin_v ( D[a][v] + B[a][v] - E(a,v) ): the label ALL routes through a agree on,
+    # scored ONCE for everyone. Subtract E(a,v) (the local cost) -- it is counted in both tables.
+    # This is the joint min-sum resolution that stops two routes disagreeing at a shared junction
+    # (the backward step of the old per-sink greedy backtrack). The arc-length re-match below then
+    # fills each chain smoothly between these pinned labels.
     phi: Dict[int, int] = {}
-    for a in reversed(order):
-        succ = ga.succ_arcs[a]
-        if not succ:                                   # sink: free choice
-            phi[a] = int(np.argmin(D[a]))
-            continue
-        targets = [phi[s] for s in succ if s in phi]
-        chosen = None
-        for v in np.argsort(D[a]):                     # cheapest first
-            if not np.isfinite(D[a][v]):
-                break
-            if all(t in _reach(int(v)) for t in targets):
-                chosen = int(v)
-                break
-        phi[a] = chosen if chosen is not None else int(np.argmin(D[a]))
+    for a in range(NA):
+        ei = np.hypot(bx - ax[a], by - ay[a])
+        tot = D[a] + B[a] - ei
+        phi[a] = int(np.argmin(tot)) if np.isfinite(np.min(tot)) else int(np.argmin(D[a]))
 
     # --- routes (topology) from the monotone backtrack, with junction-touch trim ---
     # per (A-edge, B-edge) vertex counts, in topological order, so a leading/trailing junction
@@ -413,5 +412,5 @@ def match_dag_to_bgraph(
         "sources": [a for a in range(NA) if len(ga.pred_arcs[a]) == 0],
     }
     if debug:
-        res["debug"] = {"D": D, "order": order, "outdeg": outdeg, "hpar": hpar}
+        res["debug"] = {"D": D, "B": B, "order": order}
     return res

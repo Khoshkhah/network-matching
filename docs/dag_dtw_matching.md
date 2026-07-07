@@ -248,11 +248,12 @@ already makes the *cost total* exact here (§3.3); what remains is only globally
 at the reconvergence — future work. The debug cases in §4 start as trees, then add a diamond to
 exercise the merge rule.)
 
-### 3.2a Joint junction resolution — the forward–backward pass (design, next version)
+### 3.2a Joint junction resolution — the forward–backward pass
 
-> **Status: design.** The shipped code uses the greedy reverse-topological backtrack of §3.2. This
-> section specifies the correct **joint** resolution that replaces it, and is the reason for the
-> residual backward step under shift (below). Implement after this doc.
+> **Status: implemented** (replaces the greedy backtrack of §3.2). Over a wide perturbation sweep
+> (512 configs) the backward step is **eliminated on tree-shaped source DAGs** — `chain`, `merge`
+> clean, `y_split` clean except one extreme case; only the reconvergent **`diamond`** still fails
+> (the documented caveat). `φ(a) = argmin_v (D[a][v] + B[a][v] − E(a,v))`.
 
 **The real cause of the backward step.** Two routes source₁→sink₁ and source₂→sink₂ pass through
 the **same junction `j`**. Optimised *independently*, route₁ wants `j` at one B-vertex and route₂
