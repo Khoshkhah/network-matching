@@ -308,7 +308,48 @@ independent per-sink lower bound `Σ_sinks min_v D[sink][v]` (which may be unach
 consistently).
 
 **Caveat (unchanged):** exact for a **tree** junction neighbourhood; a **reconvergent diamond**
-still needs extra care where the two sides re-meet.
+still needs extra care where the two sides re-meet — see §3.2b.
+
+### 3.2b Reconvergent DAGs — the diamond, and cutset conditioning (design, next version)
+
+> **Status: design.** The shipped forward–backward (§3.2a) is exact on **trees** and clean on
+> `chain` / `merge` / `y_split`; only the reconvergent **`diamond`** still fails under large shift.
+> This section specifies the fix. Implement after this doc.
+
+**Why a diamond is different — it's a loop.** A diamond is a **split** at `j1` into two branches
+that **re-merge** at `j2`. Drawn without arrows it is a **cycle** `j1 — up — j2 — down — j1`.
+Forward–backward message passing is exact only on graphs with **no cycles (trees)**. On a loop the
+two branches share **both** endpoints `j1` and `j2`, and nothing forces them to agree jointly: the
+backward table `B[j1][v]` *sums* the two downstream branches as if each could pick its **own** `j2`,
+so it under-counts, and the label `j1` gets can be inconsistent with what the branches actually need
+at `j2`. The two sides disagree where they re-meet → a backward step. (Concretely, this shows up
+only under a **large shift**, where it compounds with a branch drifting onto the wrong B-edge.)
+
+**The fix — break the loop by fixing one junction (cutset conditioning).** Pick a **loop cutset**:
+a small set of A-vertices whose removal turns `GA` into a tree. A single diamond needs **one** —
+say `j1`. Then:
+
+1. Restrict `j1`'s candidate labels to the B-vertices **near** `j1` (a handful — a far label can
+   never win), not all of `GB`.
+2. **For each candidate `v1`**: *fix* `φ(j1) = v1`. With `j1` pinned the loop is cut — the rest is a
+   **tree**, so run the §3.2a forward–backward on it (both branches now start from the *same* fixed
+   `v1` and are forced to a *shared* `j2`) and read the resulting total cost.
+3. Keep the `v1*` with the **minimum** total, fix `φ(j1) = v1*`, and solve that tree once more for
+   the full matching.
+
+Fixing `j1` makes the two branches genuinely joint (they share the pinned start and are driven to a
+common merge), so the reconvergence disagreement disappears. Equivalent view: enumerate the pair
+`(φ(j1), φ(j2))` over nearby candidates and minimise
+`D_up-to-j1[v1] + up(v1→v2) + down(v1→v2) + B_below-j2[v2]`, where `up`/`down` are the branch
+alignments — the same joint optimisation, written as a 2-D search.
+
+**Scope & cost.** Cost is `(#candidates)^(cutset size)` tree-solves. A local junction neighbourhood
+has **one** diamond → one cutset vertex → a handful of candidates → a few extra tree-solves;
+cheap. Several independent diamonds multiply, so cap the candidate radius. This resolves the
+**loop** inconsistency exactly; the residual **nearest-vs-corresponding** error under an extreme
+shift (a branch physically lying on the wrong B-edge) is a separate point-mode limit that
+conditioning *reduces* (it tries alternative junction labels) but does not fully remove without a
+direction term.
 
 ### 3.3 The objective — total map-match cost
 
