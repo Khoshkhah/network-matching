@@ -67,23 +67,34 @@ def _fwd_reachable(gb, src, dst):
     return False
 
 
-def sequence_rules(res):
+def sequence_rules(res, jump_tol=3.0):
     """The matched sequence must obey the map-matching rules. Returns (arc_violations,
-    route_violations):
+    route_violations, jump_violations):
 
       - **monotone forward B-walk**: every GA arc ``a -> a'`` maps to a forward B-step
         ``φ(a) -> φ(a')`` (reachable along GB arcs, or equal) -- as A advances B never goes
         backward or jumps to a disconnected vertex;
-      - **connected route**: consecutive B-edges in a route are graph-connected in GB.
+      - **connected route**: consecutive B-edges in a route are graph-connected in GB;
+      - **no teleport (B-continuity)**: for every GA arc the B-position may not *jump* -- the
+        B-advance ``|φ(a) - φ(a')|`` must not exceed the A-advance ``|a - a'|`` by more than
+        ``jump_tol`` metres. This is the rule that catches a junction whose coincident A-vertices
+        map to far-apart B-positions (graph-reachable, but a discontinuity in B).
     """
     ga, gb, phi = res["GA"], res["GB"], res["phi"]
-    arc_viol = []
+    arc_viol, jump_viol = [], []
     for a in range(ga.n_vertices):
         if a not in phi:
             continue
         for a2 in ga.succ_arcs[a]:
-            if a2 in phi and not _fwd_reachable(gb, phi[a], phi[a2]):
+            if a2 not in phi:
+                continue
+            if not _fwd_reachable(gb, phi[a], phi[a2]):
                 arc_viol.append((ga.edge_ids[ga.vert_edge[a]], ga.edge_ids[ga.vert_edge[a2]]))
+            bdist = float(np.hypot(gb.vx[phi[a]] - gb.vx[phi[a2]], gb.vy[phi[a]] - gb.vy[phi[a2]]))
+            adist = float(np.hypot(ga.vx[a] - ga.vx[a2], ga.vy[a] - ga.vy[a2]))
+            if bdist - adist > jump_tol:
+                jump_viol.append((ga.edge_ids[ga.vert_edge[a]], ga.edge_ids[ga.vert_edge[a2]],
+                                  round(bdist - adist, 1)))
     econ = set()                                       # B-edge -> B-edge connectivity in GB
     for u in range(gb.n_vertices):
         for w in gb.succ_arcs[u]:
@@ -95,7 +106,7 @@ def sequence_rules(res):
         for i in range(1, len(route)):
             if (route[i - 1], route[i]) not in econ:
                 route_viol.append((aeid, route[i - 1], route[i]))
-    return arc_viol, route_viol
+    return arc_viol, route_viol, jump_viol
 
 
 def validate_case(name):
@@ -140,16 +151,18 @@ def validate_case(name):
         print(f"    [{_ok(jok)}] junction @({key[0]:.0f},{key[1]:.0f}): {len(verts)} A-vertices "
               f"span {spread:.2f} m in B (< 0.6)")
 
-    # 4. SEQUENCE RULES: monotone forward B-walk + connected route
-    arc_v, route_v = sequence_rules(res)
-    aok, rok = not arc_v, not route_v
-    fails += (not aok) + (not rok)
+    # 4. SEQUENCE RULES: monotone forward B-walk + connected route + no teleport
+    arc_v, route_v, jump_v = sequence_rules(res)
+    aok, rok, jok = not arc_v, not route_v, not jump_v
+    fails += (not aok) + (not rok) + (not jok)
     print(f"    [{_ok(aok)}] monotone forward B-walk (every A arc -> a forward B step)"
           + (f"  {len(arc_v)} violation(s): {arc_v[:3]}" if arc_v else ""))
     print(f"    [{_ok(rok)}] connected route (consecutive B-edges graph-connected)"
           + (f"  {len(route_v)} violation(s): {route_v[:3]}" if route_v else ""))
+    print(f"    [{_ok(jok)}] no teleport (B-advance tracks A-advance, no junction jump)"
+          + (f"  {len(jump_v)} jump(s): {jump_v[:3]}" if jump_v else ""))
 
-    return len(EXPECT[name]) + 1 + n_junc_checks + 2, fails
+    return len(EXPECT[name]) + 1 + n_junc_checks + 3, fails
 
 
 def validate_structure():
@@ -191,8 +204,9 @@ def perturbation_sweep(name="y_split"):
         res = match_dag_to_bgraph(a, sc["b_edges"], debug=True, **sc["defaults"])
         r = {k: v for k, v in res["routes"].items()}
         base = base or r
-        arc_v, route_v = sequence_rules(res)
-        seq = "OK" if not arc_v and not route_v else f"VIOLATED({len(arc_v)+len(route_v)})"
+        arc_v, route_v, jump_v = sequence_rules(res)
+        n = len(arc_v) + len(route_v) + len(jump_v)
+        seq = "OK" if n == 0 else f"VIOLATED({n})"
         changed = "  <- route changed" if r != base else ""
         print(f"    {s:>8} | {res['avg_drift']:>4.2f} m | {seq:>9} | {r}{changed}")
     print("    The route stays correct and the sequence rule holds (seq-rule OK) at every shift:\n"

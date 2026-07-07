@@ -110,6 +110,17 @@ def test_matched_sequence_obeys_rules(name):
         for i in range(1, len(route)):
             assert (route[i - 1], route[i]) in econ, (
                 f"{name}: route {aeid} has disconnected B-edges {route[i-1]}->{route[i]}")
+    # no teleport: a B-step may not exceed the A-step by more than ~a sample gap (no junction jump)
+    for a in range(ga.n_vertices):
+        if a not in phi:
+            continue
+        for a2 in ga.succ_arcs[a]:
+            if a2 not in phi:
+                continue
+            bdist = np.hypot(gb.vx[phi[a]] - gb.vx[phi[a2]], gb.vy[phi[a]] - gb.vy[phi[a2]])
+            adist = np.hypot(ga.vx[a] - ga.vx[a2], ga.vy[a] - ga.vy[a2])
+            assert bdist - adist < 3.0, (
+                f"{name}: A arc {a}->{a2} teleports in B ({bdist-adist:.1f} m jump)")
 
 
 # --------------------------------------------------------------------------------------
