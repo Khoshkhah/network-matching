@@ -215,13 +215,28 @@ matters more than the pointwise minimum.
 
 **Arc-length re-match (jump-free positions).** The DP + backtrack above decide the *topology* —
 which B-edges each A-edge maps to. A final pass then decides the *position*: each A-vertex is
-placed at its **arc-length fraction along its route's B-polyline** (snapped to the nearest route
-vertex). This is because pure point-to-point picks the *nearest* B-vertex per A-vertex, which
-under a large offset compresses A onto part of a B-edge and produces a **jump** at the junction
-(the coincident A-vertices land far apart in B — graph-reachable but discontinuous). Re-placing by
-arc length makes the B-position advance *proportionally* to A, so the sequence is jump-free; drift
-becomes a uniform offset rather than a low-but-discontinuous one. The **no-teleport** rule
-(§ sequence tests) checks exactly this.
+placed at its **arc-length fraction** between an entry and an exit point on its route's B-polyline
+(snapped to the nearest route vertex). This is because pure point-to-point picks the *nearest*
+B-vertex per A-vertex, which under a large offset compresses A onto part of a B-edge and produces
+a **jump** at the junction (coincident A-vertices land far apart in B — graph-reachable but
+discontinuous). Re-placing by arc length makes the B-position advance *proportionally* to A, so
+the sequence is jump-free; drift becomes a uniform offset rather than a low-but-discontinuous one.
+
+Two rules make the re-match faithful:
+
+- **Free entry / exit.** The endpoint is pinned to the route boundary only at an interior
+  **junction**; at a DAG **source** / **sink** it is FREE — it projects onto the route and may
+  land in the *middle* of a B-edge (exactly graph-DTW's free entry/exit, so the source doesn't
+  have to match the start of a B-edge).
+- **Boundary yield.** When consecutive A-edges over/undershoot the junction, one's route ends with
+  the B-edge the other's starts with; that shared boundary edge is given to whichever A-edge
+  covers it with **more** vertices, and the other yields it. Otherwise the junction-end would pin
+  to the *far* end of the shared edge — a **backward step**.
+
+The **no-teleport** / monotone rules (§ sequence tests) check both. *Known limit:* under a large
+**lateral** shift a branch edge can physically overlap a neighbouring trunk B-edge, so the DP
+mis-assigns the topology (e.g. a branch grabs the trunk); the re-match cannot repair a wrong
+topology, and the validation flags the resulting backward step rather than hiding it.
 
 **Tree vs. reconvergence.** When `GA` is a **tree / polytree** (branches never rejoin — the common
 junction-neighbourhood case once edges are oriented by travel direction and a small neighbourhood

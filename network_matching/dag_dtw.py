@@ -144,10 +144,16 @@ def _gb_arcs(gb: LocalBGraph) -> Tuple[np.ndarray, np.ndarray]:
 # --------------------------------------------------------------------------------------
 def _arclength_rematch(ga, gb, routes, a_geoms, b_geoms, phi0):
     """The DP decides WHICH B-edges each A-edge maps to (the route/topology); this decides WHERE
-    on them. Each A-vertex is placed at its **arc-length position** along its route's B-polyline
-    (snapped to the nearest route B-vertex), so the matched B-position advances *proportionally*
-    to A -- eliminating the jump/compression that per-vertex nearest matching produces under a
-    large offset. Vertices whose A-edge has no route keep their DP ``phi0``."""
+    on them. Each A-vertex is placed at its **arc-length fraction** between an ``entry`` and an
+    ``exit`` position on its route's B-polyline (snapped to the nearest route vertex), so the
+    matched B-position advances *proportionally* to A -- no jump/compression.
+
+    **Free entry / exit, like graph-DTW.** The A-edge's endpoint is *pinned* to the route boundary
+    only when it is an interior **junction** (so branches meet consistently). At a DAG **source**
+    (in-degree 0) the entry is FREE -- the A-start projects onto the route and may land in the
+    *middle* of a B-edge; at a DAG **sink** (out-degree 0) the exit is FREE the same way. Vertices
+    whose A-edge has no route keep their DP ``phi0``.
+    """
     phi = dict(phi0)
     for e in range(len(ga.edge_ids)):
         aeid = ga.edge_ids[e]
@@ -171,12 +177,33 @@ def _arclength_rematch(ga, gb, routes, a_geoms, b_geoms, phi0):
         rvy = np.array([gb.vy[v] for v in rv])
         cum = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(rvx), np.diff(rvy)))])
         route_len = cum[-1] or 1.0
+        route_line = LineString(list(zip(rvx, rvy))) if len(rv) > 1 else None
+
         ageom = a_geoms[aeid]
-        vids_a = np.where(ga.vert_edge == e)[0]
+        vids_a = list(np.where(ga.vert_edge == e)[0])
         s = np.array([ageom.project(Point(ga.vx[i], ga.vy[i])) for i in vids_a])
-        smax = s.max() or 1.0
-        for i, vi in enumerate(vids_a):                      # proportional -> nearest route vertex
-            phi[int(vi)] = rv[int(np.argmin(np.abs(cum - route_len * s[i] / smax)))]
+        oi = np.argsort(s)
+        first, last = vids_a[oi[0]], vids_a[oi[-1]]          # A-edge start / end vertices
+        smin, smax = float(s[oi[0]]), float(s[oi[-1]])
+        span = (smax - smin) or 1.0
+
+        # FREE at a DAG source/sink (project onto the route -> may be mid-edge); PINNED at a junction
+        is_source = len(ga.pred_arcs[first]) == 0
+        is_sink = len(ga.succ_arcs[last]) == 0
+        if route_line is not None and is_source:
+            entry = float(route_line.project(Point(ga.vx[first], ga.vy[first])))
+        else:
+            entry = 0.0
+        if route_line is not None and is_sink:
+            exit_ = float(route_line.project(Point(ga.vx[last], ga.vy[last])))
+        else:
+            exit_ = route_len
+        if exit_ < entry:                                    # keep the span monotone
+            entry, exit_ = exit_, entry
+
+        for k, vi in enumerate(vids_a):
+            target = entry + (exit_ - entry) * (float(s[k]) - smin) / span
+            phi[int(vi)] = rv[int(np.argmin(np.abs(cum - target)))]
     return phi
 
 
@@ -317,6 +344,45 @@ def match_dag_to_bgraph(
         if len(r) > 1 and r[-1][1] <= 1:
             r = r[:-1]
         routes[aeid] = [b for b, _c in r]
+
+    # --- assign a shared BOUNDARY B-edge to ONE A-edge: when consecutive A-edges overshoot /
+    # undershoot the junction, one grabs the other's B-edge (route ends with what the next starts
+    # with). Give that boundary edge to whichever A-edge covers it with MORE vertices; the other
+    # yields it. Otherwise the junction-end pins to the far end of the shared edge -> a backward
+    # step (the ``chain`` A1->A2 case).
+    cnt: Dict[Tuple[Any, Any], int] = {}               # (a_edge, b_edge) -> vertex count
+    for a in order:
+        v = phi.get(a)
+        if v is None:
+            continue
+        cnt[(ga.edge_ids[ga.vert_edge[a]], gb.edge_ids[gb.vert_edge[v]])] = \
+            cnt.get((ga.edge_ids[ga.vert_edge[a]], gb.edge_ids[gb.vert_edge[v]]), 0) + 1
+    a_succ_edges: Dict[Any, set] = {}                  # a_edge -> set of successor a_edges
+    for u in range(NA):
+        for w in ga.succ_arcs[u]:
+            if ga.vert_edge[u] != ga.vert_edge[w]:
+                a_succ_edges.setdefault(ga.edge_ids[ga.vert_edge[u]], set()).add(
+                    ga.edge_ids[ga.vert_edge[w]])
+    changed = True
+    while changed:
+        changed = False
+        for e1, succs in a_succ_edges.items():
+            r1 = routes.get(e1)
+            if not r1:
+                continue
+            for e2 in succs:
+                r2 = routes.get(e2)
+                if not r2 or r1[-1] != r2[0]:
+                    continue
+                b = r1[-1]                              # the shared boundary B-edge
+                if cnt.get((e1, b), 0) <= cnt.get((e2, b), 0) and len(r1) > 1:
+                    routes[e1] = r1[:-1]                # predecessor covers less -> it yields
+                    changed = True
+                    break
+                elif cnt.get((e1, b), 0) > cnt.get((e2, b), 0) and len(r2) > 1:
+                    routes[e2] = r2[1:]                 # successor covers less -> it yields
+                    changed = True
+                    break
 
     # --- arc-length RE-MATCH: place each A-vertex proportionally along its route (jump-free) ---
     a_geoms = {eid: g for eid, g in a_edges}
