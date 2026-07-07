@@ -1,0 +1,1107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Directed-Network Conflation by Dynamic Time Warping on Graphs</title>
+<style>
+  :root{
+    --paper:#fdfdfa; --ink:#1c1c1a; --ink2:#454440; --muted:#6b6a63;
+    --hair:#e4e3da; --accent:#1c5cab; --accent-soft:#eef3fa;
+    --serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  html{background:var(--paper)}
+  body{margin:0;font-family:var(--serif);color:var(--ink);line-height:1.62;font-size:17px;
+       -webkit-font-smoothing:antialiased}
+  .sheet{max-width:46rem;margin:0 auto;padding:4.5rem 1.4rem 6rem}
+  .wide{max-width:58rem;margin-left:auto;margin-right:auto}
+
+  header.tt{ text-align:center; margin-bottom:2.6rem }
+  .eyebrow{font-family:var(--sans);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;
+           color:var(--muted);margin-bottom:1.6rem}
+  h1{font-size:1.9rem;line-height:1.28;font-weight:700;margin:.2rem 0 1rem;text-wrap:balance}
+  .authors{font-size:1.02rem;color:var(--ink2)}
+  .affil{font-family:var(--sans);font-size:.8rem;color:var(--muted);margin-top:.3rem}
+
+  .abstract{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);
+            padding:1.4rem .2rem;margin:2.2rem 0}
+  .abstract .lbl{font-family:var(--sans);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;
+                 color:var(--accent);margin-bottom:.5rem}
+  .abstract p{margin:.4rem 0;font-size:.96rem;line-height:1.6}
+
+  .plain{background:var(--accent-soft);border-radius:6px;padding:1.1rem 1.3rem;margin:1.6rem 0 2rem}
+  .plain .lbl{font-family:var(--sans);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;
+              color:var(--accent);margin-bottom:.45rem}
+  .plain p{margin:.45rem 0;font-family:var(--sans);font-size:.9rem;line-height:1.6;color:var(--ink2)}
+  .gloss td{text-align:left;vertical-align:top}
+  .gloss td:first-child{white-space:nowrap;font-style:italic}
+
+  .sheet p, .sheet li, figcaption, caption{text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+  header.tt p{text-align:center}
+
+  h2{font-size:1.28rem;margin:2.8rem 0 .8rem;font-weight:700;text-wrap:balance}
+  h2 .no, h3 .no{color:var(--accent);margin-right:.55rem;font-variant-numeric:tabular-nums}
+  h3{font-size:1.05rem;margin:1.9rem 0 .5rem;font-weight:700}
+  p{margin:.75rem 0}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+  strong{font-weight:700}
+  .mono{font-family:var(--mono);font-size:.86em}
+  ul,ol{padding-left:1.4rem}
+  li{margin:.3rem 0}
+
+  var{font-style:italic;font-family:var(--serif)}
+  sub,sup{font-size:.72em;line-height:0}
+  .eq{margin:1.1rem 0;padding:.9rem 1.2rem;background:var(--accent-soft);border-radius:4px;
+      text-align:center;font-size:1.02rem;overflow-x:auto}
+  .eq .tag{float:right;color:var(--muted);font-family:var(--sans);font-size:.8rem;padding-top:.15rem}
+  .frac{display:inline-block;vertical-align:middle;text-align:center;font-size:.9em}
+  .frac span{display:block;padding:0 .3em}
+  .frac span:first-child{border-bottom:1px solid var(--ink)}
+
+  figure{margin:2rem 0}
+  figure img{width:100%;height:auto;border:1px solid var(--hair);border-radius:4px;background:#fff}
+  figcaption{font-family:var(--sans);font-size:.82rem;color:var(--ink2);line-height:1.5;margin-top:.6rem}
+  figcaption b{color:var(--ink)}
+  figure.schematic{background:#fff;border:1px solid var(--hair);border-radius:4px;padding:1.2rem 1rem .4rem}
+  figure.schematic svg{width:100%;height:auto;display:block}
+  figure.schematic figcaption{padding:.4rem .4rem .6rem}
+
+  .tblwrap{overflow-x:auto;margin:1.4rem 0}
+  table{border-collapse:collapse;width:100%;font-family:var(--sans);font-size:.82rem;
+        font-variant-numeric:tabular-nums}
+  caption{caption-side:top;text-align:justify;font-size:.82rem;color:var(--ink2);
+          padding-bottom:.55rem;line-height:1.5}
+  caption b{color:var(--ink)}
+  th,td{padding:.42rem .65rem;text-align:right;border-bottom:1px solid var(--hair)}
+  th{font-weight:600;color:var(--ink2);border-bottom:1.5px solid var(--ink2)}
+  th:first-child,td:first-child{text-align:left}
+  tbody tr:hover{background:var(--accent-soft)}
+
+  .note{font-family:var(--sans);font-size:.84rem;color:var(--ink2);background:var(--accent-soft);
+        border-left:3px solid var(--accent);padding:.8rem 1rem;border-radius:0 4px 4px 0;margin:1.2rem 0}
+
+  .remarks p{padding-left:2.6rem;position:relative}
+  .remarks .rk{position:absolute;left:0;top:.28em;color:var(--accent);font-family:var(--sans);
+               font-size:.78rem;letter-spacing:.03em}
+  .remarks .rt{font-weight:700}
+
+  .refs{font-size:.88rem;line-height:1.55}
+  .refs p{margin:.55rem 0;padding-left:1.6rem;text-indent:-1.6rem}
+  .refs .tag{color:var(--accent);font-family:var(--sans);font-size:.8rem}
+
+  .appx h2{border-top:1px solid var(--hair);padding-top:2rem}
+  [id]{scroll-margin-top:1.4rem}
+  @keyframes flashbg{0%{background:#fdf3d0}100%{background:transparent}}
+  .flash{animation:flashbg 1.6s ease-out 1}
+  .refs p.flash, figure.flash, table.flash, .eq.flash, h2.flash, h3.flash{animation:flashbg 1.6s ease-out 1}
+  @media (prefers-reduced-motion: reduce){ .flash{animation:none} }
+  footer{margin-top:4rem;border-top:1px solid var(--hair);padding-top:1rem;
+         font-family:var(--sans);font-size:.76rem;color:var(--muted)}
+  /* ——— Eq. (1) built-up problem panel (variant 3) ——— */
+  .eq .qp3{background:#fff;border:1px solid var(--hair);padding:1.2rem 1.4rem 1.05rem;
+           line-height:1.6;clear:none}
+  .eq .qp3-open{margin:0 0 .35rem;font-size:.98rem}
+  .eq .qp3-name{font-variant:small-caps;letter-spacing:.05em;font-weight:700}
+  .eq .qp3-kw{font-style:italic}
+  .eq .qp3-min{display:inline-flex;flex-direction:column;align-items:center;line-height:1.15}
+  .eq .qp3-minsub{font-size:.7em;white-space:nowrap;margin-top:.08em}
+  .eq .qp3-sum{display:inline-flex;flex-direction:column;align-items:center;margin:0 .14em;
+               vertical-align:baseline}
+  .eq .qp3-sumop{font-size:1.32em;line-height:1;font-style:normal}
+  .eq .qp3-sumlim{font-size:.66em;line-height:1.25;white-space:nowrap;margin-top:.16em;
+                  font-style:normal}
+  .eq .qp3-obj{display:grid;grid-template-columns:max-content minmax(max-content,1fr) max-content;
+               column-gap:.7rem;row-gap:.6rem;align-items:baseline;margin:.9rem 0 .25rem;
+               overflow-x:auto;padding:.1rem 0 .25rem}
+  .eq .qp3-lead{justify-self:end}
+  .eq .qp3-term{white-space:nowrap}
+  .eq .qp3-eqno{justify-self:end;font-family:var(--sans);font-size:.74rem;color:var(--accent);
+                letter-spacing:.03em;padding-left:.6rem}
+  .eq .qp3 .frac{line-height:1.4}
+  .eq .qp3 .frac span:first-child{padding-bottom:.05em}
+  .eq .qp3 .bp{font-size:1.55em;line-height:0;vertical-align:middle;font-weight:300}
+  .eq .qp3-weights{margin:.3rem 0 .95rem;text-align:center;font-size:.94rem;color:var(--ink2)}
+  .eq .qp3-st{margin:.15rem 0 .9rem .35rem}
+  .eq .qp3-aside{font-size:.9rem;color:var(--ink2)}
+  .eq .qp3-wherelead{margin:.55rem 0 .3rem;font-size:.98rem}
+  .eq .qp3-defs{overflow-x:auto;margin-left:1.15rem;padding:.05rem 0 .15rem}
+  .eq .qp3-defrow{white-space:nowrap;margin:.5rem 0}
+  .eq .qp3-notes{margin-top:1.1rem;border-top:1px solid var(--hair);padding-top:.85rem;
+                 font-family:var(--sans);font-size:.82rem;line-height:1.55;color:var(--ink2)}
+  .eq .qp3-notes p{margin:.36rem 0;padding-left:2.3rem;position:relative}
+  .eq .qp3-key{position:absolute;left:0;top:.1em;color:var(--accent);font-size:.78rem;
+               letter-spacing:.03em;font-variant-numeric:tabular-nums}
+  .eq .qp3-nname{font-weight:600;color:var(--ink)}
+  .eq .qp3-notes var{font-size:.98em}
+  @media (max-width:640px){ body{font-size:16px} h1{font-size:1.55rem} .sheet{padding-top:2.6rem} }
+</style>
+
+</head>
+<body>
+<div class="sheet">
+<header class="tt"><div class="eyebrow">Working paper · July 2026</div>
+  <h1>Directed-Network Conflation by Dynamic Time Warping on Graphs: Route-Consistent Map-to-Map Matching under Divergent Segmentation</h1><div class="authors">Kaveh · Sonocount Research</div>
+  <div class="affil">network-matching library · working paper</div></header>
+
+<div class="abstract"><div class="lbl">Abstract</div><p>Conflation — the problem of deciding which features of one geographic map correspond to which features of another — is a prerequisite for fusing attributes across independently maintained road datasets (e.g. transferring traffic counts from a national road register onto an OpenStreetMap network). We address the <em>directed</em>, <em>route-valued</em> form of the problem: given two directed road networks <var>A</var> and <var>B</var> that model the same physical streets but are segmented differently, assign to each directed edge of <var>A</var> a connected, direction-respecting <strong>route</strong> of <var>B</var>-edges that minimises geometric shape drift while remaining <strong>junction-consistent</strong> — edges of <var>A</var> that meet at a junction must agree on where that junction lands in <var>B</var>. Classical curve-alignment and GPS-trajectory map-matching methods do not fit: the former align two open curves, not a curve to a directed graph with branches and cycles, and the latter match a noisy point sequence to a network but assume a single moving agent rather than a whole branching sub-map that must be labelled coherently. We develop a family of alignment algorithms built on Dynamic Time Warping (DTW) (Sakoe &amp; Chiba, 1978; Berndt &amp; Clifford, 1994). <strong>Graph-DTW</strong> warps a single directed <var>A</var>-edge against a local directed target graph <var>G</var><sub>B</sub> that may contain cycles, replacing DTW's scalar predecessor with a within-row Dijkstra (Dijkstra, 1959) over <var>G</var><sub>B</sub>'s arcs; it supports a point emission and a segment emission with a bearing term that pins heading. <strong>DAG-DTW</strong> generalises the <em>source</em> from a single path to a whole acyclic branching neighbourhood <var>G</var><sub>A</sub>, swept once in topological order (Kahn, 1962), with a split-factor recurrence that conserves cost-flow across branches and a forward–backward pass that scores each junction once for every route through it. For genuine reconvergences (diamonds) we provide two exact reference solvers over a shared min-sum belief-propagation forest base (Pearl, 1988), which cross-validate to a common optimum (238/238 checks) and reveal that the residual error on a shifted diamond is a <em>point-mode drift</em> limit — the nearest-versus-corresponding problem — rather than a loop-labelling failure, motivating the bearing-aware objective as the principled fix. We formalise the problem, the objective, and the notion of junction consistency used throughout the paper.</p></div>
+
+<h2 id="sec-1"><span class="no">1</span> Introduction</h2>
+
+<p>Maintaining more than one digital model of the same road system is the normal state of affairs, not the exception. A national road-attribute register, a crowd-sourced street map, a commercial navigation base, and a municipality's asset inventory each describe the same physical streets, but they are digitised independently: they cut a road into edges at different places, place junction nodes at slightly different coordinates, and disagree on geometry by a metre or more. To combine their attributes — to carry a per-minute traffic flow measured on the register's segmentation onto the crowd-sourced network's segmentation, say — one must first solve <strong>conflation</strong>: establish which feature of one map corresponds to which feature of the other (Newson &amp; Krumm, 2009, frame the closely related applied setting).</p>
+
+<p>For road networks the correspondence is neither one-to-one nor symmetric between features. Because the two maps are segmented differently, a single edge of the source map <var>A</var> typically spans several consecutive edges of the target map <var>B</var>, and conversely a long <var>B</var>-edge may absorb several short <var>A</var>-edges. The correct output is therefore not a node-to-node or edge-to-edge assignment but a <strong>route assignment</strong>: each directed <var>A</var>-edge is mapped to a <em>connected, directed path of <var>B</var>-edges</em> that it traverses. Three properties make this hard.</p>
+
+<p><strong>The networks are directed.</strong> A road carries a legal and geometric direction; a two-way street is modelled as two opposing directed edges (in the Swedish NVDB register, for example, as <span class="mono">is_reverse</span> twins). A correct matcher must never let a route run backward along a <var>B</var>-edge, and must never let a source path that happens to run against the flow of a nearby <var>B</var>-edge "borrow" that edge instead of its reverse twin. Undirected or symmetric shape-matching silently permits both.</p>
+
+<p><strong>The segmentation is divergent.</strong> Neither map's cut points are canonical. The alignment must be free to let one <var>A</var>-vertex cover a run of several <var>B</var>-vertices (when <var>B</var> is sampled more densely) and to let several <var>A</var>-vertices share one stretch of <var>B</var> — exactly the many-to-one warping that DTW was designed for, but here the "time axis" on the target side is a <em>graph</em>, with branches and cycles (roundabouts, divided-carriageway loops), not a line.</p>
+
+<p><strong>Junctions must stay consistent.</strong> Where several <var>A</var>-edges meet at a junction, they share a single physical point; the matching must place that shared point at a single location in <var>B</var>. If each <var>A</var>-edge is matched to its own individually-cheapest <var>B</var>-route, the routes generically disagree about where the junction lands — they collide at the junction and one of them is forced into a backward or disconnected step. Junction consistency cannot, in general, be assembled from per-edge-optimal pieces; it is a <em>joint</em> constraint over all edges incident to the junction.</p>
+
+<p><strong>Why existing methods do not fit.</strong> Two mature bodies of work are adjacent but miss the target.</p>
+
+<p><em>Curve-to-curve alignment.</em> DTW (Sakoe &amp; Chiba, 1978; Berndt &amp; Clifford, 1994) and the Fréchet/edit-distance family align two open, linearly-ordered curves. A road <em>edge</em> is such a curve, but a road <em>neighbourhood</em> is a directed graph: it branches, it merges, and it can contain directed cycles. There is no single monotone warping axis to align against, and no notion of a junction shared by several curves. Applying curve alignment edge-by-edge throws away precisely the junction-consistency coupling that makes conflation hard.</p>
+
+<p><em>GPS-trajectory map-matching.</em> HMM-style map-matching (Newson &amp; Krumm, 2009) snaps a noisy, time-ordered sequence of points from a <em>single moving vehicle</em> onto a road network. It shares our directed-graph target and our shortest-path transitions, but its input is one thread, not a branching sub-map, and it has no obligation to keep several threads consistent where they cross. It answers "which road was this one trajectory on?", not "which route of <var>B</var> does each edge of a whole branching piece of <var>A</var> correspond to, such that they all agree at the junctions?".</p>
+
+<p>Our approach keeps DTW's warping intuition but replaces both of its linear axes with graphs. On the target side, the horizontal (target-advances) move becomes a Dijkstra shortest-path relaxation over <var>G</var><sub>B</sub>'s arcs, so a single <var>A</var>-vertex may ride a run of <var>B</var>-vertices and the target may cycle. On the source side, we generalise from a single directed path to a directed <em>acyclic</em> neighbourhood <var>G</var><sub>A</sub> swept in topological order, with a split-factor recurrence that (i) sums — not minimises — over the branches entering a junction so that <em>every</em> incident edge is covered, and (ii) divides each vertex's accumulated cost equally among its outgoing edges so that each vertex's local cost is counted exactly once across all routes, for any DAG shape. A forward–backward pass then scores each junction once, jointly, for all routes through it. Reconvergences (diamonds) are the one place message passing on a tree is not exact; we characterise this case precisely with two exact reference solvers and show its residual error is a property of the <em>point</em> emission, correctable by a direction-aware (bearing) emission rather than by more loop machinery.</p>
+
+<h3 id="sec-1-1"><span class="no">1.1</span> Contributions</h3>
+
+<ul>
+<li><strong>Graph-DTW: DTW against a directed graph target.</strong> A dynamic program that warps one directed <var>A</var>-edge onto a local target graph <var>G</var><sub>B</sub> that may contain directed cycles, by replacing DTW's scalar predecessor with a within-row <strong>Dijkstra</strong> over <var>G</var><sub>B</sub>'s arcs (so one <var>A</var>-vertex can cover a run of <var>B</var>-vertices and <var>G</var><sub>B</sub> can loop). It admits a <strong>point</strong> emission and a <strong>segment</strong> emission (middle-to-middle distance plus a <var>λ</var>-weighted bearing term) that pins heading and forbids backward traversal by construction.</li>
+<li><strong>A projection-based, continuous local-graph builder.</strong> A single construction turns both sides into local directed graphs whose vertex pools are enriched by the foot-of-perpendicular projections of the <em>other</em> side's nodes (the projection-pool idea of Keogh &amp; Ratanamahatana, 2005, applied to a graph target), keeps every vertex owned by exactly one edge, and stitches coincident junction endpoints with free directed inter-edge arcs — the structural rule that prevents route collapse and topological U-turns.</li>
+<li><strong>DAG-DTW: generalising the source from a path to a DAG.</strong> A joint solve over a whole acyclic source neighbourhood <var>G</var><sub>A</sub>, swept once in topological order (Kahn, 1962), with a <strong>coverage sum</strong> over incoming branches and a <strong>1/<em>outdeg</em> split factor</strong> that yields a conserved cost-flow (each vertex's emission counted exactly once across all sinks, diamonds included). Graph-DTW is the single-path special case; the recurrence reduces to DTW's three moves on a chain.</li>
+<li><strong>Forward–backward junction consistency.</strong> A backward table on the reversed pair of graphs (with the symmetric 1/<em>indeg</em> split) and a reachability-guarded backtrack that pins every junction by <var>φ</var>(<var>j</var>) = <em>argmin</em><sub><var>v</var></sub> ( <var>D</var>[<var>j</var>][<var>v</var>] + <var>B</var>[<var>j</var>][<var>v</var>] − <var>E</var>(<var>j</var>,<var>v</var>) ) subject to forward-reaching all fixed successors. On trees/polytrees this is exact and eliminates backward steps; <span class="mono">require_tree</span> asserts that regime.</li>
+<li><strong>Two exact conditioning solvers as validation.</strong> A recursive minimum-vertex-cut solver (linear in the number of loops) and a one-shot minimum-feedback-vertex-set solver (exponential), over a shared exact min-sum belief-propagation forest base (Pearl, 1988). They minimise the <em>same</em> realized objective and provably agree; the mutual cross-check (238/238) both validates correctness and exposed two real solver bugs.</li>
+<li><strong>An honest characterisation of the reconvergence limit.</strong> We show that the residual error on a shifted diamond is the <strong>nearest-versus-corresponding</strong> drift limit of the <em>point</em> emission — confirmed to be the true point-mode optimum by the exact solvers — not a loop-conditioning failure, and therefore that the principled fix is the direction (bearing) term, positioning segment-mode DAG-DTW as future work rather than more loop machinery.</li>
+<li><strong>Practical controls.</strong> An <var>α</var> (<span class="mono">horizontal_weight</span>) knob that discounts the <em>emission</em> on 1:<var>N</var> coverage without laundering carried cost; an arc-length re-match that places positions jump-free along each route; and a downstream-ready <span class="mono">routes_detail</span> output with directed, partial-coverage fractions.</li>
+</ul>
+
+<h2 id="sec-2"><span class="no">2</span> Problem Formulation</h2>
+
+<p><strong>Networks.</strong> Let <var>A</var> and <var>B</var> be <strong>directed</strong> road networks modelling the same physical streets. Each is a set of directed edges; a two-way road appears as two opposing directed edges. Every edge carries a polyline geometry, and edges meet at shared junction points. We call <var>A</var> the <strong>source</strong> (the network to be matched) and <var>B</var> the <strong>target</strong>.</p>
+
+<p><strong>Local graphs and sampling.</strong> Conflation is solved locally, on a neighbourhood at a time. From <var>A</var> we extract a connected source sub-network and represent it as a local directed graph <var>G</var><sub>A</sub> whose vertices are geometry samples and whose arcs are the directed sample-to-sample steps within each edge, plus free directed inter-edge arcs stitching coincident junction endpoints (edge <var>u</var>'s end → edge <var>w</var>'s start). <var>G</var><sub>B</sub> is the analogous local graph on the target. Each edge is sampled every <var>Δ</var> metres (<span class="mono">step_meters</span>) into vertices; a vertex belongs to exactly one edge, recorded by <span class="mono">vert_edge</span>(<var>v</var>). For a source vertex <var>a</var> we write <span class="mono">Apred</span>(<var>a</var>) for its predecessors in <var>G</var><sub>A</sub> and <em>outdeg</em>(<var>a</var>) for its out-degree; for a target vertex <var>v</var> we write <span class="mono">Bpred</span>(<var>v</var>) for its predecessors in <var>G</var><sub>B</sub>.</p>
+
+<p>The two local graphs differ in an essential, deliberately-exploited asymmetry:</p>
+
+<ul>
+<li><var>G</var><sub>A</sub> (source) is required to be a <strong>directed acyclic graph</strong> — a topologically-orderable branching neighbourhood (a single directed path in the graph-DTW special case). A cyclic source component is out of scope for the joint solver.</li>
+<li><var>G</var><sub>B</sub> (target) <strong>may contain directed cycles</strong> (roundabouts, divided-carriageway loops). No acyclicity is assumed on the target.</li>
+</ul>
+
+<p><strong>Emission (local cost).</strong> The local cost of aligning source vertex <var>a</var> to target vertex <var>v</var> is <var>E</var>(<var>a</var>,<var>v</var>) ≥ 0. In <strong>point</strong> mode <var>E</var>(<var>a</var>,<var>v</var>) = ‖<var>a</var> − <var>v</var>‖, the Euclidean distance in metres. In <strong>segment</strong> mode the state is an (A-segment, B-arc) pair (<var>i</var>,<var>e</var>) with <var>e</var> = <var>u</var>→<var>v</var> a <em>forward</em> <var>B</var>-arc, and</p>
+
+<div class="eq" id="eq-1"><span class="tag">(1)</span>
+  <var>E</var>(<var>i</var>,<var>e</var>) = ‖<em>mid</em>(<var>a</var><sub>i</sub>,<var>a</var><sub>i+1</sub>) − <em>mid</em>(<var>u</var>,<var>v</var>)‖ + <var>λ</var> · <var>d</var><sub>circ</sub>( <var>θ</var>(<var>s</var><sub>i</sub>), <var>θ</var>(<var>e</var>) ),
+</div>
+
+<p>the middle-to-middle distance between the source segment <var>s</var><sub>i</sub> and the target arc plus <var>λ</var> = <span class="mono">bearing_weight</span> times the circular heading difference <var>d</var><sub>circ</sub> ∈ [0°, 180°]. The bearing term is what pins heading, since a middle-to-middle distance alone is blind to a segment rotating about its own middle.</p>
+
+<p><strong>Output: a route assignment.</strong> A solution is a label map <var>φ</var> from source vertices to target vertices, from which each source edge's matched <strong>route</strong> — the connected, direction-respecting sequence of <var>B</var>-edges it traverses — is read off by grouping consecutive labels by <span class="mono">vert_edge</span>. Equivalently, the solution assigns to each directed <var>A</var>-edge a connected path of <var>B</var>-edges, oriented consistently with the <var>A</var>-edge's direction. Because <var>G</var><sub>B</sub>'s arcs are forward-only and inter-edge stitches are non-ridable connectivity, any <var>φ</var> produced is directed and cannot U-turn onto an edge's reverse twin.</p>
+
+<p><strong>Constraints.</strong> A valid solution must satisfy:</p>
+
+<ol>
+<li><strong>Directed connectivity.</strong> For every source arc <var>a</var>→<var>a</var>′, the target label must advance forward: <var>φ</var>(<var>a</var>′) is forward-reachable from <var>φ</var>(<var>a</var>) in <var>G</var><sub>B</sub>. Consecutive <var>B</var>-edges of a route are graph-connected. No backward or teleporting step is allowed.</li>
+<li><strong>Full coverage.</strong> Every source edge is assigned a route; no incident edge at a junction may be dropped. This is the reason the branch operator at a merge is a <em>sum</em>, not a <em>min</em>, over <span class="mono">Apred</span>.</li>
+<li><strong>Junction consistency.</strong> All source vertices coincident at a physical junction <var>j</var> must receive a single, mutually-agreeing target label <var>φ</var>(<var>j</var>), so that every route passing through <var>j</var> crosses <var>B</var> at the same place. Formally, the routes incident to <var>j</var> share the target position <var>φ</var>(<var>j</var>); a matching that forces different incident routes to disagree at <var>j</var> is inconsistent.</li>
+</ol>
+
+<p>In the shipped point-mode matcher, junction consistency is enforced as <strong>region</strong> consistency: coincident source vertices at a junction land within one sample step <var>Δ</var> of a common target location. Vertex-exact junction resolution is what the exact conditioning solvers add.</p>
+
+<p><strong>Objective.</strong> Among valid solutions, minimise total shape <strong>drift</strong>, the realized emission summed over the final, junction-consistent labels:</p>
+
+<div class="eq" id="eq-2"><span class="tag">(2)</span>
+  <var>C</var><sub>total</sub> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>( <var>a</var>, <var>φ</var>(<var>a</var>) )
+</div>
+
+<p>evaluated on the <em>final</em> consistent <var>φ</var> (this quantity is well-defined and correct for any graph shape). Reported quality is the <strong>average drift</strong> <var>C</var><sub>total</sub> / (matched steps) in metres, together with per-edge drift and coverage. <var>C</var><sub>total</sub> is count-weighted and hence depends on the sampling density <var>Δ</var>; a length-weighted, density-independent objective is left to future work.</p>
+
+<p>We stress a correctness caveat used throughout the paper: the dynamic program's own optimum, <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim">sinks <var>t</var></span></span> <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>t</var>][<var>v</var>] (where <var>D</var> is the forward cost table introduced in the next section), coincides with <var>C</var><sub>total</sub> <strong>only when <var>G</var><sub>A</sub> is a tree</strong>. On a reconvergent diamond it is neither the realized cost nor a bound on it. The realized sum <var>C</var><sub>total</sub> over the final labels is the definition of solution quality; the DP optimum is a diagnostic, not the objective.</p>
+
+<p><strong>Junction consistency vs. per-edge optimality (the crux).</strong> Consider two routes <var>s</var><sub>1</sub>→<var>t</var><sub>1</sub> and <var>s</var><sub>2</sub>→<var>t</var><sub>2</sub> through a common junction <var>j</var>. Optimised independently, route 1 may prefer <var>j</var> at one target vertex and route 2 at another; but <var>j</var> carries a single label <var>φ</var>(<var>j</var>). Forcing one route's preference onto <var>j</var> pushes the other into a backward step, <em>even when every <var>A</var>-edge is matched to the geometrically correct <var>B</var>-edge</em>. Hence the objective above cannot be minimised edge-by-edge: junction consistency couples all edges incident to <var>j</var>, and a joint solve over the source neighbourhood is required. The mechanism by which the algorithms of this paper enforce that coupling — the split-factor recurrence, the forward–backward junction score, and (for reconvergences) the exact conditioning solvers — is the subject of the sections that follow.</p>
+
+<h2 id="sec-3"><span class="no">3</span> Related Work</h2>
+
+<p>Our method sits at the intersection of four largely separate literatures: (i) probabilistic matching of a <em>GPS trajectory</em> to a road map, (ii) geometric <em>curve matching</em> under the Fréchet distance, (iii) <em>dynamic time warping</em> (DTW) for elastic sequence alignment, and (iv) <em>map conflation</em> / multi-representation matching in GIS. It also borrows inference machinery from graphical models. We review each family, then state precisely how network-to-network, directed, junction-consistent, segmentation-robust shape conflation differs from all of them. Throughout, <var>A</var> denotes the source network and <var>B</var> the target, both directed (Section 2).</p>
+
+<h3 id="sec-3-1"><span class="no">3.1</span> GPS-trajectory-to-map matching</h3>
+
+<p>The dominant paradigm for online navigation and floating-car data is matching a <em>noisy point sequence</em> (a GPS track) to the edges of a known road graph. Early geometric and topological methods score candidate edges by proximity and heading and grow a matched path incrementally (White et al., 2000); the survey of Quddus et al. (2007) catalogues this generation. The field then consolidated around a hidden Markov model (HMM): each GPS sample is an observation, each nearby road edge a hidden state, emission probabilities encode measurement noise, transition probabilities encode routing plausibility (great-circle vs. on-road distance), and the Viterbi algorithm recovers the maximum-likelihood edge sequence (Newson &amp; Krumm, 2009). This framing is robust to noise and sparse sampling and is now standard.</p>
+
+<p>The structural difference from our setting is the <em>source</em>. In HMM map matching the source is an <strong>unstructured point cloud</strong> with no topology of its own: it never branches, never merges, and imposes no junction constraints. The hidden chain is a path, so Viterbi — a one-dimensional DP — suffices. In network-to-network conflation the source <var>A</var> is itself a <em>directed graph</em> with its own vertices, edges, out-/in-degrees and junctions, and the requirement is that source edges meeting at a junction agree on where that junction lands in <var>B</var>. That is a constraint <em>across</em> several simultaneously-matched paths, not along one. Our forward–backward tables and joint junction argmin (Section 5) generalise the Viterbi idea from a chain to a DAG source, and our horizontal Dijkstra move over <var>G</var><sub><var>B</var></sub> generalises the transition step to absorb the <em>different segmentation</em> between <var>A</var> and <var>B</var> (one <var>A</var>-vertex may ride a run of <var>B</var>-vertices) rather than treating each edge as a single discrete state.</p>
+
+<h3 id="sec-3-2"><span class="no">3.2</span> Curve and map matching via the Fréchet distance</h3>
+
+<p>A second family measures the similarity of two <em>polylines</em> directly. The Fréchet distance — the classic "dog-walking" metric — and the free-space diagram of Alt &amp; Godau (1995) give an exact, order-preserving notion of curve similarity and an <var>O</var>(<var>mn</var> log <var>mn</var>) decision procedure. Brakatsoulas et al. (2005) apply both the Fréchet and a weaker <em>average</em> Fréchet distance to match a vehicle trajectory against road-network polylines, making the geometry (not a probabilistic emission) the primary signal.</p>
+
+<p>This family is the closest in spirit to ours: it is <em>shape-first</em> and reparametrisation-invariant, exactly the property needed when <var>A</var> and <var>B</var> sample the same physical road at different vertex densities. But the standard formulation matches <strong>one curve to one curve</strong> (or to individually-enumerated network paths); it is undirected in its basic form, carries no explicit <em>heading</em> term, and offers no mechanism for a shared junction label when several curves branch off a common point. Our emission is a DTW-style alignment cost rather than a bottleneck (max) distance, which lets us (a) sum a total shape-drift objective <var>C</var><sub>total</sub> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>(<var>a</var>, <var>φ</var>(<var>a</var>)) that is comparable across edges and (b) add the middle-to-middle + <var>λ</var>·<var>Δ</var>bearing segment cost that pins direction — the term that distinguishes a road from its anti-parallel twin. Where Fréchet matching answers "how far apart are these two curves," we answer "which connected, directed <em>route</em> of <var>B</var>-edges does each <var>A</var>-edge correspond to, consistently at junctions."</p>
+
+<h3 id="sec-3-3"><span class="no">3.3</span> Dynamic time warping</h3>
+
+<p>The elastic-alignment engine we build on is DTW, introduced for spoken-word recognition by Sakoe &amp; Chiba (1978), who also gave the <em>band</em> constraint we reuse to restrict <var>B</var>-candidates (Section 2). Berndt &amp; Clifford (1994) established DTW as a general time-series pattern-matching tool. Classical DTW aligns <strong>two 1-D sequences</strong> on a rectangular cost grid with three moves (vertical / horizontal / diagonal). Our contribution is to keep the three-move recurrence but replace one sequence axis with a <strong>directed graph</strong>: the horizontal move becomes a Dijkstra shortest path over <var>G</var><sub><var>B</var></sub> (whose arcs may form cycles, e.g. roundabouts), and — in DAG-DTW — the <em>other</em> axis is generalised from a path to a topologically-ordered source DAG with a 1/<em>outdeg</em> split factor that conserves cost-flow across branches. To our knowledge, DTW with a <em>directed-graph</em> alignment target, swept jointly over a <em>branching</em> source, is the novel core of this work. The continuous projection-pool construction of the local graphs follows the "projection" refinement of DTW popularised by Keogh and Ratanamahatana (2004), adapted here to a graph target so that every foot-of-perpendicular projection of one network's nodes onto the other becomes an alignable vertex.</p>
+
+<h3 id="sec-3-4"><span class="no">3.4</span> Map conflation and multi-representation matching</h3>
+
+<p>The GIS conflation literature is where our <em>problem</em> — reconciling two independently-digitised maps of the same area — originates, going back to Saalfeld's (1988) formalisation of automated map compilation as node/arc correspondence with iterative rubber-sheeting. A large body of work matches <em>street</em> datasets across representations using buffer-growing, node-degree and topological signatures, and geometric attributes, often iteratively (Volz, 2006). These methods are explicitly network-to-network and address different segmentation, but they typically operate on <strong>undirected</strong> feature geometry, decide correspondence with buffer-overlap or node-matching heuristics rather than an optimal shape-alignment DP, and enforce junction agreement only indirectly (through node matching), without a single joint objective. Our method contributes an <em>optimisation</em> view of the same task: a shape-drift DP whose optimum is the matched route set, that is directed by construction (a source edge running against a target edge matches that target's reverse twin, never U-turning), and whose junctions are resolved <em>jointly</em> by a forward–backward score rather than by independent per-node matches.</p>
+
+<h3 id="sec-3-5"><span class="no">3.5</span> Inference tools we borrow</h3>
+
+<p>For junction consistency we adopt standard graphical-model inference. The forward–backward tables and the joint junction argmin <var>φ</var>(<var>j</var>) = <em>argmin</em><sub><var>v</var></sub>( <var>D</var>[<var>j</var>][<var>v</var>] + <var>B</var>[<var>j</var>][<var>v</var>] − <var>E</var>(<var>j</var>, <var>v</var>) ) are min-sum (max-product) belief propagation, which is exact on trees/polytrees (Pearl, 1988); this is the same principle underlying Viterbi decoding. For genuine reconvergent loops (the "diamond," where two directed paths from a common ancestor re-meet and the graph carries an undirected cycle), we fall back — in our exact <em>reference</em> solvers — to <strong>cutset conditioning</strong>: fix a small feedback-vertex / separator set, solve the now-acyclic remainder exactly, and combine, in the spirit of Dechter's (1990) cutset decomposition for constraint and probabilistic networks. We stress the borrowed-machinery framing honestly: BP is exact only because the underlying forest solver is; on a true loop it is our conditioning solvers, not plain message passing, that certify optimality (Section 6). These conditioning solvers are validated reference implementations and are <strong>not</strong> wired into the shipped matcher, which uses a reachability-guarded backtrack that is exact on trees.</p>
+
+<h3 id="sec-3-6"><span class="no">3.6</span> Positioning and comparison</h3>
+
+<p><a href="#tbl-1">Table 1</a> summarises the families along the axes that matter for conflation. Our niche is the combination that no single prior family covers: a <strong>shape-alignment dynamic program</strong> that matches one <strong>directed network to another directed network</strong>, is robust to <strong>different segmentation</strong> (via the graph-valued horizontal Dijkstra move and continuous projection pools), and is <strong>junction-consistent</strong> (via forward–backward joint labelling), emitting for each source edge a connected, directed <strong>route</strong> of target edges with partial-coverage fractions.</p>
+
+<div class="tblwrap"><table>
+<caption id="tbl-1"><b>Table 1 —</b> Method families for map/curve/network matching.</caption>
+<thead><tr><th>Method / family</th><th>Source → Target</th><th>Directed?</th><th>Different segmentation?</th><th>Junction-consistent?</th><th>Shape model</th><th>Output</th></tr></thead>
+<tbody>
+<tr><td>HMM map matching (Newson &amp; Krumm, 2009; White et al., 2000)</td><td>GPS point sequence → road graph</td><td>partly (heading in emission)</td><td>N/A (source has no edges)</td><td>N/A (source is a path)</td><td>per-point emission + routing prior; Viterbi</td><td>ML edge sequence for one track</td></tr>
+<tr><td>Fréchet curve matching (Alt &amp; Godau, 1995; Brakatsoulas et al., 2005)</td><td>polyline → polyline / enumerated network paths</td><td>no (basic form)</td><td>yes (reparam-invariant)</td><td>no</td><td>bottleneck (max) distance, free-space diagram</td><td>matched path / similarity value</td></tr>
+<tr><td>Classical DTW (Sakoe &amp; Chiba, 1978; Berndt &amp; Clifford, 1994)</td><td>1-D sequence → 1-D sequence</td><td>no</td><td>yes (elastic warp)</td><td>no</td><td>min-sum alignment on a grid, 3 moves</td><td>warping path / alignment cost</td></tr>
+<tr><td>GIS conflation / multi-rep. matching (Saalfeld, 1988; Volz, 2006)</td><td>network → network</td><td>usually no</td><td>yes</td><td>indirect (via node matching)</td><td>buffers, node-degree &amp; topology heuristics</td><td>node/arc correspondences</td></tr>
+<tr><td><strong>This work (graph-DTW / DAG-DTW)</strong></td><td><strong>directed network → directed network</strong></td><td><strong>yes (reverse-twin, no U-turn)</strong></td><td><strong>yes (graph Dijkstra move + projection pools)</strong></td><td><strong>yes (forward–backward joint argmin; exact on trees)</strong></td><td><strong>DTW min-sum drift; segment mid-to-mid + <var>λ</var>·<var>Δ</var>bearing</strong></td><td><strong>connected directed route per edge + coverage fractions</strong></td></tr>
+</tbody>
+</table></div>
+
+<p>In short, HMM map matching contributes the probabilistic-decoding view but only for a <em>point-sequence</em> source; Fréchet matching contributes shape-first, reparametrisation invariance but for <em>single curves</em>, undirected and without junction coupling; DTW contributes the elastic min-sum engine but only between <em>two sequences</em>; and GIS conflation contributes the network-to-network <em>problem</em> but solves it with heuristics rather than a joint shape-optimisation with directed, junction-consistent guarantees. Our method unifies these into a single directed, graph-valued dynamic program, and imports belief propagation (Pearl, 1988) and cutset conditioning (Dechter, 1990) to make the junction-labelling exact where the source is a tree and to certify optimality where it is not.</p>
+
+<h2 id="sec-4"><span class="no">4</span> Graph-DTW: dynamic time warping to a directed graph</h2>
+
+<h3 id="sec-4-1"><span class="no">4.1</span> From a scalar time axis to a directed graph</h3>
+
+<p>Classical dynamic time warping (DTW) aligns two sequences by a monotone warping path through a cost grid, using three local moves — advance the first sequence, advance the second, or advance both (Sakoe &amp; Chiba, 1978; Berndt &amp; Clifford, 1994). Its second axis is a <em>total order</em>: at step <var>j</var> the only predecessor is <var>j</var>−1. Graph-DTW retains DTW's move set but replaces that scalar axis with a <strong>directed target graph</strong> <var>G</var><sub>B</sub>, so that the predecessor of a <var>B</var>-vertex <var>v</var> is <em>any</em> graph-predecessor <var>u</var> ∈ pred(<var>v</var>). The source remains a single directed path: one <var>A</var>-edge, densified into vertices <var>a</var><sub>0</sub>,…,<var>a</var><sub><var>N</var>−1</sub> at spacing <var>Δ</var> (<span class="mono">step_meters</span>). Both sides are built by the same projection-based, continuous builder (<span class="mono">build_local_digraph</span>), which augments each edge's vertex pool with the feet of perpendicular projections of the opposite side's nodes and gap-fills evenly, following the projection-pool refinement of DTW (Keogh &amp; Ratanamahatana, 2005) transported to a graph target; every vertex is owned by exactly one edge, and coincident junction endpoints are kept as separate coincident vertices stitched by directed inter-edge arcs. The construction is detailed in <a href="#appx-a">Appendix A</a>.</p>
+
+<p>Let <var>D</var>[<var>i</var>][<var>v</var>] denote the minimum cost to align the source prefix <var>a</var><sub>0</sub>…<var>a</var><sub><var>i</var></sub> so that <var>a</var><sub><var>i</var></sub> is labelled by <var>B</var>-vertex <var>v</var>. With the point-mode emission <var>E</var>(<var>a</var>,<var>v</var>) = ‖<var>a</var>−<var>v</var>‖, the recurrence is DTW's three moves with <var>j</var>−1 generalised to pred(<var>v</var>):</p>
+
+<div class="eq" id="eq-3"><span class="tag">(3)</span>
+<var>D</var>[<var>i</var>][<var>v</var>] = <var>E</var>(<var>a</var><sub><var>i</var></sub>,<var>v</var>) + <em>min</em>( <var>D</var>[<var>i</var>−1][<var>v</var>]<sub>&nbsp;(vertical)</sub>, <span class="qp3-sum"><span class="qp3-sumop"><em>min</em></span><span class="qp3-sumlim"><var>u</var>∈pred(<var>v</var>)</span></span><var>D</var>[<var>i</var>][<var>u</var>]<sub>&nbsp;(horizontal)</sub>, <span class="qp3-sum"><span class="qp3-sumop"><em>min</em></span><span class="qp3-sumlim"><var>u</var>∈pred(<var>v</var>)</span></span><var>D</var>[<var>i</var>−1][<var>u</var>]<sub>&nbsp;(diagonal)</sub> )
+</div>
+
+<p>The <strong>vertical</strong> move advances <var>A</var> while holding the <var>B</var>-position (source denser than target); the <strong>diagonal</strong> advances both; the <strong>horizontal</strong> advances <var>B</var> while holding <var>a</var><sub><var>i</var></sub> (target denser than source, so one <var>A</var>-vertex rides a run of <var>B</var>-vertices). Entry is free, <var>D</var>[0][<var>v</var>] = <var>E</var>(<var>a</var><sub>0</sub>,<var>v</var>) for every <var>v</var>, and termination takes <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>N</var>−1][<var>v</var>]: the warping path always spans the entire <var>A</var>-edge, but is free to begin and end anywhere in <var>G</var><sub>B</sub>.</p>
+
+<h3 id="sec-4-2"><span class="no">4.2</span> The horizontal move is a Dijkstra pass</h3>
+
+<p>The one structural subtlety is that the horizontal term self-references <var>D</var>[<var>i</var>][·] <em>within the same row <var>i</var></em>. In classical DTW this is harmless — the second axis is acyclic, so a left-to-right sweep suffices. Here <var>G</var><sub>B</sub> models real road topology and <strong>may contain directed cycles</strong> (roundabouts, loops), so no topological sweep of row <var>i</var> exists. Because every emission is non-negative, however, the within-row problem is exactly a non-negative-weight shortest-path problem and is solved exactly by <strong>Dijkstra's algorithm</strong> (Dijkstra, 1959) over the arcs of <var>G</var><sub>B</sub>. Concretely, first form the row base from the two moves that read the finalised row <var>i</var>−1,</p>
+
+<div class="eq" id="eq-4"><span class="tag">(4)</span>
+base[<var>v</var>] = <var>E</var>(<var>a</var><sub><var>i</var></sub>,<var>v</var>) + <em>min</em>( <var>D</var>[<var>i</var>−1][<var>v</var>], <span class="qp3-sum"><span class="qp3-sumop"><em>min</em></span><span class="qp3-sumlim"><var>u</var>∈pred(<var>v</var>)</span></span><var>D</var>[<var>i</var>−1][<var>u</var>] )
+</div>
+
+<p>then run Dijkstra, relaxing along each arc <var>u</var>→<var>w</var> of <var>G</var><sub>B</sub> and <strong>re-paying</strong> the emission on arrival:</p>
+
+<div class="eq" id="eq-5"><span class="tag">(5)</span>
+<var>D</var>[<var>i</var>][<var>w</var>] ← <em>min</em>( <var>D</var>[<var>i</var>][<var>w</var>], <var>D</var>[<var>i</var>][<var>u</var>] + <var>E</var>(<var>a</var><sub><var>i</var></sub>,<var>w</var>) )
+</div>
+
+<p>Re-paying <var>E</var>(<var>a</var><sub><var>i</var></sub>,<var>w</var>) on every relaxation is what lets a single <var>A</var>-vertex ride an arbitrarily long run of <var>B</var>-vertices at its own local cost, and keeps every horizontal edge weight non-negative so Dijkstra remains exact on a cyclic <var>G</var><sub>B</sub>. The cost per <var>A</var>-edge is <var>O</var>(<var>N</var> · |<var>E</var><sub>B</sub>| log |<var>V</var><sub>B</sub>|); the local graphs are small.</p>
+
+<h3 id="sec-4-3"><span class="no">4.3</span> Backtracking to a route</h3>
+
+<p>Backtracking the argmins of (1) yields a vertex-to-vertex label map <var>φ</var>; grouping consecutive steps by their owning <var>B</var>-edge (<span class="mono">vert_edge[v]</span>) turns it into an ordered <strong>route</strong> of <var>B</var>-edges. Because the builder emits only <strong>forward</strong> arcs — a bidirectional road is already two opposing directed edges, and inter-edge junction stitches are sub-half-metre free connectors that can never host a DP state — the recovered route is directed and connected by construction, and can neither U-turn onto a side edge nor hop onto a geometrically close but topologically disconnected parallel road. Leading and trailing <strong>zero-traversal touches</strong>, where the source merely grazes a junction vertex without walking the edge, are trimmed; if nothing is traversed the edge returns <span class="mono">NO_MATCH</span>.</p>
+
+<h3 id="sec-4-4"><span class="no">4.4</span> Segment and bearing emission</h3>
+
+<p>Point mode scores a vertex against a vertex and is blind to orientation. The <strong>segment</strong> emission (<span class="mono">_segment_dp_pairs</span>) instead lifts the DP state to a pair <em>(A-segment, B-arc)</em>: state (<var>i</var>,<var>e</var>) means "<var>A</var>-segment <var>s</var><sub><var>i</var></sub> = <var>a</var><sub><var>i</var></sub>→<var>a</var><sub><var>i</var>+1</sub> rides forward <var>B</var>-arc <var>e</var> = <var>u</var>→<var>v</var>". Its per-state cost is a <strong>middle-to-middle</strong> distance plus an optional heading penalty,</p>
+
+<div class="eq" id="eq-6"><span class="tag">(6)</span>
+<var>E</var>(<var>i</var>,<var>e</var>) = ‖mid(<var>a</var><sub><var>i</var></sub>,<var>a</var><sub><var>i</var>+1</sub>) − mid(<var>u</var>,<var>v</var>)‖ + <var>λ</var> · <var>d</var><sub>circ</sub>( <var>θ</var>(<var>s</var><sub><var>i</var></sub>), <var>θ</var>(<var>e</var>) )
+</div>
+
+<p>where <var>θ</var>(·) is a heading, <var>d</var><sub>circ</sub> ∈ [0°,180°] is the circular heading difference, and <var>λ</var> = <span class="mono">bearing_weight</span>. The three moves carry over unchanged — A-advance on the same arc (<var>N</var>:1), arc-advance within a row via the same Dijkstra (1:<var>N</var>), or both — and the arc-state optimum is emitted back as vertex pairs, so all downstream grouping, trimming and metrics are shared with point mode. The bearing term is necessary because a middle-to-middle distance alone is invariant to a segment rotating about its own midpoint; <var>λ</var> pins heading, with <var>λ</var> ∈ [1,5] a good working range. Two earlier emission variants (endpoint-average distance, and bearing charged only on diagonal moves) were superseded by (4); <span class="mono">emission="midpoint"</span> is a deprecated alias for <span class="mono">"segment"</span>.</p>
+
+<h2 id="sec-5"><span class="no">5</span> DAG-DTW: generalising the source to a DAG</h2>
+
+<h3 id="sec-5-1"><span class="no">5.1</span> Motivation and the design asymmetry</h3>
+
+<p>Graph-DTW matches one <var>A</var>-edge at a time. But road networks branch, and <var>A</var>-edges meeting at a junction should <em>agree</em> on where that junction lands in <var>B</var>. DAG-DTW therefore promotes the source from a single path to a whole connected <strong>acyclic</strong> subgraph <var>G</var><sub>A</sub> — a junction neighbourhood or branching corridor — matched in one joint solve (<span class="mono">match_dag_to_bgraph</span>). The design rests on a deliberate asymmetry between the two sides:</p>
+
+<ul>
+<li><strong>The source <var>G</var><sub>A</sub> must be a DAG.</strong> It is swept once in <strong>topological order</strong> (Kahn, 1962); a cyclic local component is rejected (<span class="mono">NotADAG</span>). Acyclicity is what makes a single non-iterative sweep exact: when a vertex is reached, all its source-predecessors are already finalised.</li>
+<li><strong>The target <var>G</var><sub>B</sub> may cycle.</strong> As in graph-DTW, the horizontal move over <var>G</var><sub>B</sub> remains a Dijkstra pass, so roundabouts and loops in the target are handled without change.</li>
+</ul>
+
+<p>The topological order is laid out as three blocks — [all sources][middle][all sinks] — matching the DP's three phases: free entry at sources, propagation through the middle, free exit at sinks.</p>
+
+<h3 id="sec-5-2"><span class="no">5.2</span> The coverage recurrence and the split factor</h3>
+
+<p>Let <var>D</var>[<var>a</var>][<var>v</var>] be the minimum cost to align the source <strong>down to <var>A</var>-vertex <var>a</var></strong>, ending at <var>B</var>-vertex <var>v</var>, <strong>with every <var>A</var>-edge above <var>a</var> covered</strong>. That coverage clause — not "a shortest path through the DAG" — dictates the operators:</p>
+
+<div class="eq" id="eq-7"><span class="tag">(7)</span>
+<var>D</var>[<var>a</var>][<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <em>min</em>( <span class="qp3-sum"><span class="qp3-sumop"><em>min</em></span><span class="qp3-sumlim"><var>v</var>′∈Bpred(<var>v</var>)</span></span><var>D</var>[<var>a</var>][<var>v</var>′]<sub>&nbsp;(H) <var>B</var> advances</sub>, <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var>′∈Apred(<var>a</var>)</span></span> <span class="frac"><span>1</span><span>outdeg(<var>a</var>′)</span></span> <span class="qp3-sum"><span class="qp3-sumop"><em>min</em></span><span class="qp3-sumlim"><var>v</var>′∈Bpred(<var>v</var>)∪{<var>v</var>}</span></span><var>D</var>[<var>a</var>′][<var>v</var>′]<sub>&nbsp;(A) <var>A</var> advances</sub> )
+</div>
+
+<p>Two DAG-specific features sit on the (A) branch:</p>
+
+<p><strong>Sum over source-predecessors (coverage).</strong> At a merge, the costs of <em>all</em> incoming <var>A</var>-edges are <strong>added</strong>, not minimised: every approach must be aligned, none discarded. The rule is <strong>sum over branches, min over <var>B</var>-positions</strong>; a <span class="mono">min</span> in place of the sum would leave one branch unmatched.</p>
+
+<p><strong>The 1/outdeg(<var>a</var>′) split factor (conserved cost-flow).</strong> Each vertex divides its accumulated cost equally among its outgoing <var>A</var>-edges. This makes each vertex's emission <var>E</var> contribute <strong>exactly once</strong> when summed across all sinks, for <em>any</em> DAG shape, including reconvergent ones. Chain and merge vertices have outdeg = 1 (factor 1); only splits divide. Appendix B gives the conservation proof; <a href="#sec-8-2">§8.2</a> gives a worked Y-split.</p>
+
+<h3 id="sec-5-3"><span class="no">5.3</span> Reductions and computation</h3>
+
+<p>The recurrence (5) contains graph-DTW as a special case, with no branch logic:</p>
+
+<ul>
+<li><strong>Chain</strong> (|Apred(<var>a</var>)| = 1, outdeg = 1): the split factor is 1 and the sum has one term, collapsing (5) to <var>E</var>(<var>a</var>,<var>v</var>) + <em>min</em>( <var>D</var>[<var>a</var>][<var>v</var>′], <var>D</var>[<var>a</var>′][<var>v</var>], <var>D</var>[<var>a</var>′][<var>v</var>′] ) — exactly graph-DTW's three moves (1).</li>
+<li><strong>Source</strong> (Apred(<var>a</var>) = ∅): the empty sum is 0, so <var>D</var>[<var>a</var>][<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) is seeded and the (H) Dijkstra then spreads it — <strong>free entry</strong> at every source. Sinks are read off with a free <em>min</em><sub><var>v</var></sub>: <strong>free exit</strong>.</li>
+</ul>
+
+<p>Computation (<span class="mono">_dp_table</span>) is one topological sweep of <var>G</var><sub>A</sub>. Per <var>A</var>-vertex, seed</p>
+
+<div class="eq" id="eq-8"><span class="tag">(8)</span>
+seed[<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var>′∈Apred(<var>a</var>)</span></span> <span class="frac"><span><var>D</var>[<var>a</var>′][<var>v</var>]</span><span>outdeg(<var>a</var>′)</span></span>
+</div>
+
+<p>then run the within-<var>a</var> Dijkstra over <var>G</var><sub>B</sub> (the diagonal <var>v</var>′ ∈ Bpred(<var>v</var>) is absorbed as the first relaxation). No iteration to convergence is needed: acyclicity of <var>G</var><sub>A</sub> guarantees every Apred(<var>a</var>) is finalised when <var>a</var> is reached. This is precisely graph-DTW's structure with "row <var>i</var>" replaced by "<var>A</var>-vertex <var>a</var> in topological order" and the single-row seed replaced by the split-scaled sum over incoming <var>A</var>-branches. DAG-DTW is thus a <strong>strict superset</strong> of graph-DTW: a single-path source <em>is</em> graph-DTW. The recurrence is implemented in point mode ([IMPL]); the segment/bearing lift of <a href="#sec-4-4">§4.4</a> into the DAG recurrence is future work (<a href="#sec-7-4">§7.4</a>).</p>
+
+<h2 id="sec-6"><span class="no">6</span> Junction consistency</h2>
+
+<h3 id="sec-6-1"><span class="no">6.1</span> Why per-junction argmin fails</h3>
+
+<p>Solving each sink's route independently and then stitching the pieces does not yield a consistent global matching. Consider two routes <var>s</var><sub>1</sub>→<var>t</var><sub>1</sub> and <var>s</var><sub>2</sub>→<var>t</var><sub>2</sub> that both pass through a junction <var>j</var>. Optimised in isolation, route 1 may want <var>j</var> at one <var>B</var>-vertex and route 2 at another — but <var>j</var> carries a single label <var>φ</var>(<var>j</var>). A greedy per-sink backtrack traces both routes back and they <strong>collide at <var>j</var></strong>; forcing one label onto the other route creates a non-forward <var>B</var>-transition on a <var>G</var><sub>A</sub> arc — a <strong>backward step</strong>. Crucially this occurs <em>even when every <var>A</var>-edge maps to the correct <var>B</var>-edge</em>: the error is in the shared junction label, not the topology. One cannot assemble the whole matching from each-sink's-own-best pieces.</p>
+
+<h3 id="sec-6-2"><span class="no">6.2</span> Forward–backward resolution</h3>
+
+<p>The fix scores each junction <em>once, for every route through it</em>, using two cost tables built by the same <span class="mono">_dp_table</span>:</p>
+
+<ul>
+<li><strong>Forward</strong> <var>D</var>[<var>a</var>][<var>v</var>] (<a href="#sec-5">§5</a>): cheapest cost to align sources → <var>a</var> with <var>a</var> at <var>v</var>, using the 1/outdeg split.</li>
+<li><strong>Backward</strong> <var>B</var>[<var>a</var>][<var>v</var>]: reverse <strong>both</strong> graphs — <var>G</var><sub>A</sub>'s sinks become sources and <var>G</var><sub>B</sub>'s arcs flip — and run the same DP with the symmetric 1/indeg split, so the conserved cost-flow holds in both directions. This is the cheapest cost to align <var>a</var> → sinks with <var>a</var> at <var>v</var>.</li>
+</ul>
+
+<p>The best whole-DAG cost among all matchings that keep <var>j</var> at <var>v</var> then pins each junction jointly:</p>
+
+<div class="eq" id="eq-9"><span class="tag">(9)</span>
+<var>φ</var>(<var>j</var>) = <em>argmin</em><sub><var>v</var></sub> ( <var>D</var>[<var>j</var>][<var>v</var>] + <var>B</var>[<var>j</var>][<var>v</var>] − <var>E</var>(<var>j</var>,<var>v</var>) )
+</div>
+
+<p>where −<var>E</var>(<var>j</var>,<var>v</var>) removes the double count of <var>j</var>'s own local cost, which appears in both tables. Equation (7) is a min-sum (max-product) belief-propagation reading, exact on trees (Pearl, 1988).</p>
+
+<h3 id="sec-6-3"><span class="no">6.3</span> The reachability-guarded backtrack</h3>
+
+<p>The shipped procedure (<span class="mono">dag_dtw.py</span>) does not read (7) pointwise; it enforces joint consistency during a <strong>reverse-topological backtrack</strong>. At each non-sink <var>a</var> it scans <var>v</var> in increasing joint score <var>D</var>[<var>a</var>][<var>v</var>] + <var>B</var>[<var>a</var>][<var>v</var>] − <var>E</var>(<var>a</var>,<var>v</var>) and takes the <strong>cheapest <var>v</var> that still forward-reaches every already-fixed successor's label</strong> <var>φ</var>, tested by BFS reachability in <var>G</var><sub>B</sub>; sinks take the free argmin. The reachability constraint is a cheap enforcement of consistency: it discards exactly the inconsistent tie-breaks that a rigid pointwise argmin would introduce. Dropping the constraint (a pure per-vertex <em>argmin</em> of <var>D</var>+<var>B</var>−<var>E</var>) regresses <span class="mono">merge</span> and <span class="mono">y_split</span> under perturbation.</p>
+
+<h3 id="sec-6-4"><span class="no">6.4</span> Tree-exactness</h3>
+
+<p>When <var>G</var><sub>A</sub> is a tree or polytree — branches never rejoin, the common case for an <em>oriented junction neighbourhood</em> — forward–backward with the reachability guard is <strong>exact</strong>. Over a 512-configuration perturbation sweep the backward step is eliminated on <span class="mono">chain</span>, <span class="mono">merge</span>, and <span class="mono">y_split</span>; only the reconvergent <span class="mono">diamond</span> still fails (<a href="#sec-7">§7</a>). The <span class="mono">require_tree=True</span> flag asserts this regime by testing the undirected skeleton's cyclomatic number |<var>E</var>|−|<var>V</var>|+<var>C</var> = 0 (interior degree-2 samples never add a cycle, so a diamond is detected at any sampling density), raising <span class="mono">NotATree</span> on any reconvergence and thereby guaranteeing the exact regime for callers who know their source branches without rejoining. In the shipped point-mode matcher junction consistency is <em>region</em>-consistency: coincident <var>A</var>-vertices at a junction land within one sample step of a common <var>B</var>-location (measured spread 0.00 m on all clean synthetic scenarios). Vertex-exact resolution is what the conditioning solvers of <a href="#sec-7-3">§7.3</a> add.</p>
+
+<h2 id="sec-7"><span class="no">7</span> Reconvergence and the direction term</h2>
+
+<h3 id="sec-7-1"><span class="no">7.1</span> The diamond</h3>
+
+<p>An undirected cycle in a DAG occurs exactly where two directed paths from a common ancestor <strong>re-meet</strong>: a diamond, split <var>j</var><sub>1</sub> → {up, down} → merge <var>j</var><sub>2</sub>. On such a cycle the two sides share <em>both</em> endpoints. Forward–backward lets each side choose its own label where they re-meet — <var>B</var>[<var>j</var><sub>1</sub>][<var>v</var>] sums the two branches as if each could independently pick <var>j</var><sub>2</sub> — so they can disagree, producing a backward step. The reachability guard of <a href="#sec-6-3">§6.3</a> cannot repair this, because the loop constrains <var>j</var><sub>1</sub> and <var>j</var><sub>2</sub> <em>simultaneously in both directions</em>; message passing is exact only on graphs with no undirected cycle (Pearl, 1988).</p>
+
+<p>Two identities the paper must therefore <em>not</em> misuse. The realised total <var>C</var><sub>total</sub> = Σ<sub><var>a</var></sub> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)) from the final labels is always correct. But the conserved-flow reading Σ<sub>sinks <var>t</var></sub> <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>t</var>][<var>v</var>] (reported as <span class="mono">dp_cost</span>) and the junction quantity <var>D</var>[<var>j</var>][<var>φ</var>] + <var>B</var>[<var>j</var>][<var>φ</var>] − <var>E</var> are <strong>exact only on a tree</strong>. On a reconvergent diamond, <var>D</var> and <var>B</var> each conserve flow on their own, but combining them at one junction is weighted by <em>both</em> splits, which no longer cancel: on a perturbed diamond <var>D</var>+<var>B</var>−<var>E</var> at the split reads 112.8 while Σ<sub>sinks</sub> <em>min</em> <var>D</var> = 96.9, whereas on every tree they agree exactly. Hence <span class="mono">dp_cost</span> is a <strong>DP diagnostic, not a bound</strong> on realised cost in either direction (<a href="#sec-8-2">§8.2</a>).</p>
+
+<h3 id="sec-7-2"><span class="no">7.2</span> The nearest-vs-corresponding limit</h3>
+
+<p>The honest diagnosis is that the diamond's failure is <strong>not</strong> a loop-labelling failure. Pin the split <var>j</var><sub>1</sub> to the <em>exact</em> <var>B</var>-split and solve the two branches (<a href="#sec-7-3">§7.3</a>): in <strong>point mode</strong>, both <var>A</var>-branches still collapse onto the <em>nearer</em> <var>B</var>-edge, because that genuinely costs less drift — the correct one-to-one split never attains the minimum at <em>any</em> cut label. This is a <strong>nearest-vs-corresponding</strong> drift limit intrinsic to point mode, not a reconvergence artefact. Empirically, on the synthetic <span class="mono">diamond</span> the routing stays correct under rigid shifts up to 6 m and collapses only at 8 m (four sequence-rule violations), where the collapse <em>is</em> the true minimum-drift point-mode optimum. The cure is an emission that rewards heading agreement — the <strong>segment/bearing</strong> term of (4) — not more loop machinery (<a href="#sec-7-4">§7.4</a>).</p>
+
+<h3 id="sec-7-3"><span class="no">7.3</span> Exact conditioning as a reference solver</h3>
+
+<p>To <em>confirm</em> the above diagnosis rather than assume it, the repository ships two independent <strong>exact</strong> conditioning solvers (<span class="mono">dag_conditioning.py</span>), used as reference and validation and deliberately <strong>not wired into</strong> the production matcher ([REF]). Both minimise the same realised cost Σ<sub><var>a</var></sub> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)) on the same exact base, so they must return equal-cost labellings on any DAG — a mutual cross-check.</p>
+
+<p><strong>Shared exact base — min-sum belief propagation on the polytree</strong> (<span class="mono">_forest_solve</span>). The unary potential is drift plus folded pinned-boundary reachability constraints; the pairwise potential is the directed reachability constraint <var>φ</var>(head) ∈ Reach(<var>φ</var>(tail)); the solver is exact on any tree and returns +∞ (via the BP value itself, not a re-summed drift) for an infeasible pinning. Conditioning is exact <em>only because this base is</em>: an earlier heuristic base (the <a href="#sec-6-3">§6.3</a> backtrack) made the two solvers disagree on <span class="mono">double_diamond</span> (29.09 vs 29.33) before exact BP replaced it and both agreed at 28.93.</p>
+
+<p><strong>Solver 1 — recursive minimum-vertex-cut</strong> (<span class="mono">_solve_recursive</span>): if the free part is a forest, run BP; otherwise pick a small vertex cut <var>S</var> (usually one junction), enumerate its <var>K</var>-nearest <var>B</var>-candidates, pin, and recurse into the now-independent components. Cost (#cand)<sup><var>w</var></sup> with <var>w</var> the largest single cut (usually 1) — <strong>linear</strong> in the number of loops.</p>
+
+<p><strong>Solver 2 — one-shot minimum feedback-vertex-set</strong> (<span class="mono">_solve_fvs</span>): enumerate <em>all</em> label combinations of the whole set <var>F</var> jointly and solve the forest <var>G</var><sub>A</sub>−<var>F</var> for each. Cost (#cand)<sup>|<var>F</var>|</sup> — <strong>exponential</strong>. The FVS <em>characterises</em> completion (<var>F</var> = ∅ ⇔ tree ⇔ shipped solver already exact) but is a poor way to <em>label</em>.</p>
+
+<p>Minimum cut and FVS are NP-hard in general (Karp, 1972), but local junction graphs are tiny, so a greedy separator suffices. The cross-validation is comprehensive: <strong>238/238</strong> checks pass, with <span class="mono">diamond</span> recursive = fvs = 24.581 and <span class="mono">double_diamond</span> (|<var>F</var>| = 2, the case that separates the two methods) = 28.930 for both — below either heuristic value — and BP matching independent brute-force enumeration on tiny cases. The mutual-agreement harness itself localised two real correctness bugs, both triggered by anti-parallel <var>B</var> geometry (normal in real conflation): infeasibility mis-scored as cheap-and-valid, and backward arcs internal to the pinned set left unchecked (<a href="#appx-c">Appendix C</a>). The honest lesson: <em>the labels are the hard part; conditioning buys exactness only on top of an exact forest solver.</em></p>
+
+<h3 id="sec-7-4"><span class="no">7.4</span> The direction term as the fix</h3>
+
+<p>Because the diamond collapse is a point-mode drift phenomenon (<a href="#sec-7-2">§7.2</a>), the principled remedy is to carry the segment/bearing emission (4) into the DAG recurrence, so that a branch running against the flow of the nearer <var>B</var>-edge pays a heading penalty and the corresponding split re-attains the minimum. Lifting the DAG recurrence to segment+bearing states is <strong>[DESIGN]</strong> future work; the shipped point-mode matcher retains the <a href="#sec-6-3">§6.3</a> reachability-guarded backtrack, with the conditioning solvers standing alongside as reference and validation rather than as production components.</p>
+
+<h2 id="sec-8"><span class="no">8</span> Extraction, cost, and coverage weight</h2>
+
+<h3 id="sec-8-1"><span class="no">8.1</span> Arc-length re-match</h3>
+
+<p>The DP and backtrack decide <strong>topology</strong> — which <var>B</var>-edges each <var>A</var>-edge maps to; a final pass decides <strong>position</strong>. Pure point-to-point placement picks the nearest <var>B</var>-vertex per <var>A</var>-vertex, which under a large lateral offset compresses <var>A</var> onto part of a <var>B</var>-edge and produces a <strong>jump</strong> at the junction: coincident <var>A</var>-vertices land far apart in <var>B</var>, graph-reachable but discontinuous. Instead, each <var>A</var>-vertex is placed at its <strong>arc-length fraction</strong> between an entry and exit point on its route's <var>B</var>-polyline (snapped to the nearest route vertex). For an <var>A</var>-vertex at fractional arc-length <var>s</var> along its edge (<span class="mono">_arclength_rematch</span>),</p>
+
+<div class="eq" id="eq-10"><span class="tag">(10)</span>
+target(<var>v</var><sub><var>i</var></sub>) = entry + (exit − entry) · <span class="frac"><span><var>s</var><sub><var>i</var></sub> − <var>s</var><sub>min</sub></span><span><var>s</var><sub>max</sub> − <var>s</var><sub>min</sub></span></span>
+</div>
+
+<p>so the <var>B</var>-position advances <em>proportionally</em> to <var>A</var> and the match is jump-free. Entry and exit are <strong>free</strong> at a DAG source/sink (the endpoint projects onto the route and may land mid-edge) and <strong>pinned</strong> only at an interior junction. A <strong>boundary-yield</strong> rule handles a shared boundary <var>B</var>-edge when consecutive <var>A</var>-edges over- or undershoot a junction: the edge is awarded to whichever <var>A</var>-edge covers it with <em>more</em> vertices, else the junction-end pins to the far end and reintroduces a backward step. A known residual: under an extreme lateral shift a branch edge can physically overlap a neighbouring trunk <var>B</var>-edge, so the DP mis-assigns topology; the re-match cannot repair a wrong topology, and validation flags the resulting backward step rather than hiding it.</p>
+
+<h3 id="sec-8-2"><span class="no">8.2</span> The realised-cost objective</h3>
+
+<p>Reported quality is the <strong>realised</strong> drift from the final consistent labels,</p>
+
+<div class="eq" id="eq-11"><span class="tag">(11)</span>
+<var>C</var><sub>total</sub> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span><var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>))
+</div>
+
+<p>with the headline metric the <strong>average drift</strong> <var>C</var><sub>total</sub>/(matched steps) in metres — comparable to graph-DTW's mean matched distance — supplemented by a per-<var>A</var>-edge breakdown and coverage percentage. Two quantities must <em>not</em> be reported as the total. The DP optimum Σ<sub>sinks</sub> <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>t</var>][<var>v</var>] (<span class="mono">dp_cost</span>) is the DP's discrete, unconstrained optimum — every sink free to pick its cheapest sampled <var>B</var>-vertex — and is <strong>tree-only exact</strong> and <strong>not a bound</strong> on <var>C</var><sub>total</sub> (<a href="#sec-7-1">§7.1</a>): continuous re-match can beat it, while joint-consistency-under-shift pushes far above it (shift-4 <span class="mono">y_split</span>: dp 61.7 vs realised 108.3; diamond: dp 96.9 vs realised 183.6). Likewise the junction identity <var>D</var>+<var>B</var>−<var>E</var> is a tree-only reading. Equation (9) is the definition; the DP quantities are diagnostics.</p>
+
+<p>On a <em>clean tree</em> the DP optimum and the realised total coincide, which makes a worked check transparent. For a Y-split <var>a</var><sub>0</sub>→<var>a</var><sub>1</sub>, <var>a</var><sub>1</sub>→{<var>a</var><sub>2</sub>,<var>a</var><sub>3</sub>} with every vertex drifting 0.2 m and outdeg(<var>a</var><sub>1</sub>) = 2:</p>
+
+<div class="eq">
+<var>D</var>[<var>a</var><sub>0</sub>] = 0.2, &nbsp;&nbsp; <var>D</var>[<var>a</var><sub>1</sub>] = 0.4, &nbsp;&nbsp; <var>D</var>[<var>a</var><sub>2</sub>] = 0.2 + ½ · 0.4 = 0.4, &nbsp;&nbsp; <var>D</var>[<var>a</var><sub>3</sub>] = 0.4
+</div>
+
+<p>so Σ<sub>sinks {<var>a</var><sub>2</sub>,<var>a</var><sub>3</sub>}</sub> = 0.8 = 0.2 · 4, matching the four-vertex realised drift. A naive sum without the 1/outdeg split would double-count <var>a</var><sub>0</sub>,<var>a</var><sub>1</sub> and give 1.2 — wrong. <var>C</var><sub>total</sub> is count-weighted (hence density-dependent through <span class="mono">step_meters</span>); a length-weighted, density-independent objective is future work.</p>
+
+<h3 id="sec-8-3"><span class="no">8.3</span> The coverage weight <var>α</var></h3>
+
+<p>The plain horizontal move re-pays the emission at <em>every</em> covered <var>B</var>-vertex (<a href="#sec-4-2">§4.2</a>), so a 1:<var>N</var> coverage costs linearly in <var>B</var>'s sampling density — an artefact of <var>Δ</var>, not of geometry. The weight <var>α</var> = <span class="mono">horizontal_weight</span> ≤ 1 discounts it. The correct fix discounts the <strong>emission</strong>, not the carried cost:</p>
+
+<div class="eq" id="eq-12"><span class="tag">(12)</span>
+<var>D</var>[<var>a</var>][<var>v</var>] = <var>α</var> <var>E</var>(<var>a</var>,<var>v</var>) + <em>min</em>( (H), (A) ), &nbsp;&nbsp; <var>α</var> = { <span class="mono">horizontal_weight</span> if (H) wins (coverage extends); 1 if (A) wins (a new <var>A</var>-vertex's first match) }
+</div>
+
+<p>Multiplying the <em>carried</em> cost instead would make the horizontal edge weight negative for <var>α</var> &lt; 1, letting the DP "launder" cost by wandering through cheap <var>B</var>-vertices (measured to shift <span class="mono">diamond</span> average drift 0.55 → 0.74); that variant was rejected. Unrolling a coverage <var>v</var><sub>0</sub> → … → <var>v</var><sub><var>k</var></sub> at drift <var>δ</var>, the first vertex is entered by A-advance at full <var>δ</var> and each of the remaining <var>k</var> = <var>N</var>−1 by a discounted horizontal step, so the coverage costs</p>
+
+<div class="eq" id="eq-13"><span class="tag">(13)</span>
+<var>δ</var> ( 1 + <var>α</var> <var>k</var> )
+</div>
+
+<p>Thus <var>α</var> = 1 reproduces today's per-<var>B</var>-point charge bit-for-bit, while <var>α</var> → 0 charges a coverage essentially once, sampling-independently (e.g. at <var>δ</var> = 0.4, <var>N</var> = 30: 12.0 m at <var>α</var> = 1, 0.4 m at <var>α</var> = 0). Because <var>α</var> <var>E</var> ≥ 0 remains a non-negative per-step emission, <var>D</var> never decreases along a coverage — <strong>no laundering</strong> — and the routing decision <em>min</em>(H,A) on carried cost is unchanged; only the charged emission differs. Implementation-wise <var>α</var> = 1 leaves the Dijkstra untouched, while <var>α</var> ≠ 1 resolves (H) in <var>B</var>-topological order (<span class="mono">_relax_alpha</span>), with bounded iterative relaxation as a cyclic-<var>B</var> fallback (the map contracts for <var>α</var> &lt; 1). The weight lives inside the <em>decision</em> cost <var>D</var>,<var>B</var>, so it shifts <em>which</em> <var>φ</var> is selected — toward more 1:<var>N</var> coverage — while the reported total and average drift remain the raw drift Σ<var>E</var> of that <var>φ</var>. It is orthogonal to the junction-label and nearest-vs-corresponding problems; default <var>α</var> = 1.0.</p>
+
+<h3 id="sec-8-4"><span class="no">8.4</span> Output</h3>
+
+<p><span class="mono">match_dag_to_bgraph</span> returns the junction-consistent label map <var>φ</var>, a per-vertex match record, terse per-<var>A</var>-edge routes, the realised <span class="mono">total_cost</span> (9), the <span class="mono">dp_cost</span> diagnostic, <span class="mono">avg_drift</span>, the source/sink sets, and optional debug tables. The downstream-ready face is <strong><span class="mono">routes_detail</span></strong> (<span class="mono">_route_detail</span>), one entry per <var>A</var>-edge carrying its route, average and maximum drift, point count, covered length, the boundary start/end positions, and per-edge partial-coverage fractions <var>t</var><sub>from</sub>, <var>t</var><sub>to</sub> ∈ [0,1] (fractional arc-length along each <var>B</var>-edge in its own travel direction, via <span class="mono">shapely.project(normalized=True)</span>) with <span class="mono">cover_pct</span> = (<var>t</var><sub>to</sub> − <var>t</var><sub>from</sub>) · 100. Only the first and last <var>B</var>-edge of a route can be partial; interior edges are full. These fractions are computed purely from the arc-length-re-matched <var>φ</var> and the <var>B</var>-geometries with no extra DP, so the emitted coverage is directed and jump-free by construction.</p>
+
+<h2 id="sec-9"><span class="no">9</span> Evaluation</h2>
+
+<p>All numbers in this section were regenerated by running the repository's own validators and <span class="mono">pytest</span> suites under the project interpreter on branch <span class="mono">drop-max-drift-threshold</span>. The scenarios are the hand-built synthetic DAGs in <span class="mono">dag_synthetic.py</span>; the solvers are the shipped point-mode matcher <span class="mono">match_dag_to_bgraph</span> (<span class="mono">dag_dtw.py</span>) and the two exact reference solvers in <span class="mono">dag_conditioning.py</span>. Unless stated otherwise, every figure exercises <strong>point-mode</strong> DAG-DTW (<var>E</var>(<var>a</var>,<var>v</var>) = &lVert;<var>a</var>−<var>v</var>&rVert;) on small directed edge lists in a plain-metre CRS — no DuckDB, no real OSM/NVDB data. The synthetic target <var>B</var> sits a constant <var>δ</var> = 0.4 m off <var>A</var>, so the intended match is unambiguous and a per-vertex drift of ≈ 0.4 m is the "clean" signal. Segment+bearing DAG-DTW is future work (Section 11) and is <strong>not</strong> what these numbers measure; the evaluation's purpose is to establish the <em>correctness and exactness</em> of the DP, the junction-resolution machinery, and the conditioning solvers, not accuracy on field data.</p>
+
+<h3 id="sec-9-1"><span class="no">9.1</span> Test-suite totals</h3>
+
+<p>The method ships with an executable specification: two <span class="mono">pytest</span> modules and two standalone assertion validators. All pass.</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-2"><b>Table 2 —</b> Test-suite and validator totals.</caption>
+  <thead><tr><th>Suite</th><th>Checks</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">tests/test_dag_dtw.py</span></td><td>23</td><td>23 passed</td></tr>
+    <tr><td><span class="mono">tests/test_dag_conditioning.py</span></td><td>15</td><td>38 passed (combined with the above)</td></tr>
+    <tr><td><span class="mono">scripts/dag_dtw_validate.py</span></td><td>62</td><td>62 / 62 passed</td></tr>
+    <tr><td><span class="mono">scripts/dag_conditioning_validate.py</span></td><td>238</td><td>238 / 238 passed</td></tr>
+  </tbody>
+</table></div>
+
+<h3 id="sec-9-2"><span class="no">9.2</span> The synthetic scenario ladder</h3>
+
+<p>Five scenarios span the structural regimes that matter for junction resolution, ordered by their minimum-feedback-vertex-set size <var>&#124;F&#124;</var> — the number of vertices that must be removed from <var>G</var><sub><var>A</var></sub>'s undirected skeleton to leave a forest. <var>&#124;F&#124;</var> = 0 is exactly the tree/polytree regime in which forward–backward resolution is provably exact (Section 7); <var>&#124;F&#124;</var> &gt; 0 marks a reconvergent diamond, the hard case. At the clean pose every <var>A</var>-edge routes to its intended <var>B</var>-edge and all three sequence rules hold (Section 9.3).</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-3"><b>Table 3 —</b> Synthetic scenario ladder, ordered by min-FVS size.</caption>
+  <thead><tr><th>Scenario</th><th><var>A</var>-edges</th><th>sources</th><th>sinks</th><th><var>&#124;F&#124;</var></th><th>clean <span class="mono">avg_drift</span> (m)</th><th>clean routing</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">chain</span></td><td>2</td><td>1</td><td>1</td><td>0</td><td>0.40</td><td>all correct</td></tr>
+    <tr><td><span class="mono">y_split</span></td><td>3</td><td>1</td><td>2</td><td>0</td><td>0.37</td><td>all correct</td></tr>
+    <tr><td><span class="mono">merge</span></td><td>3</td><td>2</td><td>1</td><td>0</td><td>0.38</td><td>all correct</td></tr>
+    <tr><td><span class="mono">diamond</span></td><td>6</td><td>1</td><td>1</td><td>1</td><td>0.55</td><td>all 6 correct</td></tr>
+    <tr><td><span class="mono">double_diamond</span></td><td>11</td><td>1</td><td>1</td><td>2</td><td>0.37</td><td>all 11 correct</td></tr>
+  </tbody>
+</table></div>
+
+<p>The clean <span class="mono">avg_drift</span> tracks the injected offset <var>δ</var> = 0.4 m closely; the <span class="mono">diamond</span>'s slightly higher 0.55 m reflects that its two branches lie at ± a small lateral gap from the shared corridor, so the mean vertex drift is genuinely above <var>δ</var> even at the correct labelling.</p>
+
+<h3 id="sec-9-3"><span class="no">9.3</span> Sequence-rule validation</h3>
+
+<p><span class="mono">check_sequence_rules</span> (<span class="mono">dag_dtw.py:89</span>) enforces three invariants on the matched result:</p>
+
+<ol>
+  <li><strong>Monotone forward <var>B</var>-walk</strong> — every <var>G</var><sub><var>A</var></sub> arc <var>a</var> → <var>a</var>′ maps to a forward-reachable <var>B</var>-step <var>φ</var>(<var>a</var>) → <var>φ</var>(<var>a</var>′) (no backward or disconnected jump).</li>
+  <li><strong>Connected route</strong> — consecutive <var>B</var>-edges of each emitted route are graph-connected in <var>G</var><sub><var>B</var></sub>.</li>
+  <li><strong>No teleport</strong> — the <var>B</var>-advance tracks the <var>A</var>-advance (a <var>B</var>-step exceeding the <var>A</var>-step by ≥ 3 m signals a junction jump).</li>
+</ol>
+
+<p>At the clean pose all violation counts are zero, and every junction is <em>region</em>-consistent: the coincident <var>A</var>-vertices meeting at a junction land within one sample step of a common <var>B</var>-location, with a measured spread of 0.00 m on all scenarios.</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-4"><b>Table 4 —</b> Sequence-rule violation counts and junction region-consistency at the clean pose.</caption>
+  <thead><tr><th>Scenario</th><th>forward-walk</th><th>connected-route</th><th>teleport</th><th>junction region-consistency</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">chain</span></td><td>0</td><td>0</td><td>0</td><td>1/1 junctions span 0.00 m</td></tr>
+    <tr><td><span class="mono">y_split</span></td><td>0</td><td>0</td><td>0</td><td>1/1 (3 coincident <var>A</var>-vertices, 0.00 m)</td></tr>
+    <tr><td><span class="mono">merge</span></td><td>0</td><td>0</td><td>0</td><td>1/1 (3 <var>A</var>-vertices, 0.00 m)</td></tr>
+    <tr><td><span class="mono">diamond</span></td><td>0</td><td>0</td><td>0</td><td>4/4 junctions, all 0.00 m</td></tr>
+    <tr><td><span class="mono">double_diamond</span></td><td>0</td><td>0</td><td>0</td><td>8/8 junctions, all 0.00 m</td></tr>
+  </tbody>
+</table></div>
+
+<p>We stress that v1 junction consistency is <em>region</em>-consistency (within one sample step), not vertex-exact labelling; vertex-exact resolution is what the conditioning solvers of Section 9.5 add.</p>
+
+<h3 id="sec-9-4"><span class="no">9.4</span> Perturbation sweep — robustness of the shipped matcher</h3>
+
+<p>We translate all of <var>A</var> by a rigid shift (point mode has no bearing term, so a rigid shift is the adversarial stressor) and record <span class="mono">avg_drift</span>, the sequence-rule verdict, and whether routing stays correct. The three tree scenarios (<var>&#124;F&#124;</var> = 0) remain clean at <em>every</em> shift tested; only the reconvergent <span class="mono">diamond</span> eventually breaks.</p>
+
+<p><span class="mono">y_split</span> (representative tree — clean throughout):</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-5"><b>Table 5 —</b> <span class="mono">y_split</span> perturbation sweep (rigid shift).</caption>
+  <thead><tr><th>shift (m)</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>6</th><th>8</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">avg_drift</span> (m)</td><td>0.37</td><td>0.88</td><td>1.84</td><td>2.64</td><td>3.49</td><td>5.15</td><td>6.87</td></tr>
+    <tr><td>seq-rule</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+    <tr><td>routing</td><td colspan="7">correct at every shift (<span class="mono">B_main</span> / <span class="mono">B_left</span> / <span class="mono">B_right</span>)</td></tr>
+  </tbody>
+</table></div>
+
+<p><span class="mono">diamond</span> (the residual — reconvergent, <var>&#124;F&#124;</var> = 1):</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-6"><b>Table 6 —</b> <span class="mono">diamond</span> perturbation sweep (rigid shift).</caption>
+  <thead><tr><th>shift (m)</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>6</th><th>8</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">avg_drift</span> (m)</td><td>0.55</td><td>1.11</td><td>1.93</td><td>2.93</td><td>3.82</td><td>5.72</td><td>5.04</td></tr>
+    <tr><td>seq-rule</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td><strong>VIOLATED (4)</strong></td></tr>
+    <tr><td>routing</td><td>correct</td><td>correct</td><td>correct</td><td>correct</td><td>correct</td><td>correct</td><td><strong>collapsed</strong></td></tr>
+  </tbody>
+</table></div>
+
+<p>At shift = 8 m the two <var>A</var>-branches collapse onto the nearer <var>B</var>-edge (<span class="mono">A_dn→[B_dn,B_dn2]</span>, <span class="mono">A_up→[B_up,B_up2]</span>, and the two second-half branch edges onto the shared <span class="mono">B_out</span>), tripping four sequence-rule checks; the drop in <span class="mono">avg_drift</span> from 5.72 to 5.04 is precisely the symptom — the collapsed labelling is <em>cheaper</em> in point-mode drift than the correct one. This is the documented <strong>nearest-vs-corresponding</strong> limit (Section 10.1), and Section 9.5 shows it is confirmed by the exact solver to be the true point-mode optimum, i.e. it is a drift-objective limitation, not a loop-conditioning failure.</p>
+
+<h3 id="sec-9-5"><span class="no">9.5</span> Two exact conditioning solvers — mutual cross-validation</h3>
+
+<p><span class="mono">dag_conditioning.py</span> ships two independent exact solvers over a shared exact min-sum belief-propagation forest base (<span class="mono">_forest_solve</span>):</p>
+
+<ul>
+  <li><strong>recursive</strong> — recursive minimum-vertex-cut: cut a small separator (the min-FVS vertices), enumerate its nearby <var>B</var>-candidates, pin, split into now-independent components, and recurse. Cost (#cand)<sup><var>w</var></sup> with <var>w</var> the largest single cut (usually 1) — <strong>linear</strong> in the number of loops.</li>
+  <li><strong>fvs</strong> — one-shot minimum-feedback-vertex-set: enumerate <em>all</em> label combinations of the whole set <var>F</var> jointly, solving the forest <var>G</var><sub><var>A</var></sub> − <var>F</var> for each. Cost (#cand)<sup><var>&#124;F&#124;</var></sup> — <strong>exponential</strong> in the number of loops.</li>
+</ul>
+
+<p>Both minimise the <em>same</em> realized cost <var>C</var><sub>total</sub> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)) with the <em>same</em> exact forest solver, so on any DAG (full candidate set) they must return <strong>equal-cost</strong> labellings. That mutual agreement is the central invariant, and it doubles as a bug-finding harness (Section 10.2).</p>
+
+<p>The min-FVS size is the structural anchor: <var>&#124;F&#124;</var> = 0 ⇔ tree ⇔ the shipped forward–backward solver is already exact.</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-7"><b>Table 7 —</b> Min-FVS size <var>&#124;F&#124;</var> per scenario.</caption>
+  <thead><tr><th><span class="mono">chain</span></th><th><span class="mono">y_split</span></th><th><span class="mono">merge</span></th><th><span class="mono">diamond</span></th><th><span class="mono">double_diamond</span></th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td>0</td><td>0</td><td>1</td><td>2</td></tr>
+  </tbody>
+</table></div>
+
+<p><strong>recursive = fvs on the clean scenarios</strong> (cost = Σ drift over <var>A</var>-vertices; both certified backward-step-free):</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-8"><b>Table 8 —</b> Recursive vs fvs solver cost on the clean scenarios.</caption>
+  <thead><tr><th>Scenario</th><th>recursive</th><th>fvs</th><th>agree</th><th>backward steps (rec / fvs)</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">chain</span></td><td>7.200</td><td>7.200</td><td>yes</td><td>0 / 0</td></tr>
+    <tr><td><span class="mono">y_split</span></td><td>11.432</td><td>11.432</td><td>yes</td><td>0 / 0</td></tr>
+    <tr><td><span class="mono">merge</span></td><td>12.345</td><td>12.345</td><td>yes</td><td>0 / 0</td></tr>
+    <tr><td><span class="mono">diamond</span></td><td>24.581</td><td>24.581</td><td>yes</td><td>0 / 0</td></tr>
+    <tr><td><span class="mono">double_diamond</span></td><td>28.930</td><td>28.930</td><td>yes</td><td>0 / 0</td></tr>
+  </tbody>
+</table></div>
+
+<p><strong>Perturbation-sweep cross-check</strong> — over a rigid shift × rotate × noise grid (5 × 3 × 3 = 45 configs per scenario), recursive-cost equals fvs-cost in every configuration:</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-9"><b>Table 9 —</b> Recursive-vs-fvs agreement across the perturbation grid.</caption>
+  <thead><tr><th>Scenario</th><th>configs agreeing</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">chain</span></td><td>45 / 45</td></tr>
+    <tr><td><span class="mono">y_split</span></td><td>45 / 45</td></tr>
+    <tr><td><span class="mono">merge</span></td><td>45 / 45</td></tr>
+    <tr><td><span class="mono">diamond</span></td><td>45 / 45</td></tr>
+    <tr><td><span class="mono">double_diamond</span></td><td>45 / 45</td></tr>
+    <tr><td><strong>Total</strong></td><td><strong>225 / 225</strong></td></tr>
+  </tbody>
+</table></div>
+
+<p><strong>Brute-force exactness anchor</strong> — on cases small enough to enumerate the entire label space, the BP forest base equals the independent brute-force optimum:</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-10"><b><a href="#tbl-1">Table 1</a>0 —</b> BP forest base vs independent brute-force optimum.</caption>
+  <thead><tr><th>case</th><th>step (m)</th><th>BP cost</th><th>brute-force</th><th>grid</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">chain</span></td><td>15.0</td><td>1.600</td><td>1.600</td><td>4 <var>A</var> × 4 <var>B</var></td></tr>
+    <tr><td><span class="mono">chain</span></td><td>8.0</td><td>2.400</td><td>2.400</td><td>6 <var>A</var> × 6 <var>B</var></td></tr>
+  </tbody>
+</table></div>
+
+<p><strong>Candidate-restriction safety</strong> — on the single-loop <span class="mono">diamond</span> (<var>&#124;F&#124;</var> = 1), the K-nearest candidate restriction gives the same optimum as the full candidate set: 24.581 = 24.581 (all 44 <var>B</var>-candidates). The <span class="mono">double_diamond</span> (<var>&#124;F&#124;</var> = 2) is the scenario that genuinely <em>separates</em> the two solvers — two sequential size-1 cuts (recursive) versus joint enumeration of two vertices (fvs) — and both still reach 28.930, <em>below</em> either heuristic value.</p>
+
+<p>Together with the standalone validator's <strong>238 / 238</strong> passing checks, this establishes the two solvers as an exact, mutually-verifying oracle for the labelling problem.</p>
+
+<h3 id="sec-9-6"><span class="no">9.6</span> The <var>α</var> horizontal weight</h3>
+
+<p>The horizontal emission weight <var>α</var> ≤ 1 discounts the emission charged on a 1:<var>N</var> coverage step, making 1:<var>N</var> matches (one <var>A</var>-vertex riding a run of denser <var>B</var>-vertices) sampling-independent rather than linear in <var>B</var>'s density. A coverage over an <var>N</var>-vertex <var>B</var>-run at drift <var>δ</var> costs <var>δ</var>&#8201;(1 + <var>α</var>(<var>N</var>−1)); verified directly against <span class="mono">_relax_alpha</span> at <var>δ</var> = 0.4 m:</p>
+
+<div class="tblwrap"><table>
+  <caption id="tbl-11"><b><a href="#tbl-1">Table 1</a>1 —</b> Coverage-run cost (m) at <var>δ</var> = 0.4 m for three <var>α</var> settings.</caption>
+  <thead><tr><th><var>N</var></th><th><var>α</var> = 1.0</th><th><var>α</var> = 0.5</th><th><var>α</var> = 0.0</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>0.40</td><td>0.40</td><td>0.40</td></tr>
+    <tr><td>6</td><td>2.40</td><td>1.40</td><td>0.40</td></tr>
+    <tr><td>30</td><td>12.00</td><td>6.20</td><td>0.40</td></tr>
+  </tbody>
+</table></div>
+
+<p>Three properties are confirmed by the tests:</p>
+
+<ul>
+  <li><strong><var>α</var> = 1 is a no-op</strong> — bit-for-bit identical <var>φ</var> and <span class="mono">total_cost</span> to the default on every scenario (<span class="mono">test_horizontal_weight_one_is_unchanged</span>).</li>
+  <li><strong>Monotone, no laundering</strong> — the accumulated cost never decreases along a coverage run, <var>D</var>[<var>a</var>][<var>v</var>] ≥ <var>D</var>[<var>a</var>][<var>v</var>−1], checked at <var>α</var> = 0.3. Because the discount is applied to the non-negative emission <var>α</var><var>E</var> ≥ 0 rather than to the carried cost, no negative horizontal edge weight is ever created, so the DP cannot "launder" cost by wandering through cheap <var>B</var>-vertices.</li>
+  <li><strong><var>α</var> &lt; 1 genuinely extends coverage</strong> — on the shifted <span class="mono">diamond</span>, <var>α</var> = 0.3 produces different (more 1:<var>N</var>) routes than <var>α</var> = 1.0, confirming it is a real, controllable knob orthogonal to junction labelling.</li>
+</ul>
+
+<h2 id="sec-10"><span class="no">10</span> Discussion &amp; Limitations</h2>
+
+<p>The evaluation supports a specific, bounded claim: on directed source DAGs whose undirected skeleton is a <strong>tree/polytree</strong> (<var>&#124;F&#124;</var> = 0), the shipped point-mode matcher produces junction-consistent, sequence-rule-clean matchings and is robust to large rigid perturbation; and the two conditioning solvers form an exact, mutually-validated oracle for the labelling problem on <em>any</em> DAG. The limitations below are equally important and are stated so the reader can calibrate what the method does and does not yet deliver.</p>
+
+<h3 id="sec-10-1"><span class="no">10.1</span> The diamond needs the direction term, not more loop machinery</h3>
+
+<p>The one residual failure in the perturbation sweep is the reconvergent <span class="mono">diamond</span> under extreme rigid shift (≥ 8 m in the synthetic case), where the two <var>A</var>-branches collapse onto the single nearer <var>B</var>-edge. It would be tempting to read this as a failure of forward–backward message passing on an undirected cycle — and indeed message passing is only exact on trees (Section 7). But the honest finding, confirmed by the exact conditioning solver, is that <strong>the collapse is the true minimum-drift optimum in point mode</strong>: at that shift, both branches riding the nearer <var>B</var>-edge genuinely costs <em>less</em> total drift than the correct correspondence, and the correct split never appears at any cut label. The exact solvers reproduce the collapse, so conditioning <em>reduces but does not remove</em> this error.</p>
+
+<p>The diagnosis is therefore that this is a property of the <strong>objective</strong>, not of the inference. A middle-to-middle point distance is blind to a segment rotating about its own centre and, under a large lateral offset, to which of two nearby parallel edges is the <em>corresponding</em> one rather than the <em>nearest</em> one. The fix is the direction term — segment+bearing emission (Section 11) — which pins heading and separates parallel edges by orientation. No amount of additional loop-conditioning machinery in point mode can recover the correspondence, because the correspondence is not the point-mode minimum.</p>
+
+<div class="note">A related caveat is that the DP's internal optimum must not be reported as the realized cost. The realized total <var>C</var><sub>total</sub> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)) is always correct, but the conserved-flow reading <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim">sinks</span></span> <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>t</var>][<var>v</var>] (<span class="mono">dp_cost</span>) and the joint-junction score <var>D</var>[<var>j</var>][<var>v</var>] + <var>B</var>[<var>j</var>][<var>v</var>] − <var>E</var>(<var>j</var>,<var>v</var>) are exact <em>only on a tree</em>. On a reconvergent diamond the two tables' splits do not cancel when combined at one junction; measured on a perturbed diamond, <var>D</var>+<var>B</var>−<var>E</var> at the split reads 112.8 while <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim">sinks</span></span> <em>min</em> <var>D</var> reads 96.9 (they agree exactly on every tree). <span class="mono">dp_cost</span> is thus a DP diagnostic, not a bound on the realized cost in either direction, and only <span class="mono">total_cost</span> should be reported as a quality figure.</div>
+
+<h3 id="sec-10-2"><span class="no">10.2</span> Adversarial cross-validation found and fixed two real bugs</h3>
+
+<p>Because the two conditioning solvers must return equal-cost labellings, any disagreement localizes a defect — the cross-validation is itself the test harness. This workflow surfaced and fixed two genuine correctness bugs, both triggered by <strong>anti-parallel <var>B</var> geometry</strong> (a <var>B</var>-edge digitized against <var>A</var>'s flow, which is entirely normal in real conflation, e.g. NVDB <span class="mono">is_reverse</span> twins):</p>
+
+<ol>
+  <li><strong>Infeasibility mis-scored as cheap-and-valid.</strong> <span class="mono">_forest_solve</span> had re-summed drift over an <span class="mono">argmin=0</span> fallback of an all-∞ belief, so an <em>infeasible</em> pinned boundary (an <var>A</var>-arc forced to run backward in <var>B</var>) was scored as a cheap valid labelling, undercutting the true optimum. The fix returns the BP value <em>itself</em> as the cost (+∞ when infeasible), propagating infeasibility instead of laundering it.</li>
+  <li><strong>Inter-<var>F</var> (internal) backward arcs invisible.</strong> The forest solver only folded pinned-to-free constraints, so arcs <em>internal</em> to the pinned set that ran backward in <var>B</var> were never checked. The fix (<span class="mono">_pins_feasible</span>) rejects any pinning whose internal arcs run backward.</li>
+</ol>
+
+<p>An earlier symptom of the same class: on <span class="mono">double_diamond</span> the two methods first <em>disagreed</em> (29.09 vs 29.33) when the forest base was the heuristic reachability-guarded backtrack; replacing that base with exact min-sum belief propagation made both agree at 28.930 — <em>below</em> either heuristic value. The lesson generalizes: conditioning buys exactness only on top of an exact forest solver, and the labels — not the loop structure — are the hard part.</p>
+
+<h3 id="sec-10-3"><span class="no">10.3</span> Candidate-restriction divergence on adversarial multi-loop inputs</h3>
+
+<p>With a full candidate set (<span class="mono">cand_k</span> = <var>N</var><sub><var>B</var></sub>) the two solvers agree on <em>any</em> DAG. Under the default K-nearest restriction (<span class="mono">CAND_K = 12</span>) they agree on realistic conflation inputs and on all five scenarios in the sweep, but they <em>can</em> diverge — while both still returning <em>valid</em> labellings — on <strong>adversarial anti-parallel, multi-loop</strong> geometry, where the feasible optimum's labels sit beyond the nearest few <var>B</var>-vertices. This is a candidate-restriction limit that raising <span class="mono">cand_k</span> closes, documented rather than a solver defect.</p>
+
+<h3 id="sec-10-4"><span class="no">10.4</span> Scope and shipped-vs-reference status</h3>
+
+<p>Three scope caveats bound the claims:</p>
+
+<ul>
+  <li><strong>The conditioning solvers are reference/validation only.</strong> They are deliberately <em>not</em> wired into <span class="mono">match_dag_to_bgraph</span>; the shipped matcher keeps the reachability-guarded forward–backward backtrack. Consequently shipped junction consistency is <em>region</em>-consistent (within one sample step), not vertex-exact — vertex-exact resolution requires the conditioning solvers, which remain a validation oracle in v1.</li>
+  <li><strong>Point-mode, synthetic-only numbers.</strong> Every figure in Section 9 is point-mode DAG-DTW on the five hand-built DAGs at a constant offset <var>δ</var> = 0.4 m in a plain-metre CRS. They validate the correctness and exactness of the DP and the conditioning, <em>not</em> accuracy on real OSM↔NVDB data, and not the segment+bearing regime that the design intends for production.</li>
+  <li><strong>Count-weighted objective.</strong> <var>C</var><sub>total</sub> sums per-vertex emissions and is therefore density-dependent through <span class="mono">step_meters</span>; a length-weighted, density-independent objective is future work.</li>
+</ul>
+
+<h2 id="sec-11"><span class="no">11</span> Conclusion &amp; Future Work</h2>
+
+<p>We have presented a projection-based, directed-graph generalization of dynamic time warping for road-network conflation. Graph-DTW aligns a single directed <var>A</var>-edge to a local directed target graph <var>G</var><sub><var>B</var></sub> that may contain cycles, replacing DTW's scalar predecessor with a Dijkstra over <var>G</var><sub><var>B</var></sub>'s arcs on the horizontal move; DAG-DTW lifts the source from a path to a connected acyclic subgraph <var>G</var><sub><var>A</var></sub>, solving a whole junction neighbourhood in one topological sweep so that <var>A</var>-edges meeting at a junction agree on where that junction lands in <var>B</var>. The 1/outdeg split factor gives a conserved cost-flow that makes each vertex's emission contribute exactly once across all sinks for any DAG shape, and forward–backward resolution with a reachability-guarded backtrack pins junctions jointly. On tree/polytree sources this regime is exact and robust; two independent exact conditioning solvers — recursive minimum-vertex-cut and one-shot minimum-feedback-vertex-set over a shared min-sum belief-propagation forest base — provide a mutually-validated oracle (225/225 agreement, 238/238 validator checks, brute-force-anchored) that both certifies the tree regime and characterizes the reconvergent one.</p>
+
+<p>The evaluation is deliberately honest about the boundary of the shipped point-mode matcher: the reconvergent diamond under extreme lateral offset collapses onto the nearer <var>B</var>-edge, and the exact solver confirms this is the genuine point-mode minimum-drift optimum. The correspondence problem there is a property of the <em>objective</em>, not the inference. Two lines of future work follow directly.</p>
+
+<p><strong>Segment+bearing DAG-DTW ("v2").</strong> The single most important extension is to carry the middle-to-middle segment emission with the bearing term,</p>
+
+<div class="eq" id="eq-14"><span class="tag">(14)</span>
+  <var>E</var>(<var>i</var>,<var>e</var>) = &lVert;mid(<var>a</var><sub><var>i</var></sub>,<var>a</var><sub><var>i</var>+1</sub>) − mid(<var>u</var>,<var>v</var>)&rVert; + <var>λ</var>&#8201;<var>d</var><sub>circ</sub>(<var>θ</var>(<var>s</var><sub><var>i</var></sub>), <var>θ</var>(<var>e</var>)),
+</div>
+
+<p>already shipped and tested in graph-DTW, into the DAG DP. Because the bearing term pins heading and separates geometrically-close parallel edges by orientation, it is the principled fix for the nearest-vs-corresponding collapse — not more loop machinery. The recommended working regime (<var>λ</var> ∈ [1, 5]) is established for graph-DTW; porting it to the joint junction solve is the natural next milestone.</p>
+
+<p><strong>Exact reconvergence in the shipped matcher.</strong> The conditioning solvers exist and are validated but live alongside the matcher as a reference oracle. Wiring the recursive minimum-vertex-cut solver into <span class="mono">match_dag_to_bgraph</span> — invoked only on the (typically tiny, <var>&#124;F&#124;</var>-small) reconvergent components a real network presents — would upgrade shipped junction consistency from region-consistent to vertex-exact on genuine loops at linear cost in the number of loops, while leaving the exact tree regime untouched.</p>
+
+<p>Further work includes a length-weighted, sampling-density-independent objective; a symmetric <var>B</var> → <var>A</var> reconciliation pass; and a cyclic-source fallback to per-edge graph-DTW for local components whose source side is not acyclic (the matcher presently raises <span class="mono">NotADAG</span>). Validation on real OSM↔NVDB corridors — the setting the method was designed for — is the essential empirical next step beyond the synthetic correctness suite reported here.</p>
+
+<h2>References</h2>
+<div class="refs">
+<p>Alt, H., &amp; Godau, M. (1995). Computing the Fréchet distance between two polygonal curves. <em>International Journal of Computational Geometry &amp; Applications</em>, 5(1–2), 75–91.</p>
+<p>Berndt, D. J., &amp; Clifford, J. (1994). Using dynamic time warping to find patterns in time series. In <em>AAAI-94 Workshop on Knowledge Discovery in Databases</em> (pp. 359–370).</p>
+<p>Brakatsoulas, S., Pfoser, D., Salas, R., &amp; Wenk, C. (2005). On map-matching vehicle tracking data. In <em>Proc. 31st VLDB</em> (pp. 853–864).</p>
+<p>Dechter, R. (1990). Enhancement schemes for constraint processing: Backjumping, learning, and cutset decomposition. <em>Artificial Intelligence</em>, 41(3), 273–312.</p>
+<p>Dijkstra, E. W. (1959). A note on two problems in connexion with graphs. <em>Numerische Mathematik</em>, 1, 269–271.</p>
+<p>Kahn, A. B. (1962). Topological sorting of large networks. <em>Communications of the ACM</em>, 5(11), 558–562.</p>
+<p>Newson, P., &amp; Krumm, J. (2009). Hidden Markov map matching through noise and sparseness. In <em>Proc. 17th ACM SIGSPATIAL GIS</em> (pp. 336–343).</p>
+<p>Pearl, J. (1988). <em>Probabilistic Reasoning in Intelligent Systems: Networks of Plausible Inference</em>. Morgan Kaufmann.</p>
+<p>Quddus, M. A., Ochieng, W. Y., &amp; Noland, R. B. (2007). Current map-matching algorithms for transport applications: State-of-the-art and future research directions. <em>Transportation Research Part C</em>, 15(5), 312–328.</p>
+<p>Saalfeld, A. (1988). Conflation: Automated map compilation. <em>International Journal of Geographical Information Systems</em>, 2(3), 217–228.</p>
+<p>Sakoe, H., &amp; Chiba, S. (1978). Dynamic programming algorithm optimization for spoken word recognition. <em>IEEE Trans. Acoustics, Speech, and Signal Processing</em>, 26(1), 43–49.</p>
+<p>Viterbi, A. J. (1967). Error bounds for convolutional codes and an asymptotically optimum decoding algorithm. <em>IEEE Trans. Information Theory</em>, 13(2), 260–269.</p>
+<p>Volz, S. (2006). An iterative approach for matching multiple representations of street data. In <em>ISPRS Workshop on Multiple Representation and Interoperability of Spatial Data</em> (pp. 101–110).</p>
+<p>White, C. E., Bernstein, D., &amp; Kornhauser, A. L. (2000). Some map matching algorithms for personal navigation assistants. <em>Transportation Research Part C</em>, 8(1–6), 91–108.</p>
+</div>
+
+
+<div class="appx">
+
+<h2 id="appx-a">Appendix A — DP recurrences</h2>
+
+<p>This appendix states the two cost tables of DAG-DTW in full, derives the split factor and the conserved-flow identity, and works the Y-split example by hand. Throughout, <var>G</var><sub>A</sub> is the source local DAG (topologically ordered <var>A</var>-vertices) and <var>G</var><sub>B</sub> the target local directed graph (<var>B</var>-vertices, possibly cyclic). <var>E</var>(<var>a</var>,<var>v</var>) is the emission of <a href="#appx-e">Appendix E</a>; in point mode <var>E</var>(<var>a</var>,<var>v</var>) = ‖<var>a</var>−<var>v</var>‖. Apred(<var>a</var>) and Bpred(<var>v</var>) denote graph-predecessors in <var>G</var><sub>A</sub> and <var>G</var><sub>B</sub>, and outdeg(<var>a</var>) the out-degree of <var>a</var> in <var>G</var><sub>A</sub>.</p>
+
+<h3 id="appx-a-1">A.1 The forward table <var>D</var></h3>
+
+<p><var>D</var>[<var>a</var>][<var>v</var>] is the minimum cost to align the source graph <strong>down to <var>a</var></strong> — with every <var>A</var>-edge topologically above <var>a</var> covered — ending with <var>a</var> labelled at <var>B</var>-vertex <var>v</var>. The defining recurrence has two operators, a <em>horizontal</em> move (H) in which <var>B</var> advances while <var>a</var> stays fixed, and an <em>advance</em> move (A) in which the sweep moves to <var>a</var> from its <var>A</var>-predecessors:</p>
+
+<div class="eq" id="eq-15"><span class="tag">(15)</span>
+<var>D</var>[<var>a</var>][<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <em>min</em>( <em>min</em><sub><var>v</var>′∈Bpred(<var>v</var>)</sub> <var>D</var>[<var>a</var>][<var>v</var>′] <span class="mono">(H)</span> , <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var>′∈Apred(<var>a</var>)</span></span> <span class="frac"><span>1</span><span>outdeg(<var>a</var>′)</span></span> <em>min</em><sub><var>v</var>′∈Bpred(<var>v</var>)∪{<var>v</var>}</sub> <var>D</var>[<var>a</var>′][<var>v</var>′] <span class="mono">(A)</span> )
+</div>
+
+<p>The (A) branch encodes two structural facts:</p>
+
+<ol>
+<li><strong>Sum over Apred(<var>a</var>) (coverage, not routing).</strong> At a merge, the costs of <em>all</em> incoming <var>A</var>-edges are <strong>added</strong>. <var>D</var>[<var>a</var>][<var>v</var>] is not "the cheapest path through <var>G</var><sub>A</sub> to <var>a</var>"; it is "the cheapest way to align <strong>everything above <var>a</var></strong>, with <var>a</var> pinned to <var>v</var>." A <em>min</em> here would silently discard an incoming branch. The rule is therefore <em>sum over branches, min over <var>B</var>-positions</em>.</li>
+<li><strong>The three DTW moves are the chain special case.</strong> When <var>a</var> has a single predecessor <var>a</var>′ with outdeg(<var>a</var>′) = 1, the (A) sum is a single term <em>min</em><sub><var>v</var>′∈Bpred(<var>v</var>)∪{<var>v</var>}</sub> <var>D</var>[<var>a</var>′][<var>v</var>′], and expanding the outer <em>min</em> gives exactly</li>
+</ol>
+
+<div class="eq" id="eq-16"><span class="tag">(16)</span>
+<var>D</var>[<var>a</var>][<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <em>min</em>( <var>D</var>[<var>a</var>][<var>v</var>′] <span class="mono">horizontal</span> , <var>D</var>[<var>a</var>′][<var>v</var>] <span class="mono">vertical</span> , <var>D</var>[<var>a</var>′][<var>v</var>′] <span class="mono">diagonal</span> ), &nbsp; <var>v</var>′∈Bpred(<var>v</var>)
+</div>
+
+<p>i.e. the graph-DTW recurrence (vertical = <var>A</var> advances on the same <var>B</var>-vertex, horizontal = <var>B</var> advances on the same <var>A</var>-vertex, diagonal = both), with the scalar DTW predecessor <var>j</var>−1 replaced by "any <var>B</var>-predecessor of <var>v</var>" (Sakoe &amp; Chiba, 1978; Berndt &amp; Clifford, 1994). DAG-DTW is thus a strict superset of graph-DTW: a single-path <var>G</var><sub>A</sub> <em>is</em> graph-DTW.</p>
+
+<p><strong>Boundary conditions arise with no special-casing.</strong></p>
+<ul>
+<li><em>Source <var>A</var>-vertex</em> (Apred(<var>a</var>) = ∅): the (A) sum is empty = 0, so <var>D</var>[<var>a</var>][<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) — <strong>free entry</strong> at every source <var>B</var>-vertex.</li>
+<li><em>Sink <var>A</var>-vertex</em>: no outgoing edge consumes <var>D</var>[<var>a</var>][·]; the sweep leaves it free — <strong>free exit</strong>.</li>
+</ul>
+
+<p><strong>The horizontal move is a Dijkstra.</strong> Operator (H) self-references <var>D</var>[<var>a</var>][·] <em>within the same <var>A</var>-vertex</em>, and <var>G</var><sub>B</sub> may contain directed cycles (roundabouts, loops), so there is no topological sweep of <var>B</var>. For fixed <var>a</var> it is a single-source-free non-negative shortest-path problem, solved exactly by Dijkstra (Dijkstra, 1959) over <var>G</var><sub>B</sub>'s arcs, re-paying the emission on each relaxation (so one <var>A</var>-vertex may ride a <em>run</em> of <var>B</var>-vertices when <var>B</var> is denser than <var>A</var>). Concretely (<span class="mono">_dp_table</span>, <span class="mono">dag_dtw.py:184</span>), one first seeds every <var>B</var>-vertex with the emission plus the split-scaled predecessor sum,</p>
+
+<div class="eq" id="eq-17"><span class="tag">(17)</span>
+seed[<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var>′∈Apred(<var>a</var>)</span></span> <span class="frac"><span><var>D</var>[<var>a</var>′][<var>v</var>]</span><span>outdeg(<var>a</var>′)</span></span>
+</div>
+
+<p>and then relaxes <var>D</var>[<var>a</var>][<var>w</var>] ← <em>min</em>( <var>D</var>[<var>a</var>][<var>w</var>], <var>D</var>[<var>a</var>][<var>u</var>] + <var>E</var>(<var>a</var>,<var>w</var>) ) over arcs <var>u</var>→<var>w</var> of <var>G</var><sub>B</sub>. The diagonal term <var>v</var>′∈Bpred(<var>v</var>) is subsumed as the first relaxation of the Dijkstra. Because <var>G</var><sub>A</sub> is acyclic, every <var>D</var>[<var>a</var>′][·] with <var>a</var>′∈Apred(<var>a</var>) is already finalised when the sweep reaches <var>a</var> (Kahn, 1962), so no outer iteration-to-convergence is ever needed.</p>
+
+<h3 id="appx-a-2">A.2 The split factor and the conserved-flow identity</h3>
+
+<p>The factor 1/outdeg(<var>a</var>′) is what makes the objective well-defined on an arbitrary DAG. Read it as a <strong>cost-flow conservation law</strong>: each <var>A</var>-vertex divides its accumulated cost equally among its outgoing <var>A</var>-edges, so that — summed across <em>all</em> sinks — every vertex's emission <var>E</var> is counted <strong>exactly once</strong>, for any DAG shape (diamonds included). Chain and merge vertices have outdeg = 1 (factor 1, no division); only <em>split</em> vertices divide.</p>
+
+<p>Formally, define the <strong>conserved-flow reading</strong></p>
+
+<div class="eq" id="eq-18"><span class="tag">(18)</span>
+<span class="mono">dp_cost</span> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim">sinks <var>t</var></span></span> <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>t</var>][<var>v</var>]
+</div>
+
+<p><strong>Identity (tree case).</strong> If <var>G</var><sub>A</sub> is a tree/polytree, then <span class="mono">dp_cost</span> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)) = <var>C</var><sub>total</sub>, the realized cost of the labelling <var>φ</var> recovered by backtracking.</p>
+
+<p><em>Argument.</em> On a tree, orient each <var>A</var>-vertex <var>a</var> toward the unique sink(s) it feeds. Along the (A) branch, <var>a</var>'s emission <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)) is multiplied on the way to each descendant sink by the product of 1/outdeg over the splits on that path. The number of sink-paths leaving <var>a</var> equals ∏ outdeg over exactly those same splits, and each path carries an equal share; the shares therefore sum to 1. Summing <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>t</var>][<var>v</var>] over the sinks re-assembles each emission with total weight 1, so the sum telescopes to <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)). ∎</p>
+
+<p><strong>Caveat (reconvergent case).</strong> The identity is <strong>tree-only</strong>. On a reconvergent diamond (<a href="#appx-c">Appendix C</a>), <var>D</var> conserves flow on its own and the backward table <var>B</var> conserves flow on its own, but combining them at one junction is weighted by <em>both</em> splits, which do not cancel; <span class="mono">dp_cost</span> is then a DP diagnostic, <strong>not</strong> a bound on <var>C</var><sub>total</sub> in either direction. The reported quality metric is always the realized</p>
+
+<div class="eq" id="eq-19"><span class="tag">(19)</span>
+<var>C</var><sub>total</sub> = <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>))
+</div>
+
+<p>read off the <em>final</em> consistent <var>φ</var> (§A.4, <a href="#appx-b">Appendix B</a>), never <span class="mono">dp_cost</span>.</p>
+
+<h3 id="appx-a-3">A.3 The backward table <var>B</var></h3>
+
+<p><var>B</var>[<var>a</var>][<var>v</var>] is the mirror of <var>D</var>: the minimum cost to align <var>a</var>→ sinks with <var>a</var> pinned at <var>v</var>. It is produced by the <strong>same</strong> <span class="mono">_dp_table</span> after reversing <em>both</em> graphs — <var>G</var><sub>A</sub>'s sinks become sources (topological order reversed) and every <var>G</var><sub>B</sub> arc is flipped — and replacing the split factor by the <strong>symmetric 1/indeg</strong>, so conserved flow holds in the reverse direction too:</p>
+
+<div class="eq" id="eq-20"><span class="tag">(20)</span>
+<var>B</var>[<var>a</var>][<var>v</var>] = <var>E</var>(<var>a</var>,<var>v</var>) + <em>min</em>( <em>min</em><sub><var>v</var>′∈Bsucc(<var>v</var>)</sub> <var>B</var>[<var>a</var>][<var>v</var>′] , <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var>′∈Asucc(<var>a</var>)</span></span> <span class="frac"><span>1</span><span>indeg(<var>a</var>′)</span></span> <em>min</em><sub><var>v</var>′∈Bsucc(<var>v</var>)∪{<var>v</var>}</sub> <var>B</var>[<var>a</var>′][<var>v</var>′] )
+</div>
+
+<p>where Bsucc / Asucc are successors and indeg the in-degree in <var>G</var><sub>A</sub>. <var>D</var> and <var>B</var> together drive the junction resolution of <a href="#appx-b">Appendix B</a>.</p>
+
+<h3 id="appx-a-4">A.4 Worked Y-split example</h3>
+
+<p>Take the clean Y-split: <var>A</var>-vertices <var>a</var><sub>0</sub>→<var>a</var><sub>1</sub>, then <var>a</var><sub>1</sub>→<var>a</var><sub>2</sub> and <var>a</var><sub>1</sub>→<var>a</var><sub>3</sub>, so <var>a</var><sub>0</sub> is the source, <var>a</var><sub>1</sub> the split (outdeg(<var>a</var><sub>1</sub>) = 2), <var>a</var><sub>2</sub>,<var>a</var><sub>3</sub> the sinks. Suppose every <var>A</var>-vertex drifts a constant <var>δ</var> = 0.2 onto its intended <var>B</var>-vertex, and (for a clean hand-check) that the horizontal and diagonal moves never beat the vertical advance, so each <var>D</var> picks up one <var>E</var> = 0.2 plus its split-scaled predecessor.</p>
+
+<div class="eq" id="eq-21"><span class="tag">(21)</span>
+<var>D</var>[<var>a</var><sub>0</sub>] = 0.2 &nbsp;&nbsp;(source: free entry, <var>E</var> only)<br>
+<var>D</var>[<var>a</var><sub>1</sub>] = 0.2 + <span class="frac"><span>1</span><span>1</span></span>·<var>D</var>[<var>a</var><sub>0</sub>] = 0.2 + 0.2 = 0.4 &nbsp;&nbsp;(outdeg(<var>a</var><sub>0</sub>) = 1)<br>
+<var>D</var>[<var>a</var><sub>2</sub>] = 0.2 + <span class="frac"><span>1</span><span>2</span></span>·<var>D</var>[<var>a</var><sub>1</sub>] = 0.2 + ½(0.4) = 0.4 &nbsp;&nbsp;(split share 1/outdeg(<var>a</var><sub>1</sub>) = ½)<br>
+<var>D</var>[<var>a</var><sub>3</sub>] = 0.2 + <span class="frac"><span>1</span><span>2</span></span>·<var>D</var>[<var>a</var><sub>1</sub>] = 0.4
+</div>
+
+<p>The conserved-flow reading over the two sinks is</p>
+
+<div class="eq" id="eq-22"><span class="tag">(22)</span>
+<span class="mono">dp_cost</span> = <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>a</var><sub>2</sub>][<var>v</var>] + <em>min</em><sub><var>v</var></sub> <var>D</var>[<var>a</var><sub>3</sub>][<var>v</var>] = 0.4 + 0.4 = 0.8 = 0.2·4
+</div>
+
+<p>which is exactly <var>δ</var> times the four <var>A</var>-vertices — each emission counted once. A <strong>naive sum without the split factor</strong> would give <var>D</var>[<var>a</var><sub>2</sub>] = <var>D</var>[<var>a</var><sub>3</sub>] = 0.2 + 0.4 = 0.6 and <span class="mono">dp_cost</span> = 1.2, double-counting <var>a</var><sub>0</sub> and <var>a</var><sub>1</sub>. Because the Y-split is a tree, the identity of §A.2 holds and <span class="mono">dp_cost</span> = <var>C</var><sub>total</sub> = 0.8; the two coincide here precisely because a clean tree's DP optimum is already junction-consistent.</p>
+
+<h2 id="appx-b">Appendix B — Junction resolution &amp; exactness</h2>
+
+<p>The DP of Appendix A produces two cost tables, not a labelling. This appendix explains why the labelling cannot be read off per-junction, gives the forward–backward joint estimator and the reachability-guarded backtrack that turn <var>D</var>,<var>B</var> into a consistent <var>φ</var>, and proves exactness on trees.</p>
+
+<h3 id="appx-b-1">B.1 Why per-junction argmin is inconsistent</h3>
+
+<p>Consider two routes <var>s</var><sub>1</sub>→<var>t</var><sub>1</sub> and <var>s</var><sub>2</sub>→<var>t</var><sub>2</sub> that pass through a common junction <var>j</var>∈<var>G</var><sub>A</sub>. Optimised independently, route 1 prefers <var>j</var> at one <var>B</var>-vertex and route 2 at a different one — but <var>j</var> carries only <strong>one</strong> label <var>φ</var>(<var>j</var>). A greedy per-sink backtrack that traces each route back from its own cheapest sink will have the two traces <strong>collide at <var>j</var></strong> with incompatible demands; forcing a single label satisfies one route and forces the other to take a <strong>backward step</strong> — a non-forward <var>B</var>-transition on a <var>G</var><sub>A</sub> arc, i.e. a route that must run against <var>B</var>'s digitisation to reach its next fixed label. Crucially this happens <em>even when every <var>A</var>-edge is mapped to the correct <var>B</var>-edge</em>: the failure is in the shared <strong>position</strong> of the junction, not the edge assignment. One therefore cannot assemble the whole matching from each-sink's-own-best pieces.</p>
+
+<h3 id="appx-b-2">B.2 The forward–backward joint estimator</h3>
+
+<p>The fix is to score each junction <strong>once, for everyone passing through it</strong>, using both tables. For a junction <var>A</var>-vertex <var>j</var>,</p>
+
+<div class="eq" id="eq-23"><span class="tag">(23)</span>
+<var>φ</var>(<var>j</var>) = <em>argmin</em><sub><var>v</var></sub> ( <var>D</var>[<var>j</var>][<var>v</var>] + <var>B</var>[<var>j</var>][<var>v</var>] − <var>E</var>(<var>j</var>,<var>v</var>) )
+</div>
+
+<p><var>D</var>[<var>j</var>][<var>v</var>] is the cheapest alignment of sources → <var>j</var> with <var>j</var> at <var>v</var>; <var>B</var>[<var>j</var>][<var>v</var>] the cheapest alignment of <var>j</var>→ sinks with <var>j</var> at <var>v</var>; their sum is the best <strong>whole-DAG</strong> cost among all matchings that keep <var>j</var> at <var>v</var>. The −<var>E</var>(<var>j</var>,<var>v</var>) removes the double count, since <var>j</var>'s own emission sits in both tables (<span class="mono">dag_dtw.py:522</span>). This is a min-sum message combination (Pearl, 1988): <var>D</var> and <var>B</var> are the incoming forward/backward messages at <var>j</var>, and the estimator marginalises everything else exactly on a tree.</p>
+
+<h3 id="appx-b-3">B.3 The reachability-guarded backtrack (shipped procedure)</h3>
+
+<p>The joint score alone still permits ties and near-ties that are mutually inconsistent across junctions. The shipped resolver (<span class="mono">dag_dtw.py:520–535</span>) therefore sweeps <var>A</var>-vertices in <strong>reverse-topological order</strong> and, at each non-sink <var>a</var>, scans <var>v</var> in <em>increasing</em> joint score <var>D</var>[<var>a</var>][<var>v</var>] + <var>B</var>[<var>a</var>][<var>v</var>] − <var>E</var>(<var>a</var>,<var>v</var>) and commits the <strong>cheapest <var>v</var> that still forward-reaches every already-fixed successor's label</strong> — a BFS reachability test in <var>G</var><sub>B</sub> from <var>v</var> to each <var>φ</var>(<var>a</var>′), <var>a</var>′∈Asucc(<var>a</var>). Sinks take the unconstrained argmin (free exit). The reachability constraint is the cheap enforcement of joint consistency: it discards exactly the inconsistent tie-breaks that a rigid per-vertex shift would create. Dropping the guard (pure per-vertex <em>argmin</em>(<var>D</var>+<var>B</var>−<var>E</var>)) measurably regresses <span class="mono">merge</span> and <span class="mono">y_split</span> under perturbation.</p>
+
+<p>A final <strong>arc-length re-match</strong> (Appendix F of the main text; <span class="mono">_arclength_rematch</span>, <span class="mono">dag_dtw.py:278</span>) then fixes the continuous <em>position</em> of each <var>A</var>-vertex on its route's <var>B</var>-polyline, so the DP decides topology and the re-match decides geometry jump-free.</p>
+
+<h3 id="appx-b-4">B.4 Tree-exactness</h3>
+
+<p><strong>Claim.</strong> If <var>G</var><sub>A</sub> is a tree/polytree (no two directed paths from a common ancestor re-meet), the forward–backward estimator with the reachability-guarded backtrack returns the globally minimum-<var>C</var><sub>total</sub> junction-consistent labelling.</p>
+
+<p><strong>Argument.</strong> On a tree, removing any junction <var>j</var> splits <var>G</var><sub>A</sub> into independent components — the "above <var>j</var>" subtree and each "below <var>j</var>" subtree, which share no other <var>A</var>-vertex. The forward message <var>D</var>[<var>j</var>][·] exactly summarises the optimal cost of the above part as a function of <var>φ</var>(<var>j</var>), and the backward messages summarise each below part; because the components are otherwise disjoint, their costs are additive and <var>D</var>[<var>j</var>][<var>v</var>] + <var>B</var>[<var>j</var>][<var>v</var>] − <var>E</var>(<var>j</var>,<var>v</var>) is the <em>exact</em> minimum whole-tree cost conditioned on <var>φ</var>(<var>j</var>) = <var>v</var> (standard min-sum exactness on a tree; Pearl, 1988). Sweeping in reverse-topological order and fixing each <var>j</var> to the cheapest reachability-feasible <var>v</var> commits labels only after all its descendants are fixed, so the reachability test is against already-optimal targets and never forces a suboptimal parent. Hence every junction receives its globally optimal consistent label, and no backward step is created. ∎</p>
+
+<p>Empirically (§G, 512-config perturbation sweep) the backward step is eliminated on <span class="mono">chain</span>, <span class="mono">merge</span>, and <span class="mono">y_split</span>; the only structure that still fails is the reconvergent <span class="mono">diamond</span>, which is <em>not</em> a tree and is treated in <a href="#appx-c">Appendix C</a>. <span class="mono">require_tree=True</span> (<span class="mono">dag_dtw.py:460</span>, via the cyclomatic number <var>E</var>−<var>V</var>+<var>C</var> = 0) asserts this exact regime for callers who know their source neighbourhood is a polytree; interior degree-2 sampling vertices never add a cycle, so a diamond is detected regardless of sampling density.</p>
+
+<h2 id="appx-c">Appendix C — Reconvergence conditioning</h2>
+
+<p>A tree is the exact regime (<a href="#appx-b">Appendix B</a>). This appendix treats the one structure that escapes it — a <strong>reconvergent diamond</strong> — and the two exact reference solvers (<span class="mono">dag_conditioning.py</span>) that resolve it. These solvers are <strong>[REF]</strong>: validated, and deliberately <em>not</em> wired into the shipped matcher, for the honest reason established at the end.</p>
+
+<h3 id="appx-c-1">C.1 The structural problem</h3>
+
+<p>An undirected cycle in a DAG occurs exactly where two directed paths from a common ancestor <strong>re-meet</strong>: a diamond with split <var>j</var><sub>1</sub>→{up,down}→ merge <var>j</var><sub>2</sub>. On such a cycle the two branches share <strong>both</strong> endpoints. Forward–backward lets each side choose its own label where the sides re-meet — <var>B</var>[<var>j</var><sub>1</sub>][<var>v</var>] sums the branches <em>as if each could independently pick <var>j</var><sub>2</sub></em> — so the two disagree and a backward step appears. The reachability guard of Appendix B is insufficient because the loop constrains <var>j</var><sub>1</sub> and <var>j</var><sub>2</sub> <strong>simultaneously in both directions</strong>; min-sum message passing is exact only when the graph has no undirected cycle (Pearl, 1988).</p>
+
+<p>Two facts follow that the paper must state to avoid over-claiming (verified on a perturbed diamond): <var>D</var>+<var>B</var>−<var>E</var> at the split reads 112.8 while <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim">sinks</span></span> <em>min</em> <var>D</var> reads 96.9 — they agree exactly on every tree but <strong>not</strong> here — and neither equals the realized <var>C</var><sub>total</sub> (diamond <span class="mono">dp_cost</span> = 96.9 vs realized 183.6 under a joint-consistent shift). So <span class="mono">dp_cost</span> is a DP diagnostic, not a bound.</p>
+
+<h3 id="appx-c-2">C.2 The exact min-sum belief-propagation forest solver</h3>
+
+<p>Both conditioning solvers rest on one exact base, <span class="mono">_forest_solve</span> (<span class="mono">dag_conditioning.py:140</span>): min-sum (max-product) belief propagation on a <strong>polytree</strong> (Pearl, 1988). The model is a pairwise MRF over <var>A</var>-vertex labels:</p>
+
+<ul>
+<li><strong>Unary potential</strong> <var>ψ</var><sub><var>a</var></sub>(<var>v</var>) = <var>E</var>(<var>a</var>,<var>v</var>) plus any folded constraints from pinned-boundary reachability (an <var>A</var>-vertex adjacent to a pinned junction inherits a hard +∞ where it cannot forward-reach that pin).</li>
+<li><strong>Pairwise potential</strong> on each <var>G</var><sub>A</sub> arc <var>a</var>→<var>a</var>′: <var>ψ</var><sub><var>a</var>,<var>a</var>′</sub>(<var>v</var>,<var>v</var>′) = 0 if <var>v</var>′∈Reach<sub><var>G</var><sub>B</sub></sub>(<var>v</var>) (the directed reachability constraint <var>φ</var>(head)∈Reach(<var>φ</var>(tail))) and +∞ otherwise.</li>
+</ul>
+
+<p>On any tree this returns the exact minimum, and — the correctness-critical detail — it returns the <strong>BP value itself</strong> (+∞ for an infeasible pinning), never a drift re-summed off an <span class="mono">argmin</span> fallback (see §C.5). Conditioning is exact <em>only because this base is exact</em>; the reachability-guarded backtrack of Appendix B is a heuristic and cannot serve as the base (§C.5).</p>
+
+<h3 id="appx-c-3">C.3 Solver 1 — recursive minimum-vertex-cut</h3>
+
+<p><span class="mono">_solve_recursive</span>: if the free part of <var>G</var><sub>A</sub> is already a forest, run BP and return. Otherwise pick a small <strong>vertex cut</strong> <var>S</var> (in practice the min-feedback-vertex-set vertices, usually a single junction), enumerate its <var>K</var>-nearest <var>B</var>-candidates, pin <var>S</var> to each combination, and recurse into the now-<strong>independent</strong> components <var>G</var><sub>A</sub>−<var>S</var>. Complexity (#cand)<sup><var>w</var></sup> where <var>w</var> is the largest single cut (usually 1) — <strong>linear in the number of loops</strong>: a chain of <var>k</var> diamonds costs ∼ <var>k</var>·#cand.</p>
+
+<h3 id="appx-c-4">C.4 Solver 2 — one-shot minimum feedback-vertex-set</h3>
+
+<p><span class="mono">_solve_fvs</span> (with <span class="mono">min_feedback_vertex_set</span>): compute a minimum FVS <var>F</var> — the smallest vertex set whose removal leaves a forest — enumerate <strong>all</strong> joint label combinations of <var>F</var> at once, and solve the forest <var>G</var><sub>A</sub>−<var>F</var> with BP for each. Complexity (#cand)<sup>|<var>F</var>|</sup> — <strong>exponential in the number of loops</strong>. FVS <em>describes</em> when the problem is trivial (<var>F</var> = ∅ ⇔ tree ⇔ shipped solver already exact) but is a poor way to <em>label</em> at scale; it exists as the independent cross-check. Finding a minimum cut / FVS is NP-hard in general (Karp, 1972), but local junction graphs are tiny and a greedy separator suffices.</p>
+
+<h3 id="appx-c-5">C.5 Why the two must agree, and the bugs the agreement caught</h3>
+
+<p>Both solvers minimise the <strong>same</strong> realized cost <span class="qp3-sum"><span class="qp3-sumop">Σ</span><span class="qp3-sumlim"><var>a</var></span></span> <var>E</var>(<var>a</var>,<var>φ</var>(<var>a</var>)) with the <strong>same</strong> exact forest base, differing only in <em>how</em> they cut loops. Therefore, with a full candidate set, on <strong>any</strong> DAG they must return <strong>equal-cost</strong> labellings. This mutual invariant is itself the test harness: any disagreement localises a bug. Validation (<span class="mono">scripts/dag_conditioning_validate.py</span>, re-run 2026-07-07) passes <strong>238/238</strong> checks — e.g. <span class="mono">diamond</span> recursive = fvs = 24.581; <span class="mono">double_diamond</span> (|<var>F</var>| = 2, the case that actually separates the two methods) = 28.930 for both; BP = independent brute-force optimum on tiny cases; <var>K</var>-nearest = all-44-candidates on the diamond; 225/225 configs agree across the 5×3×3 perturbation grid.</p>
+
+<p>The invariant caught <strong>two genuine correctness bugs</strong> (commit <span class="mono">d289ffe</span>), both triggered by <em>anti-parallel</em> <var>B</var> geometry (a <var>B</var>-edge digitised against <var>A</var>'s flow — normal in real conflation):</p>
+
+<ol>
+<li><strong>Infeasibility mis-scored as cheap-and-valid.</strong> <span class="mono">_forest_solve</span> had re-summed drift over an <span class="mono">argmin=0</span> fallback of an all-∞ belief, so an infeasible pinned boundary (an <var>A</var>-arc forced backward in <var>B</var>) was scored as a cheap valid labelling, undercutting the true optimum. <em>Fix:</em> return the BP value itself as the cost, propagating +∞ instead of laundering it.</li>
+<li><strong>Inter-<var>F</var> backward arcs invisible.</strong> The forest solver folds only pinned-to-free constraints, so arcs <em>internal to the pinned set</em> running backward were never checked. <em>Fix:</em> <span class="mono">_pins_feasible</span> rejects any pinning whose internal arcs run backward in <var>B</var>.</li>
+</ol>
+
+<p>An earlier symptom of the same class: <span class="mono">double_diamond</span> first <em>disagreed</em> (29.09 vs 29.33) when the forest base was the heuristic Appendix-B backtrack; swapping in exact min-sum BP made both agree at 28.93 — <strong>below</strong> either heuristic value. The lesson the paper should carry: <em>the labels are the hard part; conditioning buys exactness only on top of an exact forest solver.</em></p>
+
+<h3 id="appx-c-6">C.6 The honest limit — the diamond needs the direction term, not a cut</h3>
+
+<p>The decisive finding is that the diamond's failure is <strong>not</strong> a loop-conditioning failure. Pin the split <var>j</var><sub>1</sub> to the <em>exact</em> <var>B</var>-split and solve the branches in <strong>point mode</strong>: both <var>A</var>-branches still collapse onto the nearer <var>B</var>-edge, because that genuinely costs <strong>less</strong> — the correct split never appears at <em>any</em> cut label. The exact conditioning solvers only <em>confirm</em> the collapse is the true minimum-drift optimum in point mode. Conditioning therefore <strong>reduces but does not remove</strong> the nearest-vs-corresponding error; the real fix is the <strong>direction term</strong> (segment / bearing emission, <a href="#appx-e">Appendix E</a>), which is why the shipped point-mode matcher keeps the Appendix-B backtrack and holds these solvers alongside as reference and validation only.</p>
+
+<h2 id="appx-d">Appendix D — Coverage weight <var>α</var></h2>
+
+<p>When <var>B</var> is sampled more densely than <var>A</var>, one <var>A</var>-vertex must <em>cover</em> a run of <var>B</var>-vertices via repeated horizontal (H) moves. The plain (H) move re-pays the emission <var>E</var>(<var>a</var>,·) at <strong>every</strong> covered <var>B</var>-vertex, so a 1:<var>N</var> match costs linearly in <var>B</var>'s sampling density — an arbitrary artefact of <var>Δ</var>. The <span class="mono">horizontal_weight</span> <var>α</var> ≤ 1 (<span class="mono">dag_dtw.py</span>, default 1.0) discounts it. <strong>[IMPL]</strong></p>
+
+<h3 id="appx-d-1">D.1 Discount the emission, not the carried cost</h3>
+
+<p>The subtle and important choice is <em>what</em> <var>α</var> multiplies. Multiplying the <strong>carried</strong> cost would make the horizontal edge weight negative for <var>α</var> &lt; 1, and the DP would then "launder" cost by wandering through cheap <var>B</var>-vertices (measured to shift <span class="mono">diamond</span> avg-drift 0.55 → 0.74; rejected). Instead <var>α</var> scales only the <strong>emission charged on a horizontal step</strong>:</p>
+
+<div class="eq" id="eq-24"><span class="tag">(24)</span>
+<var>D</var>[<var>a</var>][<var>v</var>] = <var>α</var> <var>E</var>(<var>a</var>,<var>v</var>) + <em>min</em>( (H), (A) ), &nbsp;&nbsp; <var>α</var> = { <span class="mono">horizontal_weight</span> if (H) wins (reached by extending coverage); &nbsp; 1 if (A) wins (a new <var>A</var>-vertex's first match) }
+</div>
+
+<p>The first match of any <var>A</var>-vertex is entered by an A-advance and pays the <em>full</em> emission; only the <em>continuation</em> of a coverage run is discounted.</p>
+
+<h3 id="appx-d-2">D.2 Coverage-cost derivation</h3>
+
+<p>Unroll a single coverage <var>v</var><sub>0</sub>→<var>v</var><sub>1</sub>→…→<var>v</var><sub><var>k</var></sub> at a constant drift <var>δ</var>. Vertex <var>v</var><sub>0</sub> is entered by A-advance (full <var>δ</var>); each of the remaining <var>k</var> vertices is entered by a horizontal move (<var>α</var><var>δ</var> each). The total coverage cost is</p>
+
+<div class="eq" id="eq-25"><span class="tag">(25)</span>
+<var>δ</var>( 1 + <var>α</var> <var>k</var> ), &nbsp;&nbsp; <var>k</var> = <var>N</var>−1 = extra covered <var>B</var>-vertices
+</div>
+
+<p><var>α</var> = 1 recovers today's per-<var>B</var>-point charge <var>δ</var><var>N</var> (bit-for-bit unchanged); <var>α</var> → 0 charges the coverage essentially <strong>once</strong> (<var>δ</var>, sampling-independent). Verified directly against <span class="mono">_relax_alpha</span> at <var>δ</var> = 0.4:</p>
+
+<div class="tblwrap"><table>
+<caption id="tbl-12"><b><a href="#tbl-1">Table 1</a>2 —</b> Coverage cost <var>δ</var>(1 + <var>α</var><var>k</var>) vs sampling density <var>N</var> at <var>δ</var> = 0.4.</caption>
+<thead><tr><th><var>N</var></th><th><var>α</var> = 1.0</th><th><var>α</var> = 0.5</th><th><var>α</var> = 0.0</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>0.40</td><td>0.40</td><td>0.40</td></tr>
+<tr><td>6</td><td>2.40</td><td>1.40</td><td>0.40</td></tr>
+<tr><td>30</td><td>12.00</td><td>6.20</td><td>0.40</td></tr>
+</tbody>
+</table></div>
+
+<h3 id="appx-d-3">D.3 No-laundering argument</h3>
+
+<p>Because <var>α</var><var>E</var> ≥ 0 is a <strong>non-negative</strong> local emission added on every step, the carried cost <var>D</var> is non-decreasing along a coverage run: <var>D</var>[<var>v</var><sub>i</sub>] ≥ <var>D</var>[<var>v</var><sub>i−1</sub>] for all <var>i</var> (checked at <var>α</var> = 0.3, <span class="mono">test_horizontal_weight_coverage_cost_and_monotone</span>). The routing decision <em>min</em>( (H), (A) ) operates on the <em>carried</em> cost, which <var>α</var> never touches; only the emission <em>charged</em> differs. Hence the DP can never lower its running total by wandering — the pathology that motivated rejecting the carried-cost variant is structurally impossible here.</p>
+
+<h3 id="appx-d-4">D.4 <var>B</var>-topological-order relaxation</h3>
+
+<p>Implementation detail: at <var>α</var> = 1 the Dijkstra is untouched (exact no-op — bit-for-bit identical <var>φ</var> and <span class="mono">total_cost</span> on every scenario, <span class="mono">test_horizontal_weight_one_is_unchanged</span>). At <var>α</var> ≠ 1 the (H) term is resolved in <strong><var>B</var>-topological order</strong> (<span class="mono">_relax_alpha</span>, <span class="mono">dag_dtw.py:252</span>), which lets the discounted emission propagate along a coverage run in one pass; on a <em>cyclic</em> <var>B</var> component a bounded iterative relaxation is the fallback, and it converges because <var>α</var> &lt; 1 makes the horizontal operator a contraction. <var>α</var> lives inside the <strong>decision</strong> cost (<var>D</var>,<var>B</var>), so it shifts <em>which</em> <var>φ</var> is chosen (toward more 1:<var>N</var> coverage — confirmed on the shifted <span class="mono">diamond</span>, <span class="mono">test_horizontal_weight_extends_coverage</span>), but the <strong>reported</strong> <span class="mono">total_cost</span> / <span class="mono">avg_drift</span> remain the raw Σ drift of that <var>φ</var>. It is orthogonal to the junction-label and nearest-vs-corresponding problems.</p>
+
+<h2 id="appx-e">Appendix E — Emission modes</h2>
+
+<p>The emission <var>E</var>(<var>a</var>,<var>v</var>) is the only place the geometry enters the DP, and is identical in graph-DTW and DAG-DTW. Two modes ship.</p>
+
+<h3 id="appx-e-1">E.1 Point mode (default) [IMPL]</h3>
+
+<div class="eq" id="eq-26"><span class="tag">(26)</span>
+<var>E</var>(<var>a</var>,<var>v</var>) = ‖<var>a</var>−<var>v</var>‖ &nbsp;&nbsp;(Euclidean, metres)
+</div>
+
+<p>A <var>B</var>-vertex is scored purely on proximity. This is the mode all synthetic numbers in Appendix G measure. Its limitation is exactly the nearest-vs-corresponding collapse of <a href="#appx-c">Appendix C</a>: distance alone cannot distinguish two parallel <var>B</var>-edges, so under a large lateral offset the DP prefers the <em>nearer</em> one even when it is the wrong correspondent.</p>
+
+<h3 id="appx-e-2">E.2 Segment mode (middle-to-middle + bearing) [IMPL]</h3>
+
+<p>Segment mode is a true (A-segment, B-arc)-state DP (<span class="mono">_segment_dp_pairs</span>, <span class="mono">graph_dtw.py:301</span>). Its state is (<var>i</var>,<var>e</var>) = "<var>A</var>-segment <var>i</var> rides <var>B</var>-arc <var>e</var> = <var>u</var>→<var>v</var>", and its per-state cost is the <strong>middle-to-middle</strong> distance plus an optional bearing term:</p>
+
+<div class="eq" id="eq-27"><span class="tag">(27)</span>
+<var>E</var>(<var>i</var>,<var>e</var>) = ‖ mid(<var>a</var><sub>i</sub>,<var>a</var><sub>i+1</sub>) − mid(<var>u</var>,<var>v</var>) ‖ + <var>λ</var>·<var>d</var><sub>circ</sub>( <var>θ</var>(<var>s</var><sub>i</sub>), <var>θ</var>(<var>e</var>) )
+</div>
+
+<p>where mid(·,·) is a segment midpoint, <var>θ</var> a heading, <var>λ</var> = <span class="mono">bearing_weight</span>, and <var>d</var><sub>circ</sub> ∈ [0°,180°] the circular heading difference (so a segment and its reverse are 180° apart). The three DP moves become A-advance on the same arc (<var>N</var>:1), arc-advance within a row (Dijkstra, 1:<var>N</var>), or both; the arc-state path is emitted as vertex pairs so <em>all</em> downstream grouping and metrics are shared with point mode.</p>
+
+<p><strong>Bearing convention.</strong> <var>θ</var>(<var>e</var>) is the direction of travel along the forward <var>B</var>-arc <var>u</var>→<var>v</var>; <var>θ</var>(<var>s</var><sub>i</sub>) the direction of the <var>A</var>-segment. Because the local graphs contain <strong>forward arcs only</strong> and a bidirectional road is two opposing directed edges, a heading difference near 180° signals a wrong-direction (reverse-twin) match and is penalised out.</p>
+
+<p><strong>Why the bearing term, not distance alone.</strong> A middle-to-middle distance is <em>blind to a segment rotating about its own middle</em> — two crossing segments sharing a midpoint have zero distance cost. The bearing term is what pins heading, so the recommended working configuration is <span class="mono">emission="segment"</span> with <var>λ</var> ∈ [1,5].</p>
+
+<h3 id="appx-e-3">E.3 The diamond-fix cost argument</h3>
+
+<p>This is the emission-level resolution of the Appendix-C limit. On the reconvergent diamond under lateral shift, point mode collapses both <var>A</var>-branches onto the nearer <var>B</var>-edge because the <em>distance</em> saved by collapsing genuinely exceeds the distance lost. But the correct correspondent branch and the nearer wrong branch <strong>differ in heading</strong>: collapsing forces the <var>A</var>-segment onto a <var>B</var>-arc whose bearing disagrees, incurring <var>λ</var>·<var>d</var><sub>circ</sub> on every covered segment. For <var>λ</var> large enough that the accumulated bearing penalty exceeds the distance saved, the true split re-emerges as the minimum. This is why the honest conclusion of Appendix C is "the diamond needs the direction term, not a cut": the direction term changes the <em>objective</em> so that the correct match is genuinely cheapest, whereas conditioning only searches the point-mode objective more exactly. Wiring segment+bearing into DAG-DTW ("v2") is the flagged <strong>[DESIGN]</strong> future work.</p>
+
+<p><em>Historical accuracy.</em> <span class="mono">docs/weighted_emission.md</span> <a href="#sec-2">§2</a>–<a href="#sec-10">§10</a> develop two earlier variants (endpoint-average distance; bearing charged only on diagonal moves); both were <strong>superseded</strong> by <a href="#sec-11">§11</a>'s middle-to-middle form, which is what ships. <span class="mono">emission="midpoint"</span> is a deprecated alias for <span class="mono">"segment"</span>. Only the middle-to-middle form should be cited.</p>
+
+<h2 id="appx-f">Appendix F — Complexity</h2>
+
+<p>Let <var>N</var> be the number of densified <var>A</var>-vertices in the local problem, and <var>V</var><sub>B</sub>,<var>E</var><sub>B</sub> the vertices and arcs of the local target graph <var>G</var><sub>B</sub>. All local graphs are small (a junction neighbourhood), so the polylogarithmic factors are on tiny inputs.</p>
+
+<p><strong>Emission.</strong> <var>E</var>(<var>a</var>,<var>v</var>) is <var>O</var>(1) (a distance, plus <var>O</var>(1) bearing in segment mode). The projection-based builder <span class="mono">build_local_digraph</span> (<span class="mono">graph_dtw.py:202</span>) constructs both vertex pools in <var>O</var>( (<var>V</var><sub>A</sub>+<var>V</var><sub>B</sub>)<sup>2</sup> ) worst case (each side's nodes projected onto the other side's edges), typically far less.</p>
+
+<p><strong>Graph-DTW (one <var>A</var>-edge).</strong> The DP has <var>N</var> rows; each row's horizontal move is a Dijkstra over <var>G</var><sub>B</sub>, <var>O</var>(<var>E</var><sub>B</sub> log <var>V</var><sub>B</sub>), and vertical/diagonal are <var>O</var>(<var>V</var><sub>B</sub>). Total per <var>A</var>-edge:</p>
+
+<div class="eq" id="eq-28"><span class="tag">(28)</span>
+<var>O</var>( <var>N</var>·<var>E</var><sub>B</sub> log <var>V</var><sub>B</sub> )
+</div>
+
+<p>Segment mode multiplies <var>V</var><sub>B</sub> by the arc-state factor but stays the same asymptotic form over <var>G</var><sub>B</sub>'s arcs.</p>
+
+<p><strong>DAG-DTW (one source neighbourhood).</strong> A single topological sweep of <var>G</var><sub>A</sub> (Kahn, 1962) visits each <var>A</var>-vertex once; per vertex it seeds (<var>O</var>(<var>V</var><sub>B</sub>) over predecessors) and runs one within-<var>a</var> Dijkstra. With <var>N</var> <var>A</var>-vertices,</p>
+
+<div class="eq" id="eq-29"><span class="tag">(29)</span>
+<var>O</var>( <var>N</var>·<var>E</var><sub>B</sub> log <var>V</var><sub>B</sub> ) forward + the same for the backward table <var>B</var> = <var>O</var>( <var>N</var>·<var>E</var><sub>B</sub> log <var>V</var><sub>B</sub> )
+</div>
+
+<p>Because <var>G</var><sub>A</sub> is acyclic, no iteration-to-convergence is needed; the <var>α</var> ≠ 1 relaxation adds at most a bounded constant number of passes on a cyclic <var>B</var> component (contraction, <a href="#appx-d">Appendix D</a>). The reachability-guarded backtrack (<a href="#appx-b">Appendix B</a>) is a reverse-topological sweep with a BFS reachability test per committed vertex, <var>O</var>( <var>N</var>·(<var>V</var><sub>B</sub>+<var>E</var><sub>B</sub>) ). Arc-length re-match is <var>O</var>(<var>N</var>). So the shipped matcher is <strong>linear in <var>N</var></strong> up to the small <var>E</var><sub>B</sub> log <var>V</var><sub>B</sub> target factor.</p>
+
+<p><strong>Conditioning solvers [REF].</strong> Let <var>w</var> be the largest single vertex cut and |<var>F</var>| the minimum-FVS size, and <var>c</var> = #cand the candidate count per pinned vertex (<var>K</var>-nearest, default 12).</p>
+<ul>
+<li><strong>Recursive min-vertex-cut:</strong> <var>O</var>(<var>c</var><sup><var>w</var></sup>) forest solves — <strong>linear in the number of loops</strong> (each loop cut independently, usually <var>w</var> = 1); a chain of <var>k</var> diamonds is ∼ <var>k</var>·<var>c</var>.</li>
+<li><strong>One-shot min-FVS:</strong> <var>O</var>(<var>c</var><sup>|<var>F</var>|</sup>) forest solves — <strong>exponential in the number of loops</strong>.</li>
+</ul>
+
+<p>Each forest solve is one exact min-sum BP pass over the polytree, <var>O</var>(<var>N</var>·<var>c</var><sup>2</sup>) in the worst pairwise case on tiny local graphs. Computing a minimum cut / FVS is NP-hard in general (Karp, 1972) but trivial at junction scale (a greedy separator suffices).</p>
+
+<h2 id="appx-g">Appendix G — Synthetic scenarios &amp; validation methodology</h2>
+
+<p>All correctness/exactness numbers are produced on hand-built synthetic DAGs (<span class="mono">network_matching/dag_synthetic.py</span>) in a plain-metre CRS — no DuckDB, no real OSM/NVDB data. The target <var>B</var> sits a constant <var>δ</var> = 0.4 m off <var>A</var>, so the intended match is unambiguous and drift ≈ 0.4 m is the "clean" signal. Everything below is <strong>point-mode</strong> DAG-DTW; segment+bearing is design/future work and is <em>not</em> what these numbers measure. Regenerated on branch <span class="mono">drop-max-drift-threshold</span> with <span class="mono">/home/kaveh/miniconda3/envs/network-matching/bin/python</span>.</p>
+
+<h3 id="appx-g-1">G.1 The scenario ladder</h3>
+
+<p>Five scenarios span the structural axis from trivial to two-loop, indexed by minimum-FVS size |<var>F</var>| (|<var>F</var>| = 0 ⇔ tree ⇔ shipped solver already exact):</p>
+
+<div class="tblwrap"><table>
+<caption id="tbl-13"><b><a href="#tbl-1">Table 1</a>3 —</b> Synthetic scenario ladder, indexed by minimum-FVS size.</caption>
+<thead><tr><th>Scenario</th><th><var>A</var>-edges</th><th>sources</th><th>sinks</th><th>|<var>F</var>|</th><th>clean <span class="mono">avg_drift</span> (m)</th><th>clean routing</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">chain</span></td><td>2</td><td>1</td><td>1</td><td>0</td><td>0.40</td><td>all correct</td></tr>
+<tr><td><span class="mono">y_split</span></td><td>3</td><td>1</td><td>2</td><td>0</td><td>0.37</td><td>all correct</td></tr>
+<tr><td><span class="mono">merge</span></td><td>3</td><td>2</td><td>1</td><td>0</td><td>0.38</td><td>all correct</td></tr>
+<tr><td><span class="mono">diamond</span></td><td>6</td><td>1</td><td>1</td><td>1</td><td>0.55</td><td>all 6 correct</td></tr>
+<tr><td><span class="mono">double_diamond</span></td><td>11</td><td>1</td><td>1</td><td>2</td><td>0.37</td><td>all 11 correct</td></tr>
+</tbody>
+</table></div>
+
+<p><span class="mono">chain</span>/<span class="mono">y_split</span>/<span class="mono">merge</span> are trees (exact regime, <a href="#appx-b">Appendix B</a>). <span class="mono">diamond</span> is the smallest reconvergent structure (|<var>F</var>| = 1); <span class="mono">double_diamond</span> (|<var>F</var>| = 2) is the case that actually <em>separates</em> recursive min-cut (two sequential size-1 cuts) from one-shot FVS (joint enumeration of 2 vertices).</p>
+
+<h3 id="appx-g-2">G.2 Perturbations</h3>
+
+<p>Two perturbation families are applied to the whole of <var>A</var>:</p>
+<ul>
+<li><strong>Rigid-shift sweep</strong> — translate all of <var>A</var> by a fixed offset (point mode has no bearing term, so a pure shift is the adversary). Shifts {0,1,2,3,4,6,8} m.</li>
+<li><strong>shift × rotate × noise grid</strong> — a 5×3×3 = 45-config grid per scenario for the conditioning cross-check.</li>
+</ul>
+
+<p>The three trees stay clean at <strong>every</strong> shift (routing correct, all sequence rules OK). Representative tree <span class="mono">y_split</span>:</p>
+
+<div class="tblwrap"><table>
+<caption id="tbl-14"><b><a href="#tbl-1">Table 1</a>4 —</b> <span class="mono">y_split</span> (tree) under rigid-shift sweep — stays clean at every shift.</caption>
+<thead><tr><th>shift (m)</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>6</th><th>8</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">avg_drift</span> (m)</td><td>0.37</td><td>0.88</td><td>1.84</td><td>2.64</td><td>3.49</td><td>5.15</td><td>6.87</td></tr>
+<tr><td>seq-rule</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+</tbody>
+</table></div>
+
+<p>The reconvergent <span class="mono">diamond</span> is the sole structure that eventually breaks:</p>
+
+<div class="tblwrap"><table>
+<caption id="tbl-15"><b><a href="#tbl-1">Table 1</a>5 —</b> <span class="mono">diamond</span> under rigid-shift sweep — collapses at shift = 8 m.</caption>
+<thead><tr><th>shift (m)</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>6</th><th>8</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">avg_drift</span> (m)</td><td>0.55</td><td>1.11</td><td>1.93</td><td>2.93</td><td>3.82</td><td>5.72</td><td>5.04</td></tr>
+<tr><td>seq-rule</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td><strong>VIOLATED(4)</strong></td></tr>
+<tr><td>routing</td><td>correct</td><td>correct</td><td>correct</td><td>correct</td><td>correct</td><td>correct</td><td><strong>collapsed</strong></td></tr>
+</tbody>
+</table></div>
+
+<p>At shift = 8 m the two <var>A</var>-branches collapse onto the nearer <var>B</var>-edge (<span class="mono">A_dn→[B_dn,B_dn2]</span>, <span class="mono">A_up→[B_up,B_up2]</span>, <span class="mono">A_dn2</span>/<span class="mono">A_up2→[B_out]</span>) and four sequence-rule checks trip. This is the documented <strong>nearest-vs-corresponding</strong> limit (<a href="#appx-c-6">Appendix C.6</a>), confirmed by the exact conditioning solver to be the true minimum-drift optimum <em>in point mode</em> — not a loop-conditioning failure.</p>
+
+<h3 id="appx-g-3">G.3 Sequence rules</h3>
+
+<p><span class="mono">check_sequence_rules</span> (<span class="mono">dag_dtw.py:89</span>) enforces three invariants on the matched result, reported as <span class="mono">arc_viol</span> / <span class="mono">route_viol</span> / <span class="mono">jump_viol</span>:</p>
+
+<ol>
+<li><strong>Monotone forward <var>B</var>-walk</strong> — every <var>G</var><sub>A</sub> arc <var>a</var>→<var>a</var>′ maps to a forward-reachable <var>B</var>-step <var>φ</var>(<var>a</var>)→<var>φ</var>(<var>a</var>′) (no backward/disconnected jump).</li>
+<li><strong>Connected route</strong> — consecutive <var>B</var>-edges of each route are graph-connected in <var>G</var><sub>B</sub>.</li>
+<li><strong>No teleport</strong> — the <var>B</var>-advance tracks the <var>A</var>-advance (<var>B</var>-step − <var>A</var>-step &lt; 3 m; no junction jump).</li>
+</ol>
+
+<p>At the clean pose all counts are zero on all five scenarios, and <strong>junction region-consistency</strong> holds: coincident <var>A</var>-vertices at a junction land within one sample step of a common <var>B</var>-location (measured spread 0.00 m — 4/4 junctions on <span class="mono">diamond</span>, 8/8 on <span class="mono">double_diamond</span>). Region-consistency is the v1 point-mode guarantee; <em>vertex-exact</em> junction resolution is what the conditioning solvers add.</p>
+
+<h3 id="appx-g-4">G.4 Brute-force anchors and cross-checks</h3>
+
+<ul>
+<li><strong>BP = full enumeration</strong> (tiny cases): <span class="mono">chain</span> at step 15 m → BP 1.600 = brute-force 1.600 (4×4 grid); at step 8 m → 2.400 = 2.400 (6×6 grid).</li>
+<li><strong>recursive = fvs</strong> on clean scenarios: <span class="mono">chain</span> 7.200, <span class="mono">y_split</span> 11.432, <span class="mono">merge</span> 12.345, <span class="mono">diamond</span> 24.581, <span class="mono">double_diamond</span> 28.930 — all agree, all backward-step-free (0/0).</li>
+<li><strong>recursive = fvs</strong> across the 45-config grid: 45/45 per scenario, <strong>225/225 total</strong>.</li>
+<li><strong>Candidate-restriction safety</strong>: <var>K</var>-nearest = all-44-candidates on <span class="mono">diamond</span> (24.581 = 24.581).</li>
+</ul>
+
+<h3 id="appx-g-5">G.5 Suite totals</h3>
+
+<div class="tblwrap"><table>
+<caption id="tbl-16"><b><a href="#tbl-1">Table 1</a>6 —</b> Validation suite totals.</caption>
+<thead><tr><th>Suite</th><th>Checks</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">tests/test_dag_dtw.py</span></td><td>23</td><td>23 passed</td></tr>
+<tr><td><span class="mono">tests/test_dag_conditioning.py</span> (+ combined)</td><td>15</td><td>38 passed (combined)</td></tr>
+<tr><td><span class="mono">scripts/dag_dtw_validate.py</span></td><td>62</td><td>62/62 passed</td></tr>
+<tr><td><span class="mono">scripts/dag_conditioning_validate.py</span></td><td>238</td><td>238/238 passed</td></tr>
+</tbody>
+</table></div>
+
+<h3 id="appx-g-6">G.6 Stated limits (methodology honesty)</h3>
+
+<ul>
+<li><strong>Synthetic-only.</strong> All figures are on five hand-built DAGs at <var>δ</var> = 0.4 m in a plain-metre CRS; they validate the DP's and conditioning's <em>correctness/exactness</em>, not accuracy on real OSM↔NVDB data.</li>
+<li><strong>The diamond needs the direction term.</strong> Under extreme shift (≥ 8 m here) point mode collapses; conditioning <em>confirms</em> this optimum rather than removing it. The fix is segment/bearing emission (<a href="#appx-e">Appendix E</a>), design/future work.</li>
+<li><strong>Candidate-restriction divergence.</strong> With a full candidate set the two solvers agree on any DAG; under the default <var>K</var>-nearest they agree on realistic inputs but can diverge — both still returning <em>valid</em> labellings — on adversarial anti-parallel multi-loop geometry (raising <span class="mono">cand_k</span> closes it).</li>
+<li><strong>Conditioning solvers are [REF] only</strong> — not wired into <span class="mono">match_dag_to_bgraph</span>; the shipped matcher keeps the reachability-guarded backtrack, and its junction consistency is region-consistent (within one sample step), not vertex-exact.</li>
+</ul>
+
+<div class="note">References cited across these appendices assume the shared reference list: Sakoe &amp; Chiba (1978); Berndt &amp; Clifford (1994); Dijkstra (1959); Kahn (1962); Pearl (1988); Karp (1972); Newson &amp; Krumm (2009).</div>
+
+</div>
+<footer>network-matching · working paper · self-contained HTML (offline; no external assets)</footer>
+</div>
+<script>
+document.addEventListener('click',function(e){var a=e.target.closest?e.target.closest('a[href^="#"]'):null;if(!a)return;var el=document.getElementById(a.getAttribute('href').slice(1));if(!el)return;e.preventDefault();var r=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;el.scrollIntoView({behavior:r?'auto':'smooth',block:'start'});el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');});
+</script>
+</body>
+</html>
