@@ -248,6 +248,63 @@ already makes the *cost total* exact here (§3.3); what remains is only globally
 at the reconvergence — future work. The debug cases in §4 start as trees, then add a diamond to
 exercise the merge rule.)
 
+### 3.2a Joint junction resolution — the forward–backward pass (design, next version)
+
+> **Status: design.** The shipped code uses the greedy reverse-topological backtrack of §3.2. This
+> section specifies the correct **joint** resolution that replaces it, and is the reason for the
+> residual backward step under shift (below). Implement after this doc.
+
+**The real cause of the backward step.** Two routes source₁→sink₁ and source₂→sink₂ pass through
+the **same junction `j`**. Optimised *independently*, route₁ wants `j` at one B-vertex and route₂
+wants it at a **different** one — but `j` is a single point and can hold only one label. The greedy
+backtrack finishes each sink on its own (`argmin` per sink) and traces back, so the two traces
+**collide at `j`** and demand two different `φ(j)`. Forcing them to one label breaks the other
+route → a **backward step**. *You cannot assemble the whole matching from each-sink's-own-best
+pieces* — the pieces disagree where they overlap. (This is distinct from the topology mismatch note
+above; it happens even when every A-edge maps to the right B-edge.)
+
+**The fix — score each junction once, for everyone through it.** Keep two cost tables:
+
+- **Forward `D[a][v]`** (already computed, §3–§3.1): cheapest cost to align everything *upstream*
+  of `a` (sources → `a`) with `a` at B-vertex `v`.
+- **Backward `B[a][v]`**: reverse **both** graphs — flip `GA` (sinks become sources) and reverse
+  `GB`'s arcs — and run the *same* DP. This is the cheapest cost to align everything *downstream*
+  of `a` (`a` → sinks) with `a` at `v`. The forward pass sums over predecessors with the
+  `1/outdeg` split; the backward pass sums over successors with the symmetric `1/indeg` split, so
+  the conserved cost-flow (§3.3) is preserved in both directions.
+
+Then pin every junction jointly:
+
+```
+φ(j) = argmin over v of   D[j][v] + B[j][v] − E(j, v)
+```
+
+The `− E(j, v)` removes the double count — the local cost of `j` at `v` sits in *both* tables. This
+value is the best whole-DAG cost among matchings that keep `j` at `v`; its minimiser is the label
+**all** routes through `j` agree on.
+
+**Assembling the whole matching.** Once every junction's `φ` is fixed, the junctions **cut the DAG
+into simple chains**, each running between two now-fixed points (junction/source/sink) with no
+branching inside. Backtrack each chain independently:
+
+- junction→junction chain: an ordinary single-path alignment between two *known* B-vertices;
+- a source/sink end stays **free** (graph-DTW's free entry/exit).
+
+There are **no conflicts left** — every shared point was pinned first — so stitching the chains
+yields `φ` for all A-vertices. This is the standard **forward–backward / min-sum message passing**
+on a tree, and for a tree-shaped junction neighbourhood it is **exact**: one consistent `φ` at
+every shared junction, no route stranded, no backward step.
+
+**Whole-DAG cost.** Either read it at a junction every route passes through (a cut vertex),
+`C_total = D[j][φ(j)] + B[j][φ(j)] − E(j, φ(j))`, or — when there is no single such junction —
+**sum the per-chain aligned costs** after pinning (each junction's `E` counted once). Both equal
+the sum of every A-vertex's local cost under the final consistent matching, and both are ≥ the
+independent per-sink lower bound `Σ_sinks min_v D[sink][v]` (which may be unachievable
+consistently).
+
+**Caveat (unchanged):** exact for a **tree** junction neighbourhood; a **reconvergent diamond**
+still needs extra care where the two sides re-meet.
+
 ### 3.3 The objective — total map-match cost
 
 The algorithm minimises the **total match cost of the whole DAG**: the sum of the local costs over
