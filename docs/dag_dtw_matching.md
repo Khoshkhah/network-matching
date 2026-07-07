@@ -213,6 +213,16 @@ The trade-off is honest: forcing the junction to the common ancestor can *raise 
 spilled match was cheaper pointwise), but it guarantees a **valid monotone sequence** — the rule
 matters more than the pointwise minimum.
 
+**Arc-length re-match (jump-free positions).** The DP + backtrack above decide the *topology* —
+which B-edges each A-edge maps to. A final pass then decides the *position*: each A-vertex is
+placed at its **arc-length fraction along its route's B-polyline** (snapped to the nearest route
+vertex). This is because pure point-to-point picks the *nearest* B-vertex per A-vertex, which
+under a large offset compresses A onto part of a B-edge and produces a **jump** at the junction
+(the coincident A-vertices land far apart in B — graph-reachable but discontinuous). Re-placing by
+arc length makes the B-position advance *proportionally* to A, so the sequence is jump-free; drift
+becomes a uniform offset rather than a low-but-discontinuous one. The **no-teleport** rule
+(§ sequence tests) checks exactly this.
+
 **Tree vs. reconvergence.** When `GA` is a **tree / polytree** (branches never rejoin — the common
 junction-neighbourhood case once edges are oriented by travel direction and a small neighbourhood
 is taken), the per-A-vertex `φ` is globally optimal and the backtrack above is exact. When `GA`

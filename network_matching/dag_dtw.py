@@ -21,6 +21,14 @@ consistency (one B-vertex ``φ(a)`` per A-vertex) is fixed at backtrack.
 Both GA (source) and GB (target) are built with the same :func:`build_local_digraph` used by
 graph-DTW, so the pooling / stitching / vertex-owns-its-edge machinery is shared. GA must be
 acyclic; a cyclic source raises :class:`NotADAG`.
+
+**Two stages.** The DP + monotone backtrack decide the **topology** -- which B-edges each A-edge
+maps to (the route). A second :func:`_arclength_rematch` pass then decides the **position** --
+each A-vertex is placed at its *arc-length* fraction along its route's B-polyline. Pure
+point-to-point picks the nearest B-vertex per A-vertex, which under a large offset *compresses*
+A onto part of a B-edge and *jumps* at junctions; arc-length re-placement makes the B-position
+advance proportionally to A, so the matched sequence is jump-free (drift becomes a uniform
+offset rather than a low-but-discontinuous one). Validated by ``scripts/dag_dtw_validate.py``.
 """
 
 import heapq
@@ -28,7 +36,7 @@ from collections import deque
 from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 
 from .graph_dtw import LocalBGraph, build_local_digraph
 
@@ -129,6 +137,47 @@ def _gb_arcs(gb: LocalBGraph) -> Tuple[np.ndarray, np.ndarray]:
             tails.append(u)
             heads.append(w)
     return np.asarray(tails, int), np.asarray(heads, int)
+
+
+# --------------------------------------------------------------------------------------
+# Arc-length re-match: place each A-vertex proportionally along its route (jump-free)
+# --------------------------------------------------------------------------------------
+def _arclength_rematch(ga, gb, routes, a_geoms, b_geoms, phi0):
+    """The DP decides WHICH B-edges each A-edge maps to (the route/topology); this decides WHERE
+    on them. Each A-vertex is placed at its **arc-length position** along its route's B-polyline
+    (snapped to the nearest route B-vertex), so the matched B-position advances *proportionally*
+    to A -- eliminating the jump/compression that per-vertex nearest matching produces under a
+    large offset. Vertices whose A-edge has no route keep their DP ``phi0``."""
+    phi = dict(phi0)
+    for e in range(len(ga.edge_ids)):
+        aeid = ga.edge_ids[e]
+        route = routes.get(aeid)
+        if not route or aeid not in a_geoms:
+            continue
+        rv: List[int] = []                                   # route B-vertices, in route order
+        for beid in route:
+            try:
+                be_idx = gb.edge_ids.index(beid)
+            except ValueError:
+                continue
+            vids = list(np.where(gb.vert_edge == be_idx)[0])
+            bg = b_geoms.get(beid)
+            if bg is not None:
+                vids.sort(key=lambda v: bg.project(Point(gb.vx[v], gb.vy[v])))
+            rv.extend(int(v) for v in vids)
+        if not rv:
+            continue
+        rvx = np.array([gb.vx[v] for v in rv])
+        rvy = np.array([gb.vy[v] for v in rv])
+        cum = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(rvx), np.diff(rvy)))])
+        route_len = cum[-1] or 1.0
+        ageom = a_geoms[aeid]
+        vids_a = np.where(ga.vert_edge == e)[0]
+        s = np.array([ageom.project(Point(ga.vx[i], ga.vy[i])) for i in vids_a])
+        smax = s.max() or 1.0
+        for i, vi in enumerate(vids_a):                      # proportional -> nearest route vertex
+            phi[int(vi)] = rv[int(np.argmin(np.abs(cum - route_len * s[i] / smax)))]
+    return phi
 
 
 # --------------------------------------------------------------------------------------
@@ -241,18 +290,7 @@ def match_dag_to_bgraph(
                 break
         phi[a] = chosen if chosen is not None else int(np.argmin(D[a]))
 
-    # --- per-A-vertex match + per-A-edge route ---
-    a_vertex_match = []
-    drifts = []
-    for a in range(NA):
-        v = phi.get(a)
-        if v is None:
-            continue
-        beid = gb.edge_ids[gb.vert_edge[v]] if 0 <= gb.vert_edge[v] < len(gb.edge_ids) else None
-        d = float(np.hypot(ax[a] - bx[v], ay[a] - by[v]))
-        drifts.append(d)
-        a_vertex_match.append((float(ax[a]), float(ay[a]), int(v), beid, d))
-
+    # --- routes (topology) from the monotone backtrack, with junction-touch trim ---
     # per (A-edge, B-edge) vertex counts, in topological order, so a leading/trailing junction
     # TOUCH (a single A-vertex grazing the neighbouring B-edge at the junction) can be trimmed.
     seq_counts: Dict[Any, List[List[Any]]] = {}        # a_edge -> [[b_edge, count], ...] in order
@@ -279,6 +317,23 @@ def match_dag_to_bgraph(
         if len(r) > 1 and r[-1][1] <= 1:
             r = r[:-1]
         routes[aeid] = [b for b, _c in r]
+
+    # --- arc-length RE-MATCH: place each A-vertex proportionally along its route (jump-free) ---
+    a_geoms = {eid: g for eid, g in a_edges}
+    b_geoms = {eid: g for eid, g in b_edges}
+    phi = _arclength_rematch(ga, gb, routes, a_geoms, b_geoms, phi)
+
+    # --- per-A-vertex match + drift, from the re-matched φ ---
+    a_vertex_match = []
+    drifts = []
+    for a in range(NA):
+        v = phi.get(a)
+        if v is None:
+            continue
+        beid = gb.edge_ids[gb.vert_edge[v]] if 0 <= gb.vert_edge[v] < len(gb.edge_ids) else None
+        d = float(np.hypot(ax[a] - bx[v], ay[a] - by[v]))
+        drifts.append(d)
+        a_vertex_match.append((float(ax[a]), float(ay[a]), int(v), beid, d))
 
     res: Dict[str, Any] = {
         "phi": phi,
