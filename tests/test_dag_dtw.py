@@ -14,7 +14,7 @@ import pytest
 from shapely.geometry import LineString
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from network_matching.dag_dtw import NotADAG, match_dag_to_bgraph, topological_order  # noqa: E402
+from network_matching.dag_dtw import NotADAG, NotATree, match_dag_to_bgraph, topological_order  # noqa: E402
 from network_matching.dag_dtw import build_local_digraph  # noqa: E402
 from network_matching.dag_synthetic import DAG_SCENARIOS, get_dag  # noqa: E402
 from network_matching.dag_playground import perturb_dag, _edges_to_ls  # noqa: E402
@@ -188,6 +188,24 @@ def test_horizontal_weight_coverage_cost_and_monotone():
         row = np.full(N, np.inf)
         _relax_alpha(row, ei, acc, gb_pred, list(range(N)), 0.3)
         assert all(row[v] >= row[v - 1] - 1e-9 for v in range(1, N)), "coverage cost must not decrease"
+
+
+@pytest.mark.parametrize("name", ["chain", "y_split", "merge"])
+def test_require_tree_accepts_forests(name):
+    # a tree / polytree source passes require_tree=True and matches identically to the default.
+    sc = get_dag(name)
+    r_req = match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], require_tree=True, **sc["defaults"])
+    r_def = match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], **sc["defaults"])
+    assert r_req["phi"] == r_def["phi"]
+
+
+@pytest.mark.parametrize("name", ["diamond", "double_diamond"])
+def test_require_tree_rejects_reconvergence(name):
+    # a reconvergent DAG (undirected loop) must raise under require_tree=True, but match by default.
+    sc = get_dag(name)
+    with pytest.raises(NotATree):
+        match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], require_tree=True, **sc["defaults"])
+    assert match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], **sc["defaults"])["phi"]  # default ok
 
 
 def test_routes_detail_full_coverage():

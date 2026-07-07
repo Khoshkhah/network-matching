@@ -686,6 +686,12 @@ stays as the terse id-only list for callers that don't need the detail.
 - **Directed A → B** only (no symmetric B→A reconciliation).
 - **Tree / polytree** source DAGs are handled exactly; **reconvergent** DAGs (diamonds) use the
   merge-agreement rule of §3.2 (exact joint optimisation of reconvergence is future work).
+- **`require_tree` option** — pass `require_tree=True` to assert the source has **no undirected
+  loop** (a forest / polytree — no reconvergence). The matcher verifies `GA`'s undirected skeleton
+  is acyclic (cyclomatic number `E − V + C = 0`) and raises **`NotATree`** on any diamond. Because
+  trees are solved **exactly** (§3.2a) and never hit the nearest-vs-corresponding diamond limit,
+  this guarantees the exact regime for callers who know their source is a tree. It composes with
+  both emission modes (point and, when added, segment) and with `α`. Default `False` (any DAG).
 - **Junction consistency is now enforced by a monotone backtrack (§3.2).** The reverse-topological
   backtrack forces every junction to a common B-ancestor of its branches, so the matched sequence
   is always a **valid monotone forward B-walk** (no backward or disconnected step, no spill onto a

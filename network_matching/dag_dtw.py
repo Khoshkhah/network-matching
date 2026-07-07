@@ -57,6 +57,35 @@ class NotADAG(Exception):
     """Raised when the source graph GA contains a directed cycle (it must be acyclic)."""
 
 
+class NotATree(Exception):
+    """Raised (only under ``require_tree=True``) when the source GA has an undirected loop
+    (a reconvergence / diamond) -- i.e. it is a DAG but not a forest / polytree."""
+
+
+def _is_tree(ga) -> bool:
+    """True iff GA's UNDIRECTED skeleton is a forest (no undirected cycle / reconvergence): the
+    cyclomatic number ``E - V + C`` is 0. Interior sample points are degree-2 and never add a cycle,
+    so this detects a diamond regardless of sampling density."""
+    NA = ga.n_vertices
+    E = sum(len(ga.succ_arcs[a]) for a in range(NA))     # one undirected edge per directed arc
+    seen = [False] * NA
+    C = 0
+    for s in range(NA):
+        if seen[s]:
+            continue
+        C += 1
+        stack = [s]; seen[s] = True
+        while stack:
+            u = stack.pop()
+            for w in ga.succ_arcs[u]:
+                if not seen[w]:
+                    seen[w] = True; stack.append(w)
+            for w in ga.pred_arcs[u]:
+                if not seen[w]:
+                    seen[w] = True; stack.append(w)
+    return E - NA + C == 0
+
+
 def check_sequence_rules(res: Dict[str, Any], jump_tol: float = 3.0) -> Dict[str, Any]:
     """Verify the matched result obeys the map-matching **sequence rules** and return a report
     ``{ok, arc_viol, route_viol, jump_viol}``. Used by both the validation script and the
@@ -395,6 +424,7 @@ def match_dag_to_bgraph(
     snap_tolerance_m: float = 0.5,
     step_meters: float = 2.0,
     horizontal_weight: float = 1.0,
+    require_tree: bool = False,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """Align the source DAG made of ``a_edges`` to the local directed graph of ``b_edges``.
@@ -402,7 +432,9 @@ def match_dag_to_bgraph(
     Point-to-point v1: the emission is ``E(a, v) = dist(a, v)`` (no direction term).
     ``horizontal_weight`` (α ≤ 1, docs §3.4) discounts the emission on a horizontal 1:N
     coverage-extension step (α·E), leaving a genuine A-advance match at full E; α=1 (default) is the
-    plain recurrence, bit-for-bit unchanged.
+    plain recurrence, bit-for-bit unchanged. ``require_tree`` (docs §7): if True, assert the source
+    has no undirected loop (a forest/polytree) and raise :class:`NotATree` on a reconvergence — the
+    exactly-solvable regime that side-steps the diamond limit.
     ``a_edges`` / ``b_edges``: lists of ``(id, shapely LineString)`` in a projected CRS (meters).
     Returns a dict with:
 
@@ -425,6 +457,9 @@ def match_dag_to_bgraph(
     ga = build_local_digraph(a_edges, b_pts, snap_tolerance_m, step_meters)
     gb = build_local_digraph(b_edges, a_pts, snap_tolerance_m, step_meters)
     order = topological_order(ga)                      # raises NotADAG on a cyclic source
+    if require_tree and not _is_tree(ga):              # caller asserts a forest / polytree (§7)
+        raise NotATree("source GA has an undirected loop (a reconvergence/diamond); "
+                       "require_tree=True demands a forest/polytree")
 
     NA, NB = ga.n_vertices, gb.n_vertices
     ax, ay = ga.vx, ga.vy
