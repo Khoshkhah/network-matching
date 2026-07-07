@@ -153,12 +153,16 @@ def draw_dag_match(res, a_edges, b_edges, ax=None):
     return ax
 
 
-def match_and_draw_dag(a_edges, b_edges, ax=None, snap_tolerance_m=0.5, step_meters=2.0):
-    """Match a source DAG to a B-network and draw the correspondence. Returns the result dict."""
+def match_and_draw_dag(a_edges, b_edges, ax=None, snap_tolerance_m=0.5, step_meters=2.0,
+                       emission="point", bearing_weight=0.0):
+    """Match a source DAG to a B-network and draw the correspondence. Returns the result dict.
+    ``emission="segment"`` with ``bearing_weight`` > 0 turns on the direction term (docs §3.5) that
+    fixes the diamond; ``emission="point"`` (default) is the plain point-to-point matcher."""
     import matplotlib.pyplot as plt
     a_edges, b_edges = _edges_to_ls(a_edges), _edges_to_ls(b_edges)
     res = match_dag_to_bgraph(a_edges, b_edges, snap_tolerance_m=snap_tolerance_m,
-                              step_meters=step_meters, debug=True)
+                              step_meters=step_meters, emission=emission,
+                              bearing_weight=bearing_weight, debug=True)
     draw_dag_match(res, a_edges, b_edges, ax=ax)
     if ax is None:
         plt.show()
@@ -194,6 +198,7 @@ def dag_playground(a_edges=None, b_edges=None):
     k["noise"] = w.FloatSlider(0, min=0, max=3, step=0.25, description="noise σ m", **sl)
     k["seed"] = w.IntSlider(0, min=0, max=20, description="noise seed", **sl)
     k["step"] = w.FloatSlider(2.0, min=1, max=8, step=0.5, description="sample m", **sl)
+    k["lam"] = w.FloatSlider(0, min=0, max=5, step=0.5, description="bearing λ", **sl)
 
     def update(**v):
         if custom:
@@ -204,10 +209,12 @@ def dag_playground(a_edges=None, b_edges=None):
         a = perturb_dag(a0, shift=v["shift"], rotate=v["rotate"], noise=v["noise"],
                         seed=v["seed"], bearing_deg=v["bearing"])
         fig, ax = plt.subplots(figsize=(11, 7.5))
-        match_and_draw_dag(a, b0, ax=ax, step_meters=v["step"])
+        emission = "segment" if v["lam"] > 0 else "point"   # λ>0 turns on the direction term (§3.5)
+        match_and_draw_dag(a, b0, ax=ax, step_meters=v["step"],
+                           emission=emission, bearing_weight=v["lam"])
         plt.show()
 
     out = w.interactive_output(update, k)
     rows = [w.HBox([k[n] for n in names if n in k]) for names in
-            (["case", "step"], ["shift", "bearing", "rotate"], ["noise", "seed"])]
+            (["case", "step", "lam"], ["shift", "bearing", "rotate"], ["noise", "seed"])]
     display(w.VBox(rows), out)
