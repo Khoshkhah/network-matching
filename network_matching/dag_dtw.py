@@ -276,7 +276,9 @@ def match_dag_to_bgraph(
     - ``phi``: ``{a_vertex_index -> b_vertex_index}`` -- the junction-consistent label map;
     - ``a_vertex_match``: per A-vertex ``(x, y, b_vertex, b_edge_id, drift)``;
     - ``routes``: ``{a_edge_id -> [b_edge_id, ...]}`` the ordered B-edges each A-edge maps to;
-    - ``total_cost`` (Σ over sinks) and ``avg_drift`` (mean per-A-vertex drift);
+    - ``total_cost`` (realized ``Σ E(a, φ(a))``, consistent with ``avg_drift``) and ``avg_drift``
+      (mean per-A-vertex drift); ``dp_cost`` = ``Σ_sinks min D`` (the DP's discrete optimum -- a
+      diagnostic, not a bound on ``total_cost``);
     - ``GA`` / ``GB`` (the two :class:`LocalBGraph`s), and with ``debug=True`` the full ``D`` table.
     """
     a_pts = [(float(x), float(y)) for _id, g in a_edges for (x, y) in g.coords]
@@ -305,7 +307,13 @@ def match_dag_to_bgraph(
                   order[::-1], ax, ay, bx, by)
 
     sinks = [a for a in range(NA) if len(ga.succ_arcs[a]) == 0]
-    total_cost = float(sum(np.min(D[t]) for t in sinks)) if sinks else float("inf")
+    # DP DIAGNOSTIC, not the reported total: Σ_sinks min D is the DP's *discrete, unconstrained*
+    # optimum (every sink free to pick its own cheapest sampled B-vertex). It is NOT a bound on the
+    # realized cost: the continuous arc-length re-match can place a vertex between samples and beat
+    # it (clean trees), while joint-consistency + shift can push the realized cost well above it. On
+    # a diamond it is itself inexact (docs §3.3). The reported total_cost is the REALIZED sum of the
+    # final per-vertex drifts (below), consistent with avg_drift.
+    dp_cost = float(sum(np.min(D[t]) for t in sinks)) if sinks else float("inf")
 
     # φ by reverse-topological backtrack, combining BOTH ideas:
     #   * score each A-vertex by the JOINT cost D[a][v] + B[a][v] - E(a,v) -- the forward+backward
@@ -440,7 +448,8 @@ def match_dag_to_bgraph(
         "phi": phi,
         "a_vertex_match": a_vertex_match,
         "routes": routes,
-        "total_cost": total_cost,
+        "total_cost": float(sum(drifts)) if drifts else float("inf"),   # REALIZED Σ E(a, φ(a))
+        "dp_cost": dp_cost,                                             # Σ_sinks min D (DP optimum)
         "avg_drift": float(np.mean(drifts)) if drifts else float("inf"),
         "GA": ga,
         "GB": gb,

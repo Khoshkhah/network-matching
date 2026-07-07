@@ -297,15 +297,24 @@ the labels so every chain still fits is a **joint** decision, not a per-junction
 On a tree this is achievable (exactly, or cheaply via the reachability guard); a **diamond** is
 where it needs the cutset trick of §3.2b.
 
-**Whole-DAG cost.** Either read it at a junction every route passes through (a cut vertex),
-`C_total = D[j][φ(j)] + B[j][φ(j)] − E(j, φ(j))`, or — when there is no single such junction —
-**sum the per-chain aligned costs** after pinning (each junction's `E` counted once). Both equal
-the sum of every A-vertex's local cost under the final consistent matching, and both are ≥ the
-independent per-sink lower bound `Σ_sinks min_v D[sink][v]` (which may be unachievable
-consistently).
+**Whole-DAG cost — compute it from the final matching, not from `D+B`.** The robust total is the
+**realized cost of the final consistent labels**:
 
-**Caveat (unchanged):** exact for a **tree** junction neighbourhood; a **reconvergent diamond**
-still needs extra care where the two sides re-meet — see §3.2b.
+```
+C_total = Σ over A-vertices   E(a, φ(a))      # φ = the FINAL consistent labels; always correct
+```
+
+This needs no cut vertex and no `D+B` identity, and is right for **any** shape.
+
+> **Do NOT read the total off `D+B` at a junction.** The tempting identity
+> `C_total = D[j][φ(j)] + B[j][φ(j)] − E(j, φ(j))` — and even the conserved-flow reading
+> `Σ_sinks min_v D[sink][v]` — are **exact only on a tree**. On a **reconvergent diamond** they are
+> wrong: `D` and `B` each conserve the flow *on their own* (`1/outdeg` forward, `1/indeg` backward),
+> but **combining them at one junction** mis-counts the split-then-remerge structure — it gets
+> weighted by *both* splits and they don't cancel. Verified on a perturbed diamond: `D+B−E` at the
+> split gave 112.8 while `Σ_sinks min D` gave 96.9 (they agree exactly on every tree). So these are
+> tree-only shortcuts / sanity checks; the realized sum above is the definition. It is the same
+> reconvergence flaw that breaks the *labelling* (§3.2b) — here it corrupts the *cost*.
 
 ### 3.2b Reconvergent DAGs — the diamond, and cutset conditioning (design, next version)
 
@@ -406,36 +415,43 @@ the exact one (loops).
 
 ### 3.3 The objective — total map-match cost
 
-The algorithm minimises the **total match cost of the whole DAG**: the sum of the local costs over
-every matched step, i.e. every A-vertex paired with its assigned B-vertex `φ(a)`:
+The **total match cost of the whole DAG** is the sum of the local costs over every matched step, i.e.
+every A-vertex paired with its **final** assigned B-vertex `φ(a)`:
 
 ```
-C_total = Σ over A-vertices a   E(a, φ(a))          # each A-edge's drift, summed, once
+C_total = Σ over A-vertices a   E(a, φ(a))          # the REALIZED cost of the returned matching
 ```
 
-The **split factor `1/outdeg`** is exactly what lets you read this off the DP at the terminals:
-because it conserves the cost-flow (from each vertex, `1/outdeg` of the value goes to each
-successor — a uniform walk whose weight sums to 1 at the sinks, since `GA` is acyclic), each
-vertex's `E` reaches the sinks with total weight 1. Hence
+Compute it from the `φ` you actually return, **after** the joint junction resolution (§3.2a/§3.2c)
+and any re-match — i.e. sum the per-A-vertex drifts. That is the honest number, consistent with the
+reported `avg_drift = C_total / (matched steps)`.
 
-```
-C_total  =  Σ over sinks t   min_v D[t][v]          # exact for ANY DAG shape (diamonds included)
-```
+> **Do not report the raw DP optimum as the total.** The forward split factor conserves the
+> cost-flow, so `Σ over sinks t   min_v D[t][v]` equals the cost of the DP's *discrete, unconstrained*
+> optimum — every sink free to pick its own cheapest **sampled** B-vertex. This is **not a bound** on
+> the realized cost, in either direction: the continuous arc-length re-match can place a vertex
+> *between* samples and come in **below** it (clean `y_split`: `Σ_sinks min D` = 11.6 vs realized
+> 11.5), while joint-consistency under a shift pushes the realized cost far **above** it (shift-4
+> `y_split`: 61.7 vs 108.3; diamond 96.9 vs 183.6). And `Σ_sinks min D` is itself exact only on a
+> tree — on a diamond the conserved-flow reading and the `D+B−E`-at-a-junction reading (§3.2a)
+> disagree with each other too. So treat `Σ_sinks min D` as a *DP diagnostic* (`res["dp_cost"]`),
+> never as the cost; the realized sum above is the definition.
 
-with **no double-counting** of shared prefixes. Worked check — Y-split (`a0→a1`, `a1→a2`,
-`a1→a3`), every vertex drifting 0.2, `outdeg(a1)=2`:
+The conserved-flow identity still makes a clean **worked check on a tree** — Y-split (`a0→a1`,
+`a1→a2`, `a1→a3`), every vertex drifting 0.2, `outdeg(a1)=2`, all labels consistent:
 
 ```
 D[a0]=0.2   D[a1]=0.4   D[a2]=0.2+½·0.4=0.4   D[a3]=0.4
-Σ sinks {a2,a3} = 0.8 = 0.2·4 = C_total        (a naive sum without the split gives 1.2 — wrong)
+Σ sinks {a2,a3} = 0.8 = 0.2·4        (a naive sum without the split gives 1.2 — wrong)
 ```
 
-**Reported quality metric.** `C_total` is a *count-weighted sum* (more vertices ⇒ larger), so —
-exactly like graph-DTW's raw `D` value — it is **not** the number you report. The reported quality
-is the **average drift** `C_total / (number of matched steps)` (meters, comparable to graph-DTW's
-`avg_distance` and the `resolve_routes` thresholds), plus the **per-A-edge** breakdown (each
-A-edge's own avg/max/min drift and coverage — the `routes_long` slice) and **coverage %**.
-Junction consistency is a structural guarantee, not part of the cost.
+— here it coincides with the realized total because a clean tree's DP optimum *is* consistent.
+
+**Reported quality metric.** `C_total` is a *count-weighted sum* (more vertices ⇒ larger), so — like
+graph-DTW's raw `D` value — it is **not** the number you report. The reported quality is the
+**average drift** `C_total / (matched steps)` (meters, comparable to graph-DTW's `avg_distance` and
+the `resolve_routes` thresholds), plus the **per-A-edge** breakdown and **coverage %**. Junction
+consistency is a structural guarantee, not part of the cost.
 
 ---
 
