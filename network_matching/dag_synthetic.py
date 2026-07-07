@@ -77,6 +77,30 @@ def _scenarios() -> Dict[str, Dict[str, Any]]:
                  ("B_out", _off([(30, 0), (40, 0)]))],
     )
 
+    # double_diamond: TWO diamonds in series, separated by a chain (A_mid) so the two loops share
+    # NO vertex -> minimum feedback vertex set has size 2. This is the case that distinguishes the
+    # recursive minimum-vertex-cut (two sequential size-1 cuts) from one-shot FVS conditioning
+    # (enumerate 2 vertices jointly); the two must return EQUAL-cost labellings (docs §3.2b).
+    S["double_diamond"] = dict(
+        description="Two diamonds in series separated by a chain (A_mid); the two loops share no "
+                    "vertex, so the minimum feedback vertex set has size 2 -- the case that "
+                    "separates recursive min-cut from one-shot FVS conditioning.",
+        a_edges=[("A_in", [(0, 0), (10, 0)]),
+                 ("A_up", [(10, 0), (18, 6)]), ("A_dn", [(10, 0), (18, -6)]),
+                 ("A_up2", [(18, 6), (26, 0)]), ("A_dn2", [(18, -6), (26, 0)]),
+                 ("A_mid", [(26, 0), (34, 0)]),
+                 ("A_up3", [(34, 0), (42, 6)]), ("A_dn3", [(34, 0), (42, -6)]),
+                 ("A_up4", [(42, 6), (50, 0)]), ("A_dn4", [(42, -6), (50, 0)]),
+                 ("A_out", [(50, 0), (58, 0)])],
+        b_edges=[("B_in", _off([(0, 0), (10, 0)])),
+                 ("B_up", _off([(10, 0), (18, 6)])), ("B_dn", _off([(10, 0), (18, -6)])),
+                 ("B_up2", _off([(18, 6), (26, 0)])), ("B_dn2", _off([(18, -6), (26, 0)])),
+                 ("B_mid", _off([(26, 0), (34, 0)])),
+                 ("B_up3", _off([(34, 0), (42, 6)])), ("B_dn3", _off([(34, 0), (42, -6)])),
+                 ("B_up4", _off([(42, 6), (50, 0)])), ("B_dn4", _off([(42, -6), (50, 0)])),
+                 ("B_out", _off([(50, 0), (58, 0)]))],
+    )
+
     for sc in S.values():
         sc.setdefault("defaults", dict(snap_tolerance_m=0.5, step_meters=2.0))
     return S

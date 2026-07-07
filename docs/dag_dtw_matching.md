@@ -318,20 +318,35 @@ This needs no cut vertex and no `D+B` identity, and is right for **any** shape.
 
 ### 3.2b Reconvergent DAGs — recursive minimum-vertex-cut conditioning
 
-> **Status: implemented, tested, and REVERTED — with an important finding.** The recursion below was
-> built and swept. It is *correct* (clean `diamond` labels perfectly; it cuts at the split junction,
-> splits into `{source}` + a downstream forest, and the raw topology has **zero** backward steps).
-> **But it does not help the synthetic `diamond`, and made it worse (48 → 60 failing configs), so it
-> was reverted.** The reason is the finding: **the `diamond`'s failures are NOT loop failures.** Test
-> — pin the split junction `j1` to the *exact* B-split vertex and solve the two branches: point mode
-> *still* collapses **both** A-branches onto the nearer B-edge, because that genuinely costs **less**
-> (≈180 vs ≈210), and the correct split (`A_up→B_up, A_dn→B_dn`) never appears at *any* cut label.
-> That is the **nearest-vs-corresponding** limit (§3.2c note), not reconvergence — a junction is not
-> a loop bug, and the recursion's cost-minimising re-optimisation only collapses *harder*. The real
-> `diamond` fix needs a **direction term** (segment/bearing), which point mode excludes by design.
-> The method is kept documented (and correct) for genuine loop cases; the shipped solver stays the
-> §3.2a reachability-guarded backtrack. The greedy's 48 beats the recursion's 60 here precisely
-> because it *doesn't* globally minimise the (wrong, collapse-preferring) point-mode cost.
+> **Status: implemented as two EXACT, cross-validating reference solvers** in
+> `network_matching/dag_conditioning.py` (`conditioned_labels(..., method="recursive" | "fvs")`).
+> They are **not wired into `match_dag_to_bgraph`** — see the finding below — but they exist as the
+> exact joint solver for a genuine loop and, more importantly, as a **mutual validation**: the
+> recursive minimum-vertex-cut and the one-shot minimum-FVS share an **exact min-sum BP forest
+> solver** (below), so on *any* DAG they must return **equal-cost** labellings. `scripts/
+> dag_conditioning_validate.py` + `tests/test_dag_conditioning.py` check this on the scenarios, on a
+> `double_diamond` (`|F| = 2`, the case that actually separates the two methods), across a
+> perturbation sweep (225/225 agree), and against an independent brute-force optimum.
+>
+> **Why not wired in — the finding.** Applied to the synthetic `diamond` under shift it does **not**
+> help and even scores *worse* than the shipped heuristic, because **the `diamond`'s failures are NOT
+> loop failures.** Pin the split `j1` to the *exact* B-split and solve the branches: point mode
+> *still* collapses **both** A-branches onto the nearer B-edge, because that genuinely costs **less**,
+> and the correct split never appears at *any* cut label. That is the **nearest-vs-corresponding**
+> limit (§3.2c note), not reconvergence; the real fix needs a **direction term** (segment/bearing).
+> The exact solver only confirms this — the collapse *is* the true minimum-drift optimum in point
+> mode. So the shipped matcher keeps the §3.2a reachability-guarded backtrack; the conditioning
+> solvers live alongside as exact reference + validation.
+>
+> **The exact forest solver (why the two methods provably agree).** Conditioning is only exact if the
+> *forest* base solver is exact. The §3.2a reachability-guarded backtrack is a **heuristic** — and the
+> cross-check caught it: on `double_diamond` the two methods *disagreed* (29.09 vs 29.33) because they
+> condition on different vertices and the heuristic's output depends on that choice. Replacing it with
+> **min-sum belief propagation** on the polytree (unary = drift, folded pinned boundaries; pairwise =
+> the directed reachability constraint; exact on any tree) makes the forest solve a true global
+> optimum, and then both decompositions agree exactly (`double_diamond` → 28.93 for both, *below*
+> either heuristic value). This is the honest lesson of the whole §3.2 arc: **the labels are the hard
+> part, and "conditioning" buys exactness only on top of an exact forest solver.**
 
 **The general problem.** Choosing the junction labels is a joint discrete optimisation (§3.2c).
 Forward–backward solves it **exactly on a tree** and only on a tree, because message passing is
@@ -490,6 +505,61 @@ graph-DTW's raw `D` value — it is **not** the number you report. The reported 
 **average drift** `C_total / (matched steps)` (meters, comparable to graph-DTW's `avg_distance` and
 the `resolve_routes` thresholds), plus the **per-A-edge** breakdown and **coverage %**. Junction
 consistency is a structural guarantee, not part of the cost.
+
+### 3.4 Horizontal emission weight `α` — cheaper 1:N coverage, no laundering
+
+The **(H) horizontal** move is "A stays at `a` while B advances" — how a *single* A-vertex covers a
+*run* of B-vertices (a 1:N match). The plain recurrence pays `E(a, ·)` at **every** covered
+B-vertex, so the cost of one A-point matching a B-stretch grows **linearly with how finely B is
+sampled** — an arbitrary quantity. We want to *decrease the cost of one A-point matching many
+B-points.*
+
+**Why not discount the carried cost.** The first idea — multiply the *carried* horizontal cost,
+`… + min(α·D[a][v'], (A))` — saturates the coverage cost (nice) but, for `α < 1`, makes the
+horizontal step's effective edge weight **negative** (a low-drift B-vertex can *lower* `D`), so the
+DP "launders" cost by wandering through cheap B-vertices. Verified real: it re-weights the alignment
+by *recency* and shifted `diamond` `avg_drift` 0.55 → 0.74. Rejected.
+
+**The fix — discount the EMISSION, and only on a horizontal step.** Weight `E(a, v)` by `α`, but
+apply the discount **only when the vertex is reached by extending coverage** (the min came from the
+horizontal `D[a][v']`); a genuinely new match (reached by A-advance) pays full `E`:
+
+```
+D[a][v] = α · E(a, v) + min(
+      (H)  min_{v' ∈ Bpred(v)}  D[a][v'],                                       # B-advances, A STAYS
+      (A)  Σ_{a' ∈ Apred(a)}  (1/outdeg(a')) · min_{v' ∈ Bpred(v) ∪ {v}} D[a'][v']   # A-advances
+)
+      with  α = horizontal_weight (≤ 1)  if the min is the (H) term (came from D[a][v']),
+            α = 1                          if the min is the (A) term (a new A-vertex's first match).
+```
+
+Unrolling a coverage `v₀ → … → v_k` (drift `δ`): `v₀` is entered by A-advance (full `δ`), the rest
+by horizontal (`α·δ` each), so the coverage cost is `δ · (1 + α·k)`:
+
+| B-run length k | `α = 1` | `α = 0.5` | `α = 0` |
+|---|---|---|---|
+| 1 (1:1) | δ | δ | δ |
+| 6 | 7δ | 4δ | δ |
+| 30 | 31δ | 16δ | δ |
+
+So `α = 1` is today's per-B-point charge; `α < 1` discounts each *extra* covered B-vertex; `α → 0`
+charges the coverage essentially **once** (sampling-independent). Crucially the discount is a
+**non-negative local emission** (`α·E ≥ 0`), added per step — `D` never decreases along a coverage,
+so there is **no laundering** and the routing (the `min(H, A)` decision on carried cost) is
+unchanged; only the *emission charged* differs.
+
+**Implementation.** With `α = 1` the recurrence is bit-for-bit today's (the Dijkstra horizontal is
+untouched). For `α ≠ 1` the emission depends on which move wins, so the (H) pass is resolved in
+**B-topological order** (compute `h = min D[a][v']` and `A`; the winner sets `α`, then
+`D = α·E + min(h, A)`); a cyclic local B-graph falls back to bounded iterative relaxation. The step
+adds a non-negative emission, so — unlike the carried-cost form — plain forward relaxation is valid.
+
+**Trade-offs.** (1) It changes the cost **meaning**: `C_total` is no longer `Σ drift` and stops being
+comparable to graph-DTW's `avg_distance` / the `resolve_routes` thresholds. (2) Very small `α` makes
+extra coverage nearly free, so an A-vertex can **over-cover** (grab more B than it should) — keep `α`
+comfortably above 0 unless pay-once is truly wanted. (3) It is **orthogonal** to the junction-label
+and nearest-vs-corresponding problems (§3.2) — it only reshapes 1:N coverage *within* an edge.
+Default `1.0`; reach for `α < 1` only when 1:N cost scaling with B-sampling density is the problem.
 
 ---
 
