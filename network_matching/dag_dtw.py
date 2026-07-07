@@ -24,11 +24,13 @@ acyclic; a cyclic source raises :class:`NotADAG`.
 
 **Junction resolution -- forward + backward (docs §3.2a).** Two cost tables are built with the
 same :func:`_dp_table`: the **forward** ``D`` (sources -> a) and the **backward** ``B`` (a ->
-sinks, on the reversed graphs, with the symmetric ``1/indeg`` split). Each A-vertex is then labelled
-jointly, ``φ(a) = argmin_v (D[a][v] + B[a][v] - E(a,v))`` -- the label *all* routes through ``a``
-agree on, scored once for everyone. This replaces a greedy per-sink backtrack, which let two routes
-disagree at a shared junction (a backward step); forward+backward is **exact on tree-shaped source
-DAGs** (a reconvergent *diamond* is the remaining caveat).
+sinks, on the reversed graphs, with the symmetric ``1/indeg`` split). Each A-vertex is labelled by a
+reverse-topological backtrack that scores by the **joint** cost ``D[a][v] + B[a][v] - E(a,v)`` (the
+value all routes through ``a`` agree on) **subject to a reachability constraint** (the chosen v must
+still walk forward to every successor's φ). The joint score resolves two routes disagreeing at a
+shared junction; the constraint keeps the topology consistent (a shifted source edge can't collapse
+onto a nearest cross road). **Clean on all tree scenarios** (a reconvergent *diamond* is the
+remaining caveat).
 
 **Two stages.** The tables + joint labels decide the **topology** -- which B-edges each A-edge maps
 to (the route). A second :func:`_arclength_rematch` pass then decides the **position** -- each
@@ -305,16 +307,49 @@ def match_dag_to_bgraph(
     sinks = [a for a in range(NA) if len(ga.succ_arcs[a]) == 0]
     total_cost = float(sum(np.min(D[t]) for t in sinks)) if sinks else float("inf")
 
-    # φ(a) = argmin_v ( D[a][v] + B[a][v] - E(a,v) ): the label ALL routes through a agree on,
-    # scored ONCE for everyone. Subtract E(a,v) (the local cost) -- it is counted in both tables.
-    # This is the joint min-sum resolution that stops two routes disagreeing at a shared junction
-    # (the backward step of the old per-sink greedy backtrack). The arc-length re-match below then
-    # fills each chain smoothly between these pinned labels.
+    # φ by reverse-topological backtrack, combining BOTH ideas:
+    #   * score each A-vertex by the JOINT cost D[a][v] + B[a][v] - E(a,v) -- the forward+backward
+    #     value all routes through a agree on (subtract E, counted in both tables). This resolves
+    #     two routes disagreeing at a shared junction (§3.2a);
+    #   * subject to a REACHABILITY constraint -- the chosen v must still walk FORWARD to every
+    #     successor's φ. This keeps the topology consistent: a source edge can't collapse onto a
+    #     cross road just because it is nearest, and no arc goes backward.
+    # (Pure per-vertex argmin of D+B drops the constraint and lets a shifted source edge jump onto
+    #  a neighbouring B-edge; the greedy D-only score disagrees at shared junctions. Together they
+    #  are clean on all tree scenarios.)
+    reach_sets: Dict[int, set] = {}
+
+    def _reach(v: int) -> set:
+        s = reach_sets.get(v)
+        if s is None:
+            s = {v}
+            stack = [v]
+            while stack:
+                u = stack.pop()
+                for w in gb.succ_arcs[u]:
+                    if w not in s:
+                        s.add(w)
+                        stack.append(w)
+            reach_sets[v] = s
+        return s
+
     phi: Dict[int, int] = {}
-    for a in range(NA):
+    for a in reversed(order):
         ei = np.hypot(bx - ax[a], by - ay[a])
         tot = D[a] + B[a] - ei
-        phi[a] = int(np.argmin(tot)) if np.isfinite(np.min(tot)) else int(np.argmin(D[a]))
+        succ = ga.succ_arcs[a]
+        if not succ:                                   # sink: free choice (min joint cost)
+            phi[a] = int(np.argmin(tot))
+            continue
+        targets = [phi[s] for s in succ if s in phi]
+        chosen = None
+        for v in np.argsort(tot):                      # jointly-cheapest first
+            if not np.isfinite(tot[v]):
+                break
+            if all(t in _reach(int(v)) for t in targets):
+                chosen = int(v)
+                break
+        phi[a] = chosen if chosen is not None else int(np.argmin(tot))
 
     # --- routes (topology) from the monotone backtrack, with junction-touch trim ---
     # per (A-edge, B-edge) vertex counts, in topological order, so a leading/trailing junction

@@ -253,7 +253,11 @@ exercise the merge rule.)
 > **Status: implemented** (replaces the greedy backtrack of §3.2). Over a wide perturbation sweep
 > (512 configs) the backward step is **eliminated on tree-shaped source DAGs** — `chain`, `merge`
 > clean, `y_split` clean except one extreme case; only the reconvergent **`diamond`** still fails
-> (the documented caveat). `φ(a) = argmin_v (D[a][v] + B[a][v] − E(a,v))`.
+> (the documented caveat). The label is chosen by a reverse-topological backtrack that scores by
+> `D[a][v] + B[a][v] − E(a,v)` **subject to** the chosen `v` still reaching every successor's `φ` —
+> the joint score resolves the shared-junction disagreement, and the reachability constraint keeps
+> a shifted source edge from collapsing onto a nearest cross road (a *pure* per-vertex `argmin(D+B)`
+> drops the constraint and regresses that case).
 
 **The real cause of the backward step.** Two routes source₁→sink₁ and source₂→sink₂ pass through
 the **same junction `j`**. Optimised *independently*, route₁ wants `j` at one B-vertex and route₂
