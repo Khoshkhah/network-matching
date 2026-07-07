@@ -190,6 +190,38 @@ def test_horizontal_weight_coverage_cost_and_monotone():
         assert all(row[v] >= row[v - 1] - 1e-9 for v in range(1, N)), "coverage cost must not decrease"
 
 
+def test_emission_point_is_default_and_unchanged():
+    # emission="point" is the default and bit-for-bit today's result on every scenario.
+    for name in DAG_SCENARIOS:
+        sc = get_dag(name)
+        r_def = match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], **sc["defaults"])
+        r_pt = match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], emission="point", **sc["defaults"])
+        assert r_def["phi"] == r_pt["phi"]
+        assert r_def["total_cost"] == pytest.approx(r_pt["total_cost"], abs=1e-9)
+
+
+def test_segment_bearing_fixes_diamond_under_shift():
+    # under a lateral shift the point mode collapses a diamond branch onto the nearer wrong-direction
+    # B-edge; the segment+bearing emission resolves it to the corresponding B-edge.
+    sc = get_dag("diamond")
+    A = _edges_to_ls(perturb_dag(sc["a_edges"], shift=8))
+    want = {f"A_{k}": f"B_{k}" for k in ("in", "up", "dn", "up2", "dn2", "out")}
+    r_pt = match_dag_to_bgraph(A, sc["b_edges"], emission="point", **sc["defaults"])
+    r_seg = match_dag_to_bgraph(A, sc["b_edges"], emission="segment", bearing_weight=3.0, **sc["defaults"])
+    pt_ok = all(r_pt["routes"].get(a, [None])[0] == b for a, b in want.items())
+    seg_ok = all(r_seg["routes"].get(a, [None])[0] == b for a, b in want.items())
+    assert not pt_ok, "expected point mode to mis-route the shifted diamond"
+    assert seg_ok, f"segment+bearing should resolve the diamond, got {dict(r_seg['routes'])}"
+    # same output schema as point mode
+    assert set(r_seg) == set(r_pt)
+
+
+def test_segment_unknown_emission_raises():
+    sc = get_dag("chain")
+    with pytest.raises(ValueError):
+        match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], emission="bogus", **sc["defaults"])
+
+
 @pytest.mark.parametrize("name", ["chain", "y_split", "merge"])
 def test_require_tree_accepts_forests(name):
     # a tree / polytree source passes require_tree=True and matches identically to the default.

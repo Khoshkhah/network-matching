@@ -181,16 +181,57 @@ def _gb_arcs(gb: LocalBGraph) -> Tuple[np.ndarray, np.ndarray]:
 # --------------------------------------------------------------------------------------
 # The DAG-DTW cost table (run forward, and backward on the reversed graphs)
 # --------------------------------------------------------------------------------------
-def _dp_table(pred_arcs, succ_arcs, outdeg, gb_succ, bu, bw, order, ax, ay, bx, by,
+def _vertex_segments(g):
+    """Per-vertex ``(mid_x, mid_y, bearing_deg)`` of the segment a vertex owns on its own edge (docs
+    §3.5): vertex ``v`` pairs with its same-edge successor ``w`` (``v→w``); the last vertex of an edge
+    falls back to its incoming same-edge segment; a degenerate 1-vertex edge falls back to ``mid=v,
+    bearing=0``. Bearing is the compass convention ``(deg·atan2(Δx, Δy) + 360) mod 360``."""
+    N = g.n_vertices
+    vx, vy, ve = g.vx, g.vy, g.vert_edge
+    mx, my, bear = vx.astype(float).copy(), vy.astype(float).copy(), np.zeros(N)
+    for v in range(N):
+        e = ve[v]
+        w = next((s for s in g.succ_arcs[v] if ve[s] == e), None)       # same-edge successor v→w
+        if w is not None:
+            dx, dy = vx[w] - vx[v], vy[w] - vy[v]
+            mx[v], my[v] = 0.5 * (vx[v] + vx[w]), 0.5 * (vy[v] + vy[w])
+        else:
+            u = next((p for p in g.pred_arcs[v] if ve[p] == e), None)   # incoming u→v (edge end)
+            if u is None:
+                continue                                                # degenerate: keep mid=v, bear=0
+            dx, dy = vx[v] - vx[u], vy[v] - vy[u]
+            mx[v], my[v] = 0.5 * (vx[u] + vx[v]), 0.5 * (vy[u] + vy[v])
+        bear[v] = (np.degrees(np.arctan2(dx, dy)) + 360.0) % 360.0
+    return mx, my, bear
+
+
+def _emission_matrix(ga, gb, emission, bearing_weight):
+    """The ``(NA, NB)`` emission ``E(a, v)`` (docs §3.5). ``"point"``: point-to-point distance
+    (bit-for-bit today's inline ``hypot``). ``"segment"``: middle-to-middle distance +
+    ``bearing_weight · circ(bearing(a), bearing(v))``, ``circ ∈ [0,180]`` degrees."""
+    ax, ay, bx, by = ga.vx, ga.vy, gb.vx, gb.vy
+    if emission == "point":
+        return np.hypot(bx[None, :] - ax[:, None], by[None, :] - ay[:, None])
+    if emission == "segment":
+        amx, amy, abear = _vertex_segments(ga)
+        bmx, bmy, bbear = _vertex_segments(gb)
+        dist = np.hypot(bmx[None, :] - amx[:, None], bmy[None, :] - amy[:, None])
+        bd = np.abs(abear[:, None] - bbear[None, :])
+        return dist + float(bearing_weight) * np.minimum(bd, 360.0 - bd)
+    raise ValueError(f"unknown emission {emission!r}; use 'point' or 'segment'")
+
+
+def _dp_table(pred_arcs, succ_arcs, outdeg, gb_succ, bu, bw, order, emit,
               horizontal_weight=1.0):
     """Fill the DAG-DTW cost table for a graph in ONE direction (docs §3, §3.2a). Called forward
     with (GA, GB) and backward with the reversed graphs; ``pred_arcs``/``succ_arcs`` are the A-graph
     adjacency in the current direction, ``outdeg`` its out-degree (the split factor -- ``1/outdeg``
     forward, ``1/indeg`` backward), and ``gb_succ``/``bu``/``bw`` the B-graph forward arcs in that
-    direction. ``horizontal_weight`` (α ≤ 1, docs §3.4) discounts the **emission** on a horizontal
-    coverage-extension step (α·E when the min comes from the (H) horizontal term, full E on an
-    A-advance); α=1 is the plain recurrence. Returns the ``(NA, NB)`` cost table."""
-    NA, NB = len(pred_arcs), len(bx)
+    direction. ``emit`` is the ``(NA, NB)`` emission matrix ``E(a, ·)`` (point distance, or segment
+    middle-to-middle + bearing, docs §3.5) -- the same for both passes. ``horizontal_weight`` (α ≤ 1,
+    docs §3.4) discounts the emission on a horizontal coverage-extension step (α·E when the min comes
+    from the (H) horizontal term, full E on an A-advance). Returns the ``(NA, NB)`` cost table."""
+    NA, NB = len(pred_arcs), emit.shape[1]
     D = np.full((NA, NB), float("inf"))
     alpha = float(horizontal_weight)
     btopo = _btopo(gb_succ, NB) if alpha != 1.0 else None    # B-topological order for the α≠1 (H) pass
@@ -201,7 +242,7 @@ def _dp_table(pred_arcs, succ_arcs, outdeg, gb_succ, bu, bw, order, ax, ay, bx, 
             for w in gb_succ[u]:
                 gb_pred[w].append(u)
     for a in order:
-        ei = np.hypot(bx - ax[a], by - ay[a])          # E(a, ·): point-to-point drift
+        ei = emit[a]                                   # E(a, ·): point distance, or segment+bearing
         preds = pred_arcs[a]
         acc = np.zeros(NB)                             # (A) term; source has an empty sum -> 0
         for ap in preds:
@@ -423,13 +464,20 @@ def match_dag_to_bgraph(
     *,
     snap_tolerance_m: float = 0.5,
     step_meters: float = 2.0,
+    emission: str = "point",
+    bearing_weight: float = 0.0,
     horizontal_weight: float = 1.0,
     require_tree: bool = False,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """Align the source DAG made of ``a_edges`` to the local directed graph of ``b_edges``.
 
-    Point-to-point v1: the emission is ``E(a, v) = dist(a, v)`` (no direction term).
+    ``emission`` (docs §3.5): ``"point"`` (default) scores ``E(a, v) = dist(a, v)``; ``"segment"``
+    scores the middle-to-middle segment distance ``+ bearing_weight·Δbearing`` (the direction term
+    that fixes the diamond). Only the emission changes -- the DP, junction machinery, and output are
+    identical, so ``"segment"`` returns the same result dict as ``"point"``, just a better alignment.
+    ``"point"`` is bit-for-bit today's result; ``bearing_weight`` (λ, same 1-5 scale as graph-DTW) is
+    used only in ``"segment"`` mode.
     ``horizontal_weight`` (α ≤ 1, docs §3.4) discounts the emission on a horizontal 1:N
     coverage-extension step (α·E), leaving a genuine A-advance match at full E; α=1 (default) is the
     plain recurrence, bit-for-bit unchanged. ``require_tree`` (docs §7): if True, assert the source
@@ -467,16 +515,20 @@ def match_dag_to_bgraph(
     bu, bw = _gb_arcs(gb)                               # GB forward arcs (tail, head)
     outdeg = np.array([max(1, len(ga.succ_arcs[a])) for a in range(NA)], float)
 
+    # Emission E(a,·): point distance, or segment middle-to-middle + bearing (docs §3.5); the SAME
+    # matrix drives the forward D, the backward B, and the D+B-E backtrack, so they stay consistent.
+    emit = _emission_matrix(ga, gb, emission, bearing_weight)
+
     # --- FORWARD + BACKWARD tables, then JOINT junction resolution (docs §3.2a) ---
     # Forward D[a][v] = cheapest cost to align sources -> a with a at v.
     outdeg_f = np.array([max(1, len(ga.succ_arcs[a])) for a in range(NA)], float)
     D = _dp_table(ga.pred_arcs, ga.succ_arcs, outdeg_f, gb.succ_arcs, bu, bw,
-                  order, ax, ay, bx, by, horizontal_weight)
+                  order, emit, horizontal_weight)
     # Backward B[a][v] = cheapest cost to align a -> sinks with a at v: reverse BOTH graphs
     # (GA sinks become sources; GB arcs flip) and run the same DP with the symmetric 1/indeg split.
     outdeg_b = np.array([max(1, len(ga.pred_arcs[a])) for a in range(NA)], float)
     B = _dp_table(ga.succ_arcs, ga.pred_arcs, outdeg_b, gb.pred_arcs, bw, bu,
-                  order[::-1], ax, ay, bx, by, horizontal_weight)
+                  order[::-1], emit, horizontal_weight)
 
     sinks = [a for a in range(NA) if len(ga.succ_arcs[a]) == 0]
     # DP DIAGNOSTIC, not the reported total: Σ_sinks min D is the DP's *discrete, unconstrained*
@@ -518,7 +570,7 @@ def match_dag_to_bgraph(
 
     phi: Dict[int, int] = {}
     for a in reversed(order):
-        ei = np.hypot(bx - ax[a], by - ay[a])
+        ei = emit[a]                                   # same emission as D/B, to undo the double-count
         tot = D[a] + B[a] - ei
         succ = ga.succ_arcs[a]
         if not succ:                                   # sink: free choice (min joint cost)

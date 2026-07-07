@@ -567,6 +567,53 @@ above 0 unless pay-once is truly wanted. (2) It is **orthogonal** to the junctio
 nearest-vs-corresponding problems (§3.2) — it only reshapes 1:N coverage. Default `1.0` (bit-for-bit
 today's result); reach for `α < 1` only when 1:N cost scaling with B-sampling density is the problem.
 
+### 3.5 Segment-to-segment emission with a bearing term — the direction fix
+
+Point mode's emission `E(a,v) = dist(a,v)` is blind to heading, so under a lateral shift a branch
+collapses onto the *nearest* B-edge rather than the *corresponding* one (the diamond, §3.2b/§3.2c).
+The fix is a **direction term**, added exactly the way graph-DTW's `emission="segment"` does it, and
+gated behind the same second mode (`emission="point" | "segment"`, default `"point"`).
+
+**Per-vertex segment.** Each vertex owns the segment starting at it along its own edge: vertex `v` on
+edge `e` pairs with `w`, its same-edge successor (`vert_edge[w] = e`). Define `mid(v) = ½(v + w)` and
+the **compass bearing** `bear(v) = (deg·atan2(Δx, Δy) + 360) mod 360` (graph-DTW's convention verbatim
+— `0° = north`, clockwise). The **last vertex** of an edge (no same-edge successor) falls back to its
+incoming segment `u → v`; a degenerate 1-vertex edge falls back to `mid=v, bear=0`.
+
+**The emission** (`λ = bearing_weight`, `circ(θ,φ) = min(|θ−φ|, 360−|θ−φ|) ∈ [0,180]`):
+
+```
+E_point(a, v)   = |a − v|                                              # today's, verbatim
+E_segment(a, v) = |mid(a) − mid(v)|  +  λ · circ(bear(a), bear(v))     # middle-to-middle + heading
+```
+
+**What changes and what does not.** *Only the emission row* changes. The `(a,v)` **vertex DP state**
+and **every** piece of junction machinery — forward `D`, backward `B`, the joint `D+B−E` reachability
+backtrack, `α`, `require_tree`, the arc-length re-match — and **the entire output dict** (`phi`,
+`routes`, `routes_detail`, …) are **untouched**: segment mode returns the *same output* as point mode
+(the user's constraint), only a better alignment. The emission is symmetric, so forward and backward
+share it (reversing both graphs rotates every bearing by 180°, leaving `circ` unchanged). The
+reported `avg_drift` stays the **raw point distance** of the chosen `φ` (decision-only, like `α`);
+`λ` and the middle-to-middle basis transfer directly from graph-DTW, so its tuned `λ ≈ 1–5` applies.
+
+**Guarantees & the diamond.** `emission="point"` (default) is **bit-for-bit** today's result.
+`emission="segment", λ = 0` is deliberately **under-constrained** (middle-to-middle only, no heading)
+and is *not* claimed equal to point mode — exactly as in graph-DTW. With `λ > 0` the diamond
+resolves: `A_up` (heading up) prefers `B_up` over the nearer-but-downward `B_dn`, because a
+wrong-heading match now costs `λ·(90–180)` "metres", dwarfing the few-metre distance saving. This is
+the actual cure for the nearest-vs-corresponding limit — orthogonal to `α` (§3.4, coverage) and to
+the junction machinery (§3.2a).
+
+**Measured effect & the rotation caveat.** Over the perturbation sweep, restricted to **lateral shift
++ noise** (`rot = 0`, the realistic regime), `segment@λ = 3` reduces the reconvergent failures without
+touching trees — `double_diamond` 14→8, `diamond` 9→7 of 32, `chain`/`y_split`/`merge` stay 0. The
+one honest caveat: the bearing term is, by design, sensitive to a **relative rotation between A and
+B**. Real conflation matches the *same* roads (A and B differ by a metre, not a heading), so this is
+harmless; but the synthetic sweep *rotates A while leaving B fixed*, which manufactures a global
+heading offset the term (correctly) penalises — so the `rot ≠ 0` rows of the sweep are adversarial to
+*any* heading model and should not be read as a regression. Tune `λ` to the expected A↔B rotation
+noise (0 if it can be large).
+
 ---
 
 ## 4. The DAG test — how the algorithm is debugged
