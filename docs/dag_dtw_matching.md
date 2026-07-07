@@ -316,46 +316,62 @@ This needs no cut vertex and no `D+B` identity, and is right for **any** shape.
 > tree-only shortcuts / sanity checks; the realized sum above is the definition. It is the same
 > reconvergence flaw that breaks the *labelling* (§3.2b) — here it corrupts the *cost*.
 
-### 3.2b Reconvergent DAGs — the diamond, and cutset conditioning (design, next version)
+### 3.2b Reconvergent DAGs — the general rule: feedback-vertex-set conditioning (design, next version)
 
 > **Status: design.** The shipped forward–backward (§3.2a) is exact on **trees** and clean on
-> `chain` / `merge` / `y_split`; only the reconvergent **`diamond`** still fails under large shift.
-> This section specifies the fix. Implement after this doc.
+> `chain` / `merge` / `y_split`; any **reconvergent** structure (the `diamond` is the smallest one)
+> still fails under large shift. This section specifies the general fix. The diamond is just the
+> `k = 1` instance of it. Implement after this doc.
 
-**Why a diamond is different — it's a loop.** A diamond is a **split** at `j1` into two branches
-that **re-merge** at `j2`. Drawn without arrows it is a **cycle** `j1 — up — j2 — down — j1`.
-Forward–backward message passing is exact only on graphs with **no cycles (trees)**. On a loop the
-two branches share **both** endpoints `j1` and `j2`, and nothing forces them to agree jointly: the
-backward table `B[j1][v]` *sums* the two downstream branches as if each could pick its **own** `j2`,
-so it under-counts, and the label `j1` gets can be inconsistent with what the branches actually need
-at `j2`. The two sides disagree where they re-meet → a backward step. (Concretely, this shows up
-only under a **large shift**, where it compounds with a branch drifting onto the wrong B-edge.)
+**The general problem.** Choosing the junction labels is a joint discrete optimisation (§3.2c).
+Forward–backward solves it **exactly on a tree** and only on a tree, because message passing is
+exact only when the graph has no undirected cycle. A DAG has an undirected cycle exactly where two
+directed paths from a common ancestor **re-meet** at a common descendant — a **reconvergence**. The
+smallest one is the diamond (`split j1 → {up, down} → merge j2`, an undirected cycle
+`j1 — up — j2 — down — j1`); real networks can have several, or nested ones. On any such cycle the
+two sides share **both** endpoints, and forward–backward lets each side pick its own label where
+they re-meet (the backward table `B[j1][v]` sums the branches as if each could choose its own `j2`),
+so they disagree there → a backward step. The reachability guard of §3.2a is not enough because the
+loop constrains the two junctions **both** ways at once.
 
-**The fix — break the loop by fixing one junction (cutset conditioning).** Pick a **loop cutset**:
-a small set of A-vertices whose removal turns `GA` into a tree. A single diamond needs **one** —
-say `j1`. Then:
+**The general fix — feedback-vertex-set conditioning.** Break *every* cycle by fixing a few
+vertices, turning the DAG into a forest the exact tree solver can handle:
 
-1. Restrict `j1`'s candidate labels to the B-vertices **near** `j1` (a handful — a far label can
-   never win), not all of `GB`.
-2. **For each candidate `v1`**: *fix* `φ(j1) = v1`. With `j1` pinned the loop is cut — the rest is a
-   **tree**, so run the §3.2a forward–backward on it (both branches now start from the *same* fixed
-   `v1` and are forced to a *shared* `j2`) and read the resulting total cost.
-3. Keep the `v1*` with the **minimum** total, fix `φ(j1) = v1*`, and solve that tree once more for
-   the full matching.
+1. **Find the loop cutset.** Take `GA`'s **undirected** skeleton and compute a (near-minimum)
+   **feedback vertex set** `F` — the smallest set of A-vertices whose removal leaves **no undirected
+   cycle** (a forest). *This is a feedback vertex set, not a min edge-cut:* we remove **vertices** to
+   kill cycles, not edges to separate sides. For a **tree** `F = ∅`; for one **diamond** `|F| = 1`
+   (either junction works); for `k` independent diamonds `|F| = k`.
+2. **Restrict candidates.** Each `f ∈ F` gets only the B-vertices **near** it (a handful — a far
+   label never wins), not all of `GB`.
+3. **Enumerate the cutset *jointly*.** For **each combination** of labels for `F`, *pin* them; the
+   remainder `GA − F` is now a **forest**, so solve it with the §3.2a forward–backward + reachability
+   guard and compute the **realized** total cost (§3.3).
+4. **Keep the lowest-realized-cost combination**, then solve its forest once more for the full `φ`.
 
-Fixing `j1` makes the two branches genuinely joint (they share the pinned start and are driven to a
-common merge), so the reconvergence disagreement disappears. Equivalent view: enumerate the pair
-`(φ(j1), φ(j2))` over nearby candidates and minimise
-`D_up-to-j1[v1] + up(v1→v2) + down(v1→v2) + B_below-j2[v2]`, where `up`/`down` are the branch
-alignments — the same joint optimisation, written as a 2-D search.
+**The one thing that must be joint, not greedy.** Step 3 **enumerates** the cutset's labels
+*together*; it does **not** pin each `f` to its own individually-best label and then solve. Pinning
+greedily re-creates the original disease one level up — a cutset vertex's best label depends on the
+components it joins, so a greedy choice can leave a component unable to fit. Trying the combinations
+*together* is what makes it exact. (For a single diamond this is the 2-D search over
+`(φ(j1), φ(j2))` minimising `D_up-to-j1[v1] + up(v1→v2) + down(v1→v2) + B_below-j2[v2]`.)
 
-**Scope & cost.** Cost is `(#candidates)^(cutset size)` tree-solves. A local junction neighbourhood
-has **one** diamond → one cutset vertex → a handful of candidates → a few extra tree-solves;
-cheap. Several independent diamonds multiply, so cap the candidate radius. This resolves the
-**loop** inconsistency exactly; the residual **nearest-vs-corresponding** error under an extreme
-shift (a branch physically lying on the wrong B-edge) is a separate point-mode limit that
-conditioning *reduces* (it tries alternative junction labels) but does not fully remove without a
-direction term.
+**Decomposition / recursion view.** Equivalently: pin `F`, and `GA − F` falls into independent
+tree **components**; solve each on its own. If you prefer to break loops **one at a time** rather
+than all at once, fix one cutset vertex, recurse into the pieces, and repeat until every piece is a
+tree — the same method, structured recursively.
+
+**Graceful degradation** (why this subsumes the shipped code): the method *is* the shipped solver
+when `F = ∅`. A tree needs no conditioning; a diamond enumerates one vertex's ~5 candidates; `k`
+diamonds cap the candidate radius so it stays bounded.
+
+**Scope & cost.** `(#candidates)^|F|` forest-solves. A local junction neighbourhood has a tiny `F`
+(0–1 usually) and few candidates each, so this is a handful of extra solves — cheap and **exact**
+for the loop inconsistency. (Exact FVS is NP-hard in general, but the local graphs are small; a
+greedy "remove the highest-cycle-participation vertex until acyclic" cutset is fine.) The residual
+**nearest-vs-corresponding** error under an *extreme* shift (a branch physically lying on the wrong
+B-edge) is a separate point-mode limit that conditioning *reduces* (it tries alternative labels) but
+does not remove without a direction term.
 
 ### 3.2c Extracting the matching — the hard part is *jointly-consistent junction labels*
 
