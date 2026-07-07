@@ -312,6 +312,80 @@ def _arclength_rematch(ga, gb, routes, a_geoms, b_geoms, phi0):
 
 
 # --------------------------------------------------------------------------------------
+# Per-A-edge route detail: route + score + partial-coverage start/end fractions (docs §6.1)
+# --------------------------------------------------------------------------------------
+def _route_detail(ga, gb, routes, phi, b_geoms):
+    """For each A-edge, the mapped route with a score AND exactly where the route starts/ends on its
+    boundary B-edges. ``t`` is the fractional arc-length position (0..1) along a B-edge, in the
+    B-edge's own direction; only the first/last B-edge can be partial. Computed from ``φ`` and the
+    B-edge geometries -- no extra DP. Returns ``{a_edge_id -> detail dict}`` (docs §6.1)."""
+    detail: Dict[Any, Dict[str, Any]] = {}
+    edge_verts: Dict[int, List[int]] = {}
+    for a in range(ga.n_vertices):
+        if a in phi:
+            edge_verts.setdefault(int(ga.vert_edge[a]), []).append(a)
+
+    for e_idx, verts in edge_verts.items():
+        a_edge_id = ga.edge_ids[e_idx]
+        route = list(routes.get(a_edge_id, []))
+        if not route:
+            continue
+        per: Dict[Any, List[Tuple[float, float]]] = {b: [] for b in route}   # b_edge -> [(t, drift)]
+        all_drifts: List[float] = []
+        for a in verts:
+            v = phi[a]
+            beid = gb.edge_ids[gb.vert_edge[v]]
+            drift = float(np.hypot(ga.vx[a] - gb.vx[v], ga.vy[a] - gb.vy[v]))
+            all_drifts.append(drift)
+            if beid in per:
+                g = b_geoms.get(beid)
+                t = float(g.project(Point(gb.vx[v], gb.vy[v]), normalized=True)) if g is not None else 0.0
+                per[beid].append((t, drift))
+
+        edges_out: List[Dict[str, Any]] = []
+        covered_len = 0.0
+        n = len(route)
+        for i, b in enumerate(route):
+            ts = per[b]
+            if not ts:                                       # a route edge with no landed vertex
+                continue
+            tvals = [t for t, _d in ts]
+            dvals = [d for _t, d in ts]
+            lo, hi = min(tvals), max(tvals)
+            if n == 1:
+                t_from, t_to = lo, hi                        # single edge: entry .. exit on one B-edge
+            elif i == 0:
+                t_from, t_to = lo, 1.0                       # first: entry .. end of b1
+            elif i == n - 1:
+                t_from, t_to = 0.0, hi                       # last: start of bk .. exit
+            else:
+                t_from, t_to = 0.0, 1.0                      # interior: full
+            g = b_geoms.get(b)
+            xy_from = tuple(g.interpolate(t_from, normalized=True).coords[0]) if g is not None else None
+            xy_to = tuple(g.interpolate(t_to, normalized=True).coords[0]) if g is not None else None
+            covered_len += (t_to - t_from) * (g.length if g is not None else 0.0)
+            edges_out.append({"b_edge": b, "t_from": t_from, "t_to": t_to,
+                              "cover_pct": 100.0 * (t_to - t_from),
+                              "avg_drift": float(np.mean(dvals)),
+                              "xy_from": xy_from, "xy_to": xy_to})
+        if not edges_out:
+            continue
+        detail[a_edge_id] = {
+            "route": route,
+            "avg_drift": float(np.mean(all_drifts)),
+            "max_drift": float(np.max(all_drifts)),
+            "n_points": len(verts),
+            "covered_len_m": covered_len,
+            "start": {"b_edge": edges_out[0]["b_edge"], "t": edges_out[0]["t_from"],
+                      "xy": edges_out[0]["xy_from"]},
+            "end": {"b_edge": edges_out[-1]["b_edge"], "t": edges_out[-1]["t_to"],
+                    "xy": edges_out[-1]["xy_to"]},
+            "edges": edges_out,
+        }
+    return detail
+
+
+# --------------------------------------------------------------------------------------
 # The joint DP
 # --------------------------------------------------------------------------------------
 def match_dag_to_bgraph(
@@ -335,6 +409,10 @@ def match_dag_to_bgraph(
     - ``phi``: ``{a_vertex_index -> b_vertex_index}`` -- the junction-consistent label map;
     - ``a_vertex_match``: per A-vertex ``(x, y, b_vertex, b_edge_id, drift)``;
     - ``routes``: ``{a_edge_id -> [b_edge_id, ...]}`` the ordered B-edges each A-edge maps to;
+    - ``routes_detail``: ``{a_edge_id -> {route, avg_drift, max_drift, n_points, covered_len_m,
+      start, end, edges}}`` -- the route with a score AND where it starts/ends on its boundary
+      B-edges (a 0..1 fraction ``t`` and a map ``xy``; only the first/last B-edge can be partial),
+      docs §6.1;
     - ``total_cost`` (realized ``Σ E(a, φ(a))``, consistent with ``avg_drift``) and ``avg_drift``
       (mean per-A-vertex drift); ``dp_cost`` = ``Σ_sinks min D`` (the DP's discrete optimum -- a
       diagnostic, not a bound on ``total_cost``);
@@ -509,6 +587,7 @@ def match_dag_to_bgraph(
         "phi": phi,
         "a_vertex_match": a_vertex_match,
         "routes": routes,
+        "routes_detail": _route_detail(ga, gb, routes, phi, b_geoms),   # per-edge score + coverage
         "total_cost": float(sum(drifts)) if drifts else float("inf"),   # REALIZED Σ E(a, φ(a))
         "dp_cost": dp_cost,                                             # Σ_sinks min D (DP optimum)
         "avg_drift": float(np.mean(drifts)) if drifts else float("inf"),

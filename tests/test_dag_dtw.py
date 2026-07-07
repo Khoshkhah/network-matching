@@ -190,6 +190,44 @@ def test_horizontal_weight_coverage_cost_and_monotone():
         assert all(row[v] >= row[v - 1] - 1e-9 for v in range(1, N)), "coverage cost must not decrease"
 
 
+def test_routes_detail_full_coverage():
+    # every A-edge gets a detail entry; on a clean scenario each B-edge is fully covered (t 0->1).
+    res = _match("diamond")
+    assert set(res["routes_detail"]) == set(res["routes"])
+    for aid, d in res["routes_detail"].items():
+        assert d["route"] == list(res["routes"][aid])
+        assert d["start"]["t"] == pytest.approx(0.0, abs=1e-6)
+        assert d["end"]["t"] == pytest.approx(1.0, abs=1e-6)
+        assert np.isfinite(d["avg_drift"]) and d["n_points"] > 0
+        assert d["covered_len_m"] > 0
+
+
+def test_routes_detail_partial_coverage_fractions():
+    # a short A-edge over a long B-edge: the route starts/ends mid-B, captured as 0..1 fractions.
+    A = [("Ax", LineString([(10, 0), (25, 0)]))]
+    B = [("Bx", LineString([(0, 0.4), (40, 0.4)]))]
+    res = match_dag_to_bgraph(A, B, snap_tolerance_m=0.5, step_meters=2.0)
+    d = res["routes_detail"]["Ax"]
+    assert d["route"] == ["Bx"]
+    assert d["start"]["t"] == pytest.approx(10 / 40, abs=0.03)   # enters ~25 % along Bx
+    assert d["end"]["t"] == pytest.approx(25 / 40, abs=0.03)     # exits ~62.5 %
+    assert d["start"]["xy"][0] == pytest.approx(10.0, abs=0.6)
+    assert d["end"]["xy"][0] == pytest.approx(25.0, abs=0.6)
+
+
+def test_routes_detail_partial_first_and_last_edge():
+    # a route spanning a B junction: first edge covered entry->end, last edge start->exit.
+    A = [("A1", LineString([(7, 0), (23, 0)]))]
+    B = [("B1", LineString([(0, 0.4), (15, 0.4)])), ("B2", LineString([(15, 0.4), (30, 0.4)]))]
+    res = match_dag_to_bgraph(A, B, snap_tolerance_m=0.5, step_meters=2.0)
+    d = res["routes_detail"]["A1"]
+    assert d["route"] == ["B1", "B2"]
+    assert d["edges"][0]["t_to"] == pytest.approx(1.0, abs=1e-6)     # first edge runs to its end
+    assert d["edges"][-1]["t_from"] == pytest.approx(0.0, abs=1e-6)  # last edge starts at its start
+    assert d["start"]["t"] == pytest.approx(7 / 15, abs=0.06)
+    assert d["end"]["t"] == pytest.approx(8 / 15, abs=0.06)
+
+
 def test_horizontal_weight_extends_coverage():
     # α < 1 makes 1:N coverage cheaper, so it should extend at least one route on a case where
     # coverage is a genuine choice (the shifted diamond).

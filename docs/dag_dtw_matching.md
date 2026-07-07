@@ -629,15 +629,49 @@ coloured A-edges, the joint correspondence, and `φ` at each junction.
 
 ---
 
-## 6. Output — two faces of one solve
+## 6. Output
 
-- **Debug / playground face** — the full **A-subgraph → B-subgraph correspondence**: the label map
-  `φ` (A-vertex → B-vertex), each A-edge's B-route, and the DP internals (cost tables, the warping
-  DAG, per-junction `φ`), for inspection and for the debug figure.
-- **Real / pipeline face** — the existing `routes_long` / `routes_summary` schema, one B-route per
-  A-edge as today, **plus** an `a_edge_id`-within-DAG column and a `junction_consistent` flag. A
-  DAG match still "divides per A-edge," so downstream code is unchanged; the only difference is the
-  routes were computed **jointly** and are guaranteed junction-consistent.
+`match_dag_to_bgraph` returns a dict. Alongside the raw `phi` / `a_vertex_match` / `total_cost` /
+`avg_drift` / `dp_cost` / `GA` / `GB` / `sources` / `sinks` (and, with `debug=True`, the `D` / `B`
+cost tables), the accurate, downstream-ready face is **`routes_detail`** — one entry per A-edge.
+
+### 6.1 `routes_detail` — per-A-edge route with score and partial-coverage geometry
+
+The plain `routes` field gives only the *ordered B-edge ids* per A-edge. `routes_detail` adds the
+**score** and — crucially — **exactly where the route begins and ends** on its boundary B-edges,
+which are typically only *partially* covered:
+
+```python
+res["routes_detail"][a_edge_id] = {
+    "route":        [b1, b2, ..., bk],     # ordered B-edges (== res["routes"][a_edge_id])
+    "avg_drift":    float,                  # score: mean per-point drift (m) over this A-edge
+    "max_drift":    float,                  #        worst per-point drift (m)
+    "n_points":     int,                    # A-vertices on this edge
+    "covered_len_m": float,                 # B-length actually traversed by this A-edge (m)
+    "start": {"b_edge": b1, "t": 0.0–1.0, "xy": (x, y)},   # WHERE the route begins on b1
+    "end":   {"b_edge": bk, "t": 0.0–1.0, "xy": (x, y)},   # WHERE the route ends on bk
+    "edges": [                              # per B-edge in the route, in order
+        {"b_edge": b, "t_from": 0.0–1.0, "t_to": 0.0–1.0, "cover_pct": float,
+         "avg_drift": float, "xy_from": (x, y), "xy_to": (x, y)},
+        ...
+    ],
+}
+```
+
+- **`t` is the fractional arc-length position along that B-edge** (`0` = the B-edge's start, `1` =
+  its end), computed by `shapely` `project(..., normalized=True)` in the B-edge's **own travel
+  direction**. So `start.t = 0.0` means the route begins exactly at `b1`'s start; `start.t = 0.30`
+  means it begins **30 % of the way along `b1`** (a partial first edge). `end.t` likewise pins the
+  partial last edge. This is the "number between zero and one" *and* the map location (`xy`).
+- **Only the first and last B-edge can be partial.** Interior B-edges are fully covered
+  (`t_from = 0.0`, `t_to = 1.0`, `cover_pct = 100`); a single-edge route (`k = 1`) carries the
+  route on one edge from `start.t` to `end.t`.
+- **`cover_pct`** per edge `= (t_to − t_from)·100` — how much of that B-edge this A-edge uses.
+- **Directed & jump-free by construction:** the fractions come from the final arc-length-re-matched
+  `φ` (§3.2), so `t` increases monotonically along the route.
+
+Computed purely from the returned `φ` and the B-edge geometries — no extra DP. `res["routes"]`
+stays as the terse id-only list for callers that don't need the detail.
 
 ---
 
