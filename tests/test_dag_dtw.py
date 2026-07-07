@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from network_matching.dag_dtw import NotADAG, match_dag_to_bgraph, topological_order  # noqa: E402
 from network_matching.dag_dtw import build_local_digraph  # noqa: E402
 from network_matching.dag_synthetic import DAG_SCENARIOS, get_dag  # noqa: E402
+from network_matching.dag_playground import perturb_dag, _edges_to_ls  # noqa: E402
 
 _OFF = 0.4  # the B offset used in the scenarios
 
@@ -155,3 +156,45 @@ def test_total_cost_and_all_scenarios_match():
         assert np.isfinite(res["total_cost"]) and res["total_cost"] > 0
         assert np.isfinite(res["avg_drift"])
         assert res["phi"], f"{name} produced no φ"
+
+
+# --------------------------------------------------------------------------------------
+# Horizontal emission weight α (docs §3.4)
+# --------------------------------------------------------------------------------------
+def test_horizontal_weight_one_is_unchanged():
+    # α = 1 (default) must be bit-for-bit today's result on every scenario.
+    for name in DAG_SCENARIOS:
+        sc = get_dag(name)
+        r_default = match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], **sc["defaults"])
+        r_one = match_dag_to_bgraph(sc["a_edges"], sc["b_edges"], horizontal_weight=1.0,
+                                    **sc["defaults"])
+        assert r_default["phi"] == r_one["phi"]
+        assert r_default["total_cost"] == pytest.approx(r_one["total_cost"], abs=1e-9)
+
+
+def test_horizontal_weight_coverage_cost_and_monotone():
+    # 1:N coverage cost over an N-vertex B-run at drift δ is δ·(1 + α·(N-1)), and D is monotone
+    # along the run (no laundering) -- checked directly on the α relaxation.
+    from network_matching.dag_dtw import _relax_alpha
+    delta = 0.4
+    for N in (1, 6, 30):
+        ei = np.full(N, delta)
+        acc = np.zeros(N); acc[1:] = 1e9            # A-advance only at the entry v0; rest via horizontal
+        gb_pred = [[] if v == 0 else [v - 1] for v in range(N)]
+        for alpha in (1.0, 0.5, 0.0):
+            row = np.full(N, np.inf)
+            _relax_alpha(row, ei, acc, gb_pred, list(range(N)), alpha)
+            assert row[N - 1] == pytest.approx(delta * (1 + alpha * (N - 1)), abs=1e-9)
+        row = np.full(N, np.inf)
+        _relax_alpha(row, ei, acc, gb_pred, list(range(N)), 0.3)
+        assert all(row[v] >= row[v - 1] - 1e-9 for v in range(1, N)), "coverage cost must not decrease"
+
+
+def test_horizontal_weight_extends_coverage():
+    # α < 1 makes 1:N coverage cheaper, so it should extend at least one route on a case where
+    # coverage is a genuine choice (the shifted diamond).
+    sc = get_dag("diamond")
+    A = _edges_to_ls(perturb_dag(sc["a_edges"], shift=-6))
+    r1 = match_dag_to_bgraph(A, sc["b_edges"], horizontal_weight=1.0, **sc["defaults"])
+    r_low = match_dag_to_bgraph(A, sc["b_edges"], horizontal_weight=0.3, **sc["defaults"])
+    assert dict(r1["routes"]) != dict(r_low["routes"]), "α<1 should change the coverage here"

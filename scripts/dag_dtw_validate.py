@@ -43,6 +43,8 @@ EXPECT = {
     "merge": {"A_top": "B_top", "A_bot": "B_bot", "A_out": "B_out"},
     "diamond": {"A_in": "B_in", "A_up": "B_up", "A_dn": "B_dn",
                 "A_up2": "B_up2", "A_dn2": "B_dn2", "A_out": "B_out"},
+    "double_diamond": {f"A_{k}": f"B_{k}" for k in
+                       ("in", "up", "dn", "up2", "dn2", "mid", "up3", "dn3", "up4", "dn4", "out")},
 }
 
 PASS, FAIL = "\033[32mPASS\033[0m", "\033[31mFAIL\033[0m"

@@ -152,40 +152,95 @@ def _gb_arcs(gb: LocalBGraph) -> Tuple[np.ndarray, np.ndarray]:
 # --------------------------------------------------------------------------------------
 # The DAG-DTW cost table (run forward, and backward on the reversed graphs)
 # --------------------------------------------------------------------------------------
-def _dp_table(pred_arcs, succ_arcs, outdeg, gb_succ, bu, bw, order, ax, ay, bx, by):
+def _dp_table(pred_arcs, succ_arcs, outdeg, gb_succ, bu, bw, order, ax, ay, bx, by,
+              horizontal_weight=1.0):
     """Fill the DAG-DTW cost table for a graph in ONE direction (docs §3, §3.2a). Called forward
     with (GA, GB) and backward with the reversed graphs; ``pred_arcs``/``succ_arcs`` are the A-graph
     adjacency in the current direction, ``outdeg`` its out-degree (the split factor -- ``1/outdeg``
     forward, ``1/indeg`` backward), and ``gb_succ``/``bu``/``bw`` the B-graph forward arcs in that
-    direction. Returns the ``(NA, NB)`` cost table."""
+    direction. ``horizontal_weight`` (α ≤ 1, docs §3.4) discounts the **emission** on a horizontal
+    coverage-extension step (α·E when the min comes from the (H) horizontal term, full E on an
+    A-advance); α=1 is the plain recurrence. Returns the ``(NA, NB)`` cost table."""
     NA, NB = len(pred_arcs), len(bx)
     D = np.full((NA, NB), float("inf"))
+    alpha = float(horizontal_weight)
+    btopo = _btopo(gb_succ, NB) if alpha != 1.0 else None    # B-topological order for the α≠1 (H) pass
+    gb_pred = None
+    if alpha != 1.0:
+        gb_pred = [[] for _ in range(NB)]
+        for u in range(NB):
+            for w in gb_succ[u]:
+                gb_pred[w].append(u)
     for a in order:
         ei = np.hypot(bx - ax[a], by - ay[a])          # E(a, ·): point-to-point drift
         preds = pred_arcs[a]
-        if not preds:
-            base = ei.copy()                           # source: free entry (empty A-sum = 0)
+        acc = np.zeros(NB)                             # (A) term; source has an empty sum -> 0
+        for ap in preds:
+            m = D[ap].copy()                           # v'=v (vertical)
+            if bu.size:
+                np.minimum.at(m, bw, D[ap][bu])        # v'∈Bpred(v) (diagonal)
+            acc += m / outdeg[ap]                      # conserved-flow split factor
+
+        if alpha == 1.0:
+            D[a] = (ei + acc)                          # (H) within-a Dijkstra over the B-arcs
+            heap = [(D[a][v], v) for v in range(NB)]
+            heapq.heapify(heap)
+            while heap:
+                c, u = heapq.heappop(heap)
+                if c > D[a][u]:
+                    continue
+                for w in gb_succ[u]:
+                    cand = D[a][u] + ei[w]
+                    if cand < D[a][w]:
+                        D[a][w] = cand
+                        heapq.heappush(heap, (cand, w))
         else:
-            acc = np.zeros(NB)
-            for ap in preds:
-                m = D[ap].copy()                       # v'=v (vertical)
-                if bu.size:
-                    np.minimum.at(m, bw, D[ap][bu])    # v'∈Bpred(v) (diagonal)
-                acc += m / outdeg[ap]                  # conserved-flow split factor
-            base = ei + acc
-        D[a] = base.copy()                             # (H) within-a Dijkstra over the B-arcs
-        heap = [(base[v], v) for v in range(NB)]
-        heapq.heapify(heap)
-        while heap:
-            c, u = heapq.heappop(heap)
-            if c > D[a][u]:
-                continue
-            for w in gb_succ[u]:
-                cand = D[a][u] + ei[w]
-                if cand < D[a][w]:
-                    D[a][w] = cand
-                    heapq.heappush(heap, (cand, w))
+            # α≠1: emission depends on the winning move, so resolve (H) in B-topological order --
+            #   D[a][v] = α·E(a,v) + min(h, A)  with α = horizontal_weight if the (H) term h wins
+            #   (came from a covered D[a][v']), else α = 1 for the (A) A-advance term A.
+            _relax_alpha(D[a], ei, acc, gb_pred, btopo, alpha)
     return D
+
+
+def _btopo(gb_succ, NB):
+    """A topological order of the B-graph, or ``None`` if it has a directed cycle."""
+    indeg = [0] * NB
+    for u in range(NB):
+        for w in gb_succ[u]:
+            indeg[w] += 1
+    q = deque(v for v in range(NB) if indeg[v] == 0)
+    order = []
+    ind = indeg[:]
+    while q:
+        u = q.popleft(); order.append(u)
+        for w in gb_succ[u]:
+            ind[w] -= 1
+            if ind[w] == 0:
+                q.append(w)
+    return order if len(order) == NB else None
+
+
+def _relax_alpha(row, ei, acc, gb_pred, btopo, alpha):
+    """The α≠1 (H) pass (docs §3.4). ``row`` is filled in place: for each B-vertex the emission is
+    discounted (α·E) iff the horizontal term wins, else full E on the A-advance. Acyclic B -> one
+    topological pass; cyclic B -> bounded iterative relaxation (α<1 contracts, so it converges)."""
+    NB = len(ei)
+    if btopo is not None:
+        for v in btopo:
+            h = min((row[u] for u in gb_pred[v]), default=float("inf"))
+            row[v] = alpha * ei[v] + h if h < acc[v] else ei[v] + acc[v]
+        return
+    row[:] = ei + acc                                  # cyclic B: init at the A-advance upper bound
+    for _ in range(NB):
+        changed = False
+        for v in range(NB):
+            h = min((row[u] for u in gb_pred[v]), default=float("inf"))
+            nv = alpha * ei[v] + h if h < acc[v] else ei[v] + acc[v]
+            if nv < row[v] - 1e-12:
+                row[v] = nv
+                changed = True
+        if not changed:
+            break
 
 
 # --------------------------------------------------------------------------------------
@@ -265,11 +320,15 @@ def match_dag_to_bgraph(
     *,
     snap_tolerance_m: float = 0.5,
     step_meters: float = 2.0,
+    horizontal_weight: float = 1.0,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """Align the source DAG made of ``a_edges`` to the local directed graph of ``b_edges``.
 
     Point-to-point v1: the emission is ``E(a, v) = dist(a, v)`` (no direction term).
+    ``horizontal_weight`` (α ≤ 1, docs §3.4) discounts the emission on a horizontal 1:N
+    coverage-extension step (α·E), leaving a genuine A-advance match at full E; α=1 (default) is the
+    plain recurrence, bit-for-bit unchanged.
     ``a_edges`` / ``b_edges``: lists of ``(id, shapely LineString)`` in a projected CRS (meters).
     Returns a dict with:
 
@@ -299,12 +358,12 @@ def match_dag_to_bgraph(
     # Forward D[a][v] = cheapest cost to align sources -> a with a at v.
     outdeg_f = np.array([max(1, len(ga.succ_arcs[a])) for a in range(NA)], float)
     D = _dp_table(ga.pred_arcs, ga.succ_arcs, outdeg_f, gb.succ_arcs, bu, bw,
-                  order, ax, ay, bx, by)
+                  order, ax, ay, bx, by, horizontal_weight)
     # Backward B[a][v] = cheapest cost to align a -> sinks with a at v: reverse BOTH graphs
     # (GA sinks become sources; GB arcs flip) and run the same DP with the symmetric 1/indeg split.
     outdeg_b = np.array([max(1, len(ga.pred_arcs[a])) for a in range(NA)], float)
     B = _dp_table(ga.succ_arcs, ga.pred_arcs, outdeg_b, gb.pred_arcs, bw, bu,
-                  order[::-1], ax, ay, bx, by)
+                  order[::-1], ax, ay, bx, by, horizontal_weight)
 
     sinks = [a for a in range(NA) if len(ga.succ_arcs[a]) == 0]
     # DP DIAGNOSTIC, not the reported total: Σ_sinks min D is the DP's *discrete, unconstrained*

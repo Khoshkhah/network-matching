@@ -554,12 +554,18 @@ untouched). For `α ≠ 1` the emission depends on which move wins, so the (H) p
 `D = α·E + min(h, A)`); a cyclic local B-graph falls back to bounded iterative relaxation. The step
 adds a non-negative emission, so — unlike the carried-cost form — plain forward relaxation is valid.
 
-**Trade-offs.** (1) It changes the cost **meaning**: `C_total` is no longer `Σ drift` and stops being
-comparable to graph-DTW's `avg_distance` / the `resolve_routes` thresholds. (2) Very small `α` makes
-extra coverage nearly free, so an A-vertex can **over-cover** (grab more B than it should) — keep `α`
-comfortably above 0 unless pay-once is truly wanted. (3) It is **orthogonal** to the junction-label
-and nearest-vs-corresponding problems (§3.2) — it only reshapes 1:N coverage *within* an edge.
-Default `1.0`; reach for `α < 1` only when 1:N cost scaling with B-sampling density is the problem.
+**What it changes.** `α` lives inside the DP's *decision* cost (`D`, `B`), so it shifts **which
+alignment** `φ` is chosen — always toward *more* 1:N coverage (verified: on `diamond`/`double_diamond`
+under shift, `α = 0.3` extends routes like `A_up: [B_up] → [B_up, B_up2]`). The **reported**
+`total_cost` / `avg_drift` stay the **raw** `Σ drift` of that chosen `φ` (still meters, still
+comparable to graph-DTW's `avg_distance`) — α is not folded into the reported metric, only into the
+routing decision. On a plain 1:1 corridor (no coverage choice) `α` therefore changes nothing.
+
+**Trade-offs.** (1) Very small `α` makes extra coverage nearly free, so an A-vertex can
+**over-cover** (grab more B than it should — seen on the shifted `diamond`); keep `α` comfortably
+above 0 unless pay-once is truly wanted. (2) It is **orthogonal** to the junction-label and
+nearest-vs-corresponding problems (§3.2) — it only reshapes 1:N coverage. Default `1.0` (bit-for-bit
+today's result); reach for `α < 1` only when 1:N cost scaling with B-sampling density is the problem.
 
 ---
 
