@@ -288,17 +288,14 @@ The `− E(j, v)` removes the double count — the local cost of `j` at `v` sits
 value is the best whole-DAG cost among matchings that keep `j` at `v`; its minimiser is the label
 **all** routes through `j` agree on.
 
-**Assembling the whole matching.** Once every junction's `φ` is fixed, the junctions **cut the DAG
-into simple chains**, each running between two now-fixed points (junction/source/sink) with no
-branching inside. Backtrack each chain independently:
-
-- junction→junction chain: an ordinary single-path alignment between two *known* B-vertices;
-- a source/sink end stays **free** (graph-DTW's free entry/exit).
-
-There are **no conflicts left** — every shared point was pinned first — so stitching the chains
-yields `φ` for all A-vertices. This is the standard **forward–backward / min-sum message passing**
-on a tree, and for a tree-shaped junction neighbourhood it is **exact**: one consistent `φ` at
-every shared junction, no route stranded, no backward step.
+**Assembling the whole matching.** Once every junction's `φ` is fixed **consistently** (the hard
+part — see §3.2c), the junctions **cut the DAG into simple chains** between now-fixed points, and
+each chain is an ordinary single-path alignment between two *known* B-vertices (a source/sink end
+stays **free**). *If* the junction labels are jointly consistent, there are no conflicts left and
+stitching the chains yields `φ` for all A-vertices — but that "if" is the whole difficulty: choosing
+the labels so every chain still fits is a **joint** decision, not a per-junction `argmin` (§3.2c).
+On a tree this is achievable (exactly, or cheaply via the reachability guard); a **diamond** is
+where it needs the cutset trick of §3.2b.
 
 **Whole-DAG cost.** Either read it at a junction every route passes through (a cut vertex),
 `C_total = D[j][φ(j)] + B[j][φ(j)] − E(j, φ(j))`, or — when there is no single such junction —
@@ -351,47 +348,61 @@ shift (a branch physically lying on the wrong B-edge) is a separate point-mode l
 conditioning *reduces* (it tries alternative junction labels) but does not fully remove without a
 direction term.
 
-### 3.2c Extracting the matching — anchors + fixed-endpoint chain DTW (design, replaces the heuristic)
+### 3.2c Extracting the matching — the hard part is *jointly-consistent junction labels*
 
-> **Status: design — replaces the shipped heuristic.** The current code extracts the matching with
-> a greedy reverse-topological backtrack scored by `D+B−E` **plus an arc-length re-match** that
-> spreads each A-edge's vertices *proportionally* along its route. That arc-length step is a
-> **band-aid**: it guarantees "no jump" by construction but is **not** the minimum-cost alignment,
-> and the greedy backtrack + boundary-yield + reachability patches were all found empirically. This
-> section specifies the **principled** extraction that replaces all of them, so the result is
-> optimal by construction rather than by patching.
+> **The correction that matters.** It is tempting to think "once we have `φ(j)` at every junction,
+> the rest is easy." **The chains are easy; getting the `φ(j)` right is the hard part.** A chain is
+> a straight piece of A between two *fixed* B-points — a tiny, safe DP. But the junction labels must
+> be chosen **jointly**, so that every chain between them still runs *forward*. Choosing each
+> junction's label on its own (`argmin(D+B−E)` per junction) does **not** guarantee that, and under
+> a shift it fails (below). So the real work is the labels, not the fill-in. This section states the
+> problem that way; the shipped code approximates it, §3.2b solves the loop case.
 
-Once the cost tables `D` and `B` exist, extraction is exact and mechanical:
+**The two parts.**
 
-**Anchors.** The **anchor** vertices are the ones that are *not* plain interior points — sources
-(in-degree 0), sinks (out-degree 0), branches (out-degree > 1), merges (in-degree > 1). Anchors cut
-`GA` into **chains**: maximal runs of degree-(1-in, 1-out) vertices between two anchors.
+- **Anchors & chains (structure).** The **anchors** are the non-interior vertices — sources
+  (in-deg 0), sinks (out-deg 0), branches (out-deg > 1), merges (in-deg > 1). They cut `GA` into
+  **chains**: maximal runs of degree-(1-in, 1-out) vertices between two anchors.
+- **Chain fill-in (the easy part).** Given an anchor `a₀` pinned to `v₀` and `a₁` to `v₁`, the
+  chain between them is a linear A-path; align it to the best monotone B-walk **from `v₀` to `v₁`**
+  with a tiny fixed-endpoint DP (seed at `v₀`, force the last vertex to `v₁`, backtrack). Optimal,
+  monotone, jump-free **by construction**. This is the step we both assumed was the whole problem —
+  and it *is* trivial, *once the endpoints are right*.
 
-**Step 1 — pin the anchors** jointly, `φ(anchor) = argmin_v ( D[anchor][v] + B[anchor][v] − E )`.
-This is the label all routes through the anchor agree on (§3.2a). It behaves correctly at the free
-ends: a **source** (`D = E`) reduces to `argmin_v B` = the best *place to start*; a **sink**
-(`B = E`) to `argmin_v D` = the best *place to end* — graph-DTW's free entry/exit, no forcing to a
-B-edge boundary. (For a **diamond**, pin `j1`/`j2` with the cutset conditioning of §3.2b instead —
-that is the only anchors that need it.)
+**The hard part — the labels must be jointly consistent.** The problem is not "what is the best
+label for junction `j`?" It is:
 
-**Step 2 — align each chain with a fixed-endpoint DTW.** A chain runs from anchor `a₀` (pinned to
-`v₀`) to anchor `a₁` (pinned to `v₁`). Its interior A-vertices are a *linear path*, so align them to
-the best monotone B-walk **from `v₀` to `v₁`** with a tiny DP: seed the first chain vertex at `v₀`
-only, run the ordinary (linear) DAG-DTW recurrence along the chain, and **force the last vertex to
-`v₁`** (backtrack from `v₁`). This yields the interior `φ` that is **optimal, monotone, and
-jump-free by construction** — replacing the arc-length re-placement with the real minimum-cost
-alignment. Overshoot/undershoot is handled naturally (the DP collapses the surplus at the pinned
-end); the boundary-yield hack is no longer needed because the chain is aligned *between two fixed
-B-vertices*, never past them.
+> Choose B-labels for **all** anchors **at once** so that (a) each is cheap and (b) **every chain
+> between two anchors can still run forward** (`φ(a₀)` reaches `φ(a₁)` along GB arcs).
 
-**Step 3 — assemble.** `φ` for every vertex = pinned anchors ∪ backtracked chains. Read each
-A-edge's route off its chain's B-walk (group by `vert_edge`); the total cost is the sum of the chain
-costs plus each anchor's `E` once (§3.3).
+Per-junction `φ(j) = argmin_v (D[j][v] + B[j][v] − E)` optimises each junction **in isolation**. On
+clean data the isolated optima happen to agree. But a rigid shift drifts *everything* by roughly the
+same amount, creating many **near-ties** — two B-spots for a junction cost almost the same. Each
+junction then breaks its tie independently, two neighbours break theirs *inconsistently*, and the
+chain between them can no longer go forward → a **backward step**. (Verified: the pure per-junction
+`argmin` regresses `merge`/`y_split` under perturbation where the joint choice does not.) So the
+junction labels are a **joint** decision, not a bag of independent ones.
 
-**What this removes.** The arc-length re-match, the boundary-yield trim, and the reachability-greedy
-backtrack all disappear — each was a symptom-patch. The matching becomes: *correct tables → pin
-anchors → exact chain DTW*. Sequence rules (monotone, connected, no teleport) then hold **by
-construction** on trees, not by after-the-fact repair.
+**How the problem is met — cheap vs exact.**
+
+- **Cheap (shipped, clean on trees):** a reverse-topological backtrack that scores by
+  `D[a][v]+B[a][v]−E` **subject to a reachability constraint** — the chosen `v` must still reach
+  every successor's `φ`. That constraint is *precisely* a cheap enforcement of joint consistency: it
+  throws away the inconsistent tie-breaks. It is why the messy-looking guard beats the "pure"
+  per-junction `argmin`, and why trees come out clean. *(The current code also carries an arc-length
+  re-match; once the labels are jointly consistent that step can be replaced by the exact
+  fixed-endpoint chain DP above — a cleanup, not a correctness fix.)*
+- **Exact (for loops):** on a **diamond** the reachability guard is not enough, because the split
+  and merge constrain each other *both* ways around the loop. §3.2b's **cutset conditioning** is the
+  exact joint solution: fix one junction, which turns the loop into a tree where the guard *is*
+  enough, try its candidates, keep the best.
+
+**Assemble.** `φ` = the jointly-consistent anchor labels ∪ the chain fill-ins. Read each A-edge's
+route off its chain's B-walk; total cost = sum of chain costs + each anchor's `E` once (§3.3).
+
+**Bottom line.** *The chains were never the problem. The junction labels are — and they must be
+chosen together.* The reachability guard is the cheap joint solver (trees); cutset conditioning is
+the exact one (loops).
 
 ### 3.3 The objective — total map-match cost
 
