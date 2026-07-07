@@ -351,6 +351,48 @@ shift (a branch physically lying on the wrong B-edge) is a separate point-mode l
 conditioning *reduces* (it tries alternative junction labels) but does not fully remove without a
 direction term.
 
+### 3.2c Extracting the matching — anchors + fixed-endpoint chain DTW (design, replaces the heuristic)
+
+> **Status: design — replaces the shipped heuristic.** The current code extracts the matching with
+> a greedy reverse-topological backtrack scored by `D+B−E` **plus an arc-length re-match** that
+> spreads each A-edge's vertices *proportionally* along its route. That arc-length step is a
+> **band-aid**: it guarantees "no jump" by construction but is **not** the minimum-cost alignment,
+> and the greedy backtrack + boundary-yield + reachability patches were all found empirically. This
+> section specifies the **principled** extraction that replaces all of them, so the result is
+> optimal by construction rather than by patching.
+
+Once the cost tables `D` and `B` exist, extraction is exact and mechanical:
+
+**Anchors.** The **anchor** vertices are the ones that are *not* plain interior points — sources
+(in-degree 0), sinks (out-degree 0), branches (out-degree > 1), merges (in-degree > 1). Anchors cut
+`GA` into **chains**: maximal runs of degree-(1-in, 1-out) vertices between two anchors.
+
+**Step 1 — pin the anchors** jointly, `φ(anchor) = argmin_v ( D[anchor][v] + B[anchor][v] − E )`.
+This is the label all routes through the anchor agree on (§3.2a). It behaves correctly at the free
+ends: a **source** (`D = E`) reduces to `argmin_v B` = the best *place to start*; a **sink**
+(`B = E`) to `argmin_v D` = the best *place to end* — graph-DTW's free entry/exit, no forcing to a
+B-edge boundary. (For a **diamond**, pin `j1`/`j2` with the cutset conditioning of §3.2b instead —
+that is the only anchors that need it.)
+
+**Step 2 — align each chain with a fixed-endpoint DTW.** A chain runs from anchor `a₀` (pinned to
+`v₀`) to anchor `a₁` (pinned to `v₁`). Its interior A-vertices are a *linear path*, so align them to
+the best monotone B-walk **from `v₀` to `v₁`** with a tiny DP: seed the first chain vertex at `v₀`
+only, run the ordinary (linear) DAG-DTW recurrence along the chain, and **force the last vertex to
+`v₁`** (backtrack from `v₁`). This yields the interior `φ` that is **optimal, monotone, and
+jump-free by construction** — replacing the arc-length re-placement with the real minimum-cost
+alignment. Overshoot/undershoot is handled naturally (the DP collapses the surplus at the pinned
+end); the boundary-yield hack is no longer needed because the chain is aligned *between two fixed
+B-vertices*, never past them.
+
+**Step 3 — assemble.** `φ` for every vertex = pinned anchors ∪ backtracked chains. Read each
+A-edge's route off its chain's B-walk (group by `vert_edge`); the total cost is the sum of the chain
+costs plus each anchor's `E` once (§3.3).
+
+**What this removes.** The arc-length re-match, the boundary-yield trim, and the reachability-greedy
+backtrack all disappear — each was a symptom-patch. The matching becomes: *correct tables → pin
+anchors → exact chain DTW*. Sequence rules (monotone, connected, no teleport) then hold **by
+construction** on trees, not by after-the-fact repair.
+
 ### 3.3 The objective — total map-match cost
 
 The algorithm minimises the **total match cost of the whole DAG**: the sum of the local costs over
