@@ -316,12 +316,22 @@ This needs no cut vertex and no `D+B` identity, and is right for **any** shape.
 > tree-only shortcuts / sanity checks; the realized sum above is the definition. It is the same
 > reconvergence flaw that breaks the *labelling* (§3.2b) — here it corrupts the *cost*.
 
-### 3.2b Reconvergent DAGs — recursive minimum-vertex-cut conditioning (design, next version)
+### 3.2b Reconvergent DAGs — recursive minimum-vertex-cut conditioning
 
-> **Status: design.** The shipped forward–backward (§3.2a) is exact on **trees** and clean on
-> `chain` / `merge` / `y_split`; any **reconvergent** structure (the `diamond` is the smallest one)
-> still fails under large shift. This section specifies the general fix. The diamond is just the
-> `k = 1` instance of it. Implement after this doc.
+> **Status: implemented, tested, and REVERTED — with an important finding.** The recursion below was
+> built and swept. It is *correct* (clean `diamond` labels perfectly; it cuts at the split junction,
+> splits into `{source}` + a downstream forest, and the raw topology has **zero** backward steps).
+> **But it does not help the synthetic `diamond`, and made it worse (48 → 60 failing configs), so it
+> was reverted.** The reason is the finding: **the `diamond`'s failures are NOT loop failures.** Test
+> — pin the split junction `j1` to the *exact* B-split vertex and solve the two branches: point mode
+> *still* collapses **both** A-branches onto the nearer B-edge, because that genuinely costs **less**
+> (≈180 vs ≈210), and the correct split (`A_up→B_up, A_dn→B_dn`) never appears at *any* cut label.
+> That is the **nearest-vs-corresponding** limit (§3.2c note), not reconvergence — a junction is not
+> a loop bug, and the recursion's cost-minimising re-optimisation only collapses *harder*. The real
+> `diamond` fix needs a **direction term** (segment/bearing), which point mode excludes by design.
+> The method is kept documented (and correct) for genuine loop cases; the shipped solver stays the
+> §3.2a reachability-guarded backtrack. The greedy's 48 beats the recursion's 60 here precisely
+> because it *doesn't* globally minimise the (wrong, collapse-preferring) point-mode cost.
 
 **The general problem.** Choosing the junction labels is a joint discrete optimisation (§3.2c).
 Forward–backward solves it **exactly on a tree** and only on a tree, because message passing is

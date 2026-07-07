@@ -322,10 +322,12 @@ def match_dag_to_bgraph(
     #   * subject to a REACHABILITY constraint -- the chosen v must still walk FORWARD to every
     #     successor's φ. This is the CHEAP enforcement of JOINT junction consistency (§3.2c): the
     #     junction labels are a joint decision, not per-junction argmin, and this constraint throws
-    #     away the inconsistent tie-breaks that a shift creates (a shifted source edge collapsing
-    #     onto a nearest cross road; two neighbours disagreeing so the chain can't run forward).
-    # (Pure per-vertex argmin of D+B drops the constraint and regresses under perturbation; the
-    #  greedy D-only score disagrees at shared junctions. Together they are clean on all trees.)
+    #     away the inconsistent tie-breaks that a shift creates.
+    # (Recursive minimum-vertex-cut conditioning -- docs §3.2b -- was implemented and tested here; it
+    #  correctly solves the reconvergence LOOP, but the synthetic `diamond`'s failures are NOT loop
+    #  failures: even with the split junction pinned to the exact B-split, point mode collapses both
+    #  branches onto the nearer B-edge because that genuinely costs less. That is the
+    #  nearest-vs-corresponding limit, which needs a DIRECTION term (segment/bearing), not a cut.)
     reach_sets: Dict[int, set] = {}
 
     def _reach(v: int) -> set:
