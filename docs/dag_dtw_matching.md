@@ -1,19 +1,40 @@
 # DAG-DTW: Matching a Source DAG to a Directed Network
 
-This document specifies **DAG-DTW**, the next generalization of
+This document specifies **DAG-DTW**, the generalization of
 [graph-DTW](graph_dtw_matching.md). Graph-DTW aligns **one A-edge** (a single directed path) to
 the local directed graph of B-edges. DAG-DTW aligns a **whole source DAG** — a connected,
 *acyclic*, topologically-ordered set of A-edges (a junction neighbourhood, a branching corridor) —
 to the same directed B-network, in **one joint solve**, so that A-edges meeting at a junction map
 to a **consistent** place in B.
 
-> **Status: design / algorithm spec.** This is the algorithm the implementation
-> (`network_matching/dag_dtw.py`, forthcoming) will follow. It is written to be validated first on
-> hand-built **DAG test cases** (see §4) — small topologically-ordered edge sets, no loops — used
-> to debug the DP exactly as `tests/test_graph_dtw.py` debugs graph-DTW.
-
 Builds on: [`graph_dtw_matching.md`](graph_dtw_matching.md) (the single-edge DP) and
 [`weighted_emission.md`](weighted_emission.md) (the `point` / `segment` local cost).
+
+Implementation: [`network_matching/dag_dtw.py`](../network_matching/dag_dtw.py) (matcher),
+[`network_matching/dag_conditioning.py`](../network_matching/dag_conditioning.py) (exact reference
+solvers), demo [`notebooks/dag_dtw_playground.ipynb`](../notebooks/dag_dtw_playground.ipynb).
+
+---
+
+## Status
+
+DAG-DTW is a **point-to-point v1** that is implemented and validated; a segment+bearing emission and
+an α coverage weight are also shipped. The exact reconvergence solvers exist as reference/validation
+code but are **not** wired into the matcher (§3.2b explains why). Maturity by component:
+
+| Component | Section | Status | Where |
+|-----------|---------|--------|-------|
+| Point-to-point joint DP (topological sweep + per-vertex Dijkstra) | §3, §3.1 | **shipped** | `dag_dtw.py` |
+| Forward–backward joint junction resolution | §3.2a | **shipped** | `dag_dtw.py` |
+| Reachability-guarded backtrack + arc-length re-match | §3.2, §3.2c | **shipped** | `dag_dtw.py` |
+| Horizontal emission weight `α` (1:N coverage cost) | §3.4 | **shipped** | `dag_dtw.py` |
+| Segment-to-segment emission with bearing (the direction fix) | §3.5 | **shipped** | `dag_dtw.py` |
+| `require_tree` guard (assert a forest / polytree) | §7 | **shipped** | `dag_dtw.py` |
+| Exact conditioning — recursive vertex-cut / feedback-vertex-set | §3.2b | **reference & cross-validation only, not wired in** | `dag_conditioning.py` |
+| Globally-optimal joint diamond labelling *inside* the matcher | §3.2b | **future work** (point-mode diamonds need §3.5, not conditioning) | — |
+
+Everything carries over unchanged from graph-DTW: the projection-enriched candidate pools, the
+forward-only B arcs, the `point`/`segment` emission, and the no-U-turn guarantee.
 
 ---
 
@@ -25,14 +46,11 @@ isolation, and nothing forces them to agree on **where that junction lands in B*
 physically meet at one A-node can be assigned to two *different* B-vertices — an inconsistency that
 only a joint solve can rule out.
 
-DAG-DTW aligns the connected source subgraph at once. The single win, stated precisely:
+DAG-DTW aligns the connected source subgraph at once. The single guarantee it buys:
 
 > **Junction consistency.** Every A-vertex `a` is assigned exactly **one** B-vertex `φ(a)`, so all
 > A-edges incident to `a` share the same B-location there. Splits and merges are matched coherently
 > instead of edge-by-edge.
-
-Everything else — the projection-enriched pools, forward-only B arcs, the `point`/`segment`
-emission, the no-U-turn guarantee — carries over unchanged from graph-DTW.
 
 ---
 
@@ -44,7 +62,7 @@ only the **target** to a graph. DAG-DTW generalizes the **source**:
 
 - The source A-edges are oriented (by travel direction) and **stitched head-to-tail** at shared
   endpoints — exactly as `build_local_digraph` stitches B — into a local directed graph `GA`.
-- `GA` is required to be **acyclic**: a **DAG**. Acyclicity is what gives a **topological order**
+- `GA` is required to be **acyclic** — a **DAG**. Acyclicity is what gives a **topological order**
   `a_0, a_1, …` in which every arc points from a lower to a higher index (**predecessors before
   successors**). This is the direct generalization of DTW's left-to-right sweep: the total order
   `0,1,2,…` becomes a *partial* order, laid out by a topological sort.
@@ -54,7 +72,7 @@ only the **target** to a graph. DAG-DTW generalizes the **source**:
 - `GA` has one or more **sources** (in-degree 0 — where a match may begin) and one or more
   **sinks** (out-degree 0 — where a match may end).
 
-**The topological order is laid out in three blocks — `[all sources] [the middle] [all sinks]`.**
+The topological order is laid out in three blocks — **`[all sources] [the middle] [all sinks]`**.
 This is always achievable: sources have no incoming arcs, so they can always form a contiguous
 **prefix**; sinks have no outgoing arcs, so they can always form a contiguous **suffix**; the two
 never conflict and the rest fills the middle (an isolated vertex — both source and sink — goes in
@@ -66,10 +84,10 @@ DP phase:             free-entry        min-sum propagation      terminate
                       seed E(a,v)       (§3 recurrence)          read C_total (§3.3)
 ```
 
-It is the exact DAG widening of graph-DTW's own axis, where **row 0** is the single source (free
+This is the exact DAG widening of graph-DTW's own axis, where **row 0** is the single source (free
 entry) and **row N−1** the single sink (termination), with the middle rows propagating.
 
-Note the deliberate **asymmetry** with the target:
+The two sides are deliberately **asymmetric**:
 
 | side | may contain cycles? | swept how |
 |------|--------------------|-----------|
@@ -93,6 +111,104 @@ Target GB (directed, may cycle):     B1 ──► B2 ──► B3
 
 ---
 
+## The problem — a constrained optimization over valid matchings
+
+Everything from §3 onward is an **algorithm**. This section states the **problem** those algorithms
+solve, defined with no reference to any algorithm, to `φ`, or to an optimum: a constrained
+optimization whose *feasible set* is the **valid matchings** and whose *objective* is total drift.
+It is the algorithm-independent specification — the DP (§3), the forward–backward junction resolution
+(§3.2a), and the conditioning solvers (§3.2b) are just methods that solve it.
+
+**Objects.** Source DAG `GA = (V_A, →_A)` (§2, acyclic); target digraph `GB = (V_B, →_B)` (may
+cycle). `Apred(a)` / `Asucc(a)` are the immediate in-/out-neighbours of an A-vertex `a`; `Bpred(v)` /
+`Bsucc(v)` likewise for a B-vertex `v`. `Src_A` / `Snk_A` are the sources / sinks of `GA`. `E(a,v) ≥ 0`
+is the emission (local cost) of pairing `a` with `v` (`point` or `segment`, §3.5).
+
+**The matching.** A matching is a **relation** `M ⊆ V_A × V_B` — `(a,v) ∈ M` means "A-vertex `a` is
+matched to B-vertex `v`" — with `M(a) = { v : (a,v) ∈ M }`. A relation (not a function) so it can be
+**many-to-many**: a vertex may match a *run* of the other side, in either direction.
+
+**The optimization problem.**
+
+```
+minimize     C(M) = Σ_(a,v)∈M  E(a, v)        # total drift; §3.3 defines the reported total, §3.4 the 1:N discount
+over         M ⊆ V_A × V_B
+subject to   M is a VALID warping   —   (V1)–(V4) below
+```
+
+### The feasible set — a *valid warping* (local, algorithm-independent)
+
+`M` is valid iff it satisfies all four, using **only** immediate neighbours (`Apred/Asucc`,
+`Bpred/Bsucc`) and membership. Two of them are mirror images, and we name them by **which neighbours
+they inspect** — deliberately avoiding "forward/backward," which flips meaning depending on whether
+you mean the direction you *look* or the direction flow *moves*: **(V2) is the *predecessor* rule**
+("is each cell *fed*?") and **(V3) is the *successor* rule** ("does each cell *continue*?").
+
+**(V1) No cross (monotone).**
+```
+∀ (a,v) ∈ M,  ∀ a⁻ ∈ Apred(a),  ∀ v⁺ ∈ Bsucc(v):    (a⁻, v⁺) ∉ M
+```
+If `a⁻ →_A a` and `v →_B v⁺` are arcs, you may not match `a` to the earlier `v` while its
+DAG-predecessor `a⁻` sits on the later `v⁺` — that pair is an inversion.
+
+**(V2) Predecessor rule — every cell is *fed*.**
+```
+∀ (a,v) ∈ M :
+    [ ∃ v⁻ ∈ Bpred(v) : (a, v⁻) ∈ M ]                                            (i)  rode B inside a's run
+  ∨ [ ∀ a⁻ ∈ Apred(a) : ( (a⁻, v) ∈ M ) ∨ ( ∃ v⁻ ∈ Bpred(v) : (a⁻, v⁻) ∈ M ) ]  (ii) every incoming arc feeds it
+```
+Either `(a,v)` is **interior** to `a`'s B-run — case (i), it has a matched B-predecessor at the same
+`a` — or it is the run's **entry**, and then case (ii) forces **every** DAG-predecessor `a⁻` to feed
+it (held at `v`, or advanced `v⁻→v`). The universal `∀ a⁻` is what makes a **merge** be fed by *all*
+approaches and forbids an orphan entry (a run start reachable by nothing). A **source**
+(`Apred(a)=∅`) satisfies (ii) **vacuously** — its entry is free, so no separate boundary exemption is
+needed.
+
+**(V3) Successor rule — every cell *continues*.** The exact mirror of (V2):
+```
+∀ (a,v) ∈ M :
+    [ ∃ v⁺ ∈ Bsucc(v) : (a, v⁺) ∈ M ]
+  ∨ [ ∀ a⁺ ∈ Asucc(a) : ( (a⁺, v) ∈ M ) ∨ ( ∃ v⁺ ∈ Bsucc(v) : (a⁺, v⁺) ∈ M ) ]
+```
+Either `(a,v)` continues inside `a`'s run, or it is the run's **exit** and **every** outgoing arc
+carries it on — forcing a **branch** down *every* exit and forbidding an orphan exit; a **sink** is
+vacuous. (V3) is **not** redundant on a DAG (unlike on a chain, where the predecessor rule (V2) alone
+forces the successor rule): a run can continue in `B` while *also* crossing a source arc, producing incomparable cells
+that (V1) cannot see — so the exit must be pinned explicitly.
+
+> **(V2)+(V3) subsume "connected B-run, no hole."** The *rode-B* cases (i) are exactly within-run
+> connectivity, so no separate contiguity rule is needed. The one residue is that `M(a)` must be a
+> **simple** path — no internal *fork* of the run in a branching `GB` — worth asserting separately in
+> that rare case.
+
+**(V4) Boundary.** `M(a) ≠ ∅` for every `a` (the whole source is covered); entries lie at `Src_A`,
+exits at `Snk_A` (pinned) — or, for free-ends, exactly one unconstrained entry/exit per source→sink
+chain.
+
+### Why this form
+
+- **Purely local — reachability is never a primitive.** Every constraint reads only
+  `Apred/Asucc/Bpred/Bsucc` and "is this pair in `M`?". Global monotonicity is recovered as the
+  **transitive closure** of the local one-step moves (advance-A along a GA arc, advance-B along a GB
+  arc, or both) — it is *derived*, not checked. This is exactly why the target `GB` may **cycle**: a
+  loop is traversed one forward arc at a time and only an *immediate* reversal is a cross (V1); a
+  reachability / `≤` formulation would be ill-defined on a cyclic `GB` (it is the same reason §3.1
+  runs **Dijkstra** on B rather than a topological order).
+- **Many-to-many vs. the shipped `φ`.** The problem is over a general relation `M`. The shipped
+  matcher returns the **single-valued** restriction — a function `φ: V_A → V_B`, `|M(a)| = 1` — which
+  is why `φ` gives one B-vertex per A-vertex and the 1:N coverage lives on the edge **route**, not on
+  `φ` (§6.1). `check_sequence_rules` (`dag_dtw.py`) is precisely (V1) plus the continuity rules
+  (V2)+(V3) checked on that single-valued `M`; a general `check_matching_rules(M, GA, GB)` would check
+  all four on any relation.
+- **Reduces to classic DTW.** If `GA` is a chain and `GB` a path, (V1) is DTW's monotonicity, (V2)
+  the predecessor rule (its continuity), (V4) its boundary — the ordinary warping path; on a chain
+  (V3), the successor rule, is *implied* by (V2) and is redundant. DAG-DTW is that rule **lifted from
+  two total orders to (DAG source, digraph target)**: `pre`/`post` become neighbour *sets*, and the
+  successor rule — free on a chain — becomes a **genuine extra constraint (V3)** because of branches,
+  the same "cover every branch" the DP's `Σ over Apred(a) / Asucc(a)` enforces (§3).
+
+---
+
 ## 3. The dynamic program
 
 Let `a` range over the vertices of `GA` in **topological order**, and `v` over the vertices of
@@ -102,8 +218,9 @@ A-vertex `a` with B-vertex `v` — the same models as graph-DTW: `point` = `dist
 the middle-to-middle segment distance `+ λ·Δbearing` (see [weighted_emission.md](weighted_emission.md)).
 
 `D[a][v]` is the minimum cost to align the source **down to `a`**, ending at B-vertex `v`, with
-**every A-edge above `a` covered**. This last clause is what separates DAG-DTW from a shortest path
-through the DAG, and it dictates the combination operators:
+**every A-edge above `a` covered**. That last clause — *cover everything above `a`*, not just find a
+cheap path to it — is what separates DAG-DTW from a shortest path through the DAG, and it dictates
+the combination operators:
 
 ```
 D[a][v] = E(a, v) + min(
@@ -120,19 +237,19 @@ These are DTW's three moves again, split into the two branches of the outer `min
 
 - **(H) horizontal — B advances, A stays.** `min over v' ∈ Bpred(v) of D[a][v']`: still on the
   **same** A-vertex `a`, step one B-arc `v'→v`. Staying on `a` crosses **no** A-edge, so this term
-  carries **no split factor and no sum** — it is a plain `min`. It is what lets one A-vertex ride a
-  *run* of B-vertices (B sampled finer than A). It self-references `D[a][·]`, so it is resolved by
-  the within-`a` **Dijkstra** of §3.1 (giving the multi-step B-run), each B-step re-paying `E(a,·)`.
+  carries **no split factor and no sum** — a plain `min`. It lets one A-vertex ride a *run* of
+  B-vertices (B sampled finer than A). It self-references `D[a][·]`, so it is resolved by the
+  within-`a` **Dijkstra** of §3.1 (giving the multi-step B-run), each B-step re-paying `E(a,·)`.
 - **(A) vertical + diagonal — A advances from its predecessors.** For each incoming A-edge, choose
   where the predecessor sat: `v' = v` (A advanced, B stayed — *vertical*) or `v' ∈ Bpred(v)` (both
   advanced — *diagonal*); `∪ {v}` folds the two into one `min`.
 
 The (A) term carries the two DAG-specific pieces:
 
-- **`Σ` over `a' ∈ Apred(a)`** — **coverage**: every A-edge flowing into `a` must be aligned, none
+- **`Σ` over `a' ∈ Apred(a)` — coverage.** Every A-edge flowing into `a` must be aligned, none
   discarded, so at a merge you **add** both approaches' costs. A `min` here would optimise one
   incoming branch and leave the other **unmatched** — wrong, because the goal is to align the
-  *whole* DAG, not to find one best path through it. **Sum over branches, min over B-positions.**
+  *whole* DAG, not to find one best path through it. *Sum over branches, min over B-positions.*
 - **`1/outdeg(a')` — the split factor.** A vertex divides its accumulated cost **equally among its
   outgoing edges**, so the cost is *conserved* as it flows downstream. Without it, a shared prefix
   feeding several sinks would be counted once per sink; with it, each vertex's `E` contributes
@@ -143,7 +260,7 @@ So on a **chain** (`|Apred(a)| = 1`, `outdeg = 1`) this reads
 `E(a,v) + min(D[a][v'] , D[a'][v] , D[a'][v'])` — graph-DTW's exact three moves
 (horizontal / vertical / diagonal). The DAG only adds the `Σ` + split on the (A) branch.
 
-It reduces correctly at the two ends:
+**It reduces correctly at both ends:**
 
 - **Chain** (`|Apred(a)| = 1`): the (A) sum is a single term, so it collapses to graph-DTW's
   vertical+diagonal, and the (H) term supplies the horizontal — full graph-DTW. The `Σ` only ever
@@ -152,20 +269,70 @@ It reduces correctly at the two ends:
   the (H) Dijkstra spreads along B — **free entry** at every A-source, the DAG analog of graph-DTW's
   free row 0. No special case needed.
 
-Other properties:
+**Sweep order.** Process A-vertices in **topological order**. When `a` is reached every
+`a' ∈ Apred(a)` is already final, so each (A) summand reads a finished value — no iteration to
+convergence, because `GA` is acyclic. (This is exactly why the source must be a DAG.) The (H) term
+is within `a` and is resolved by that A-vertex's own Dijkstra (§3.1).
 
-- **Sweep order.** Process A-vertices in **topological order**. When `a` is reached every `a' ∈
-  Apred(a)` is already final, so each (A) summand reads a finished value — no iteration to
-  convergence, because `GA` is acyclic. (This is exactly why the source must be a DAG.) The (H)
-  term is within `a` and is resolved by that A-vertex's own Dijkstra (§3.1).
-- **Termination — total cost at the sinks (§3.3).** Because the split factor conserves the
-  cost-flow, the total map-match cost is the sum over **sinks** of `min_v D[t][v]`, and it equals
-  `Σ over A-vertices E(a, φ(a))` — every edge counted **once, for any DAG shape** (diamonds
-  included).
-- **Exactness — cost vs. labelling.** The split factor makes the **cost total** exact on any DAG.
-  What remains for **reconvergent** DAGs (diamonds) is the **labelling**: a shared junction must
-  resolve to a single `φ`, which the forward mins do not by themselves couple — it is fixed at
-  backtrack (§3.2), and globally-optimal joint labelling of a reconvergence is future work.
+**Termination.** Because the split factor conserves the cost-flow, the DP optimum is
+`Σ over sinks t   min_v D[t][v]` and it equals `Σ over A-vertices E(a, φ(a))` — every edge counted
+**once, for any tree-shaped DAG**. The realized total (the number actually reported) is defined in
+§3.3; on a reconvergent diamond the two differ, and §3.3 is authoritative.
+
+**Exactness — exact on trees, a strict *underestimate* on diamonds.** On a **tree** the recurrence
+is exact: predecessors have **independent** subtrees, so the `min` *inside* the `Σ` equals the `min`
+of the whole sum. On a **reconvergent** DAG (a diamond) it is a strict **underestimate**. The two
+arms of the diamond each take their own `min` over the **shared ancestor**'s position — the `min`
+sits *inside* the `Σ` — so the arms may pick **inconsistent** labels for that ancestor, and
+
+```
+D[t][v] = E + ( min_s arm_a(s) ) + ( min_s arm_b(s) )   ≤   E + min_s ( arm_a(s) + arm_b(s) )
+          └──────────── the recurrence ────────────┘        └──────── the true cost ────────┘
+```
+
+by `min-inside-a-sum ≤ min-of-the-sum`. Worse, the wrong value **propagates**: anything downstream of
+the diamond builds on it, so the whole table above a diamond is corrupted.
+
+> **The `1/outdeg` split factor does *not* fix this.** It conserves the shared ancestor's *emission*
+> (so a *consistent* labelling isn't double-counted) — a **cost-conservation** device. The underestimate
+> here is a **labelling-consistency** failure: nothing stops the two arms from choosing *different*
+> `s`. With `E(s,·)=0` the split factor changes nothing and `D[t]` is still below the true cost.
+
+The true diamond cost needs the `min` taken **outside** the sum — `min over the shared ancestor of
+(arm_a + arm_b)`, i.e. holding that ancestor fixed across both arms — which is **conditioning**
+(§3.2b). **Consequence:** at a diamond, `D` (and hence `dp_cost`, §3.3) is **not** a valid cost to
+backtrack; only the conditioned value is. On a tree there is no shared ancestor, nothing to condition,
+and `D` is exact and trace-able. So the recurrence above is the correct forward table **only on a
+tree** (or the tree parts of a DAG); every reconvergence must be conditioned (§3.2b) *in the forward
+pass*, before anything is stacked on top of it.
+
+### 3.0a Enforcing the (V3) successor rule in the forward pass
+
+The recurrence above reads **predecessors** (`Σ over Apred`), so it coordinates **merges** — the
+**(V2) predecessor rule**. On its own it does **not** coordinate **branches**: if each successor of a
+branch `a` independently pulls its own best `v'` from `D[a][·]`, two successors can leave `a` at
+*different* B-vertices — a **(V3) successor-rule** violation (a branch "left at two points"; see the
+feasible-set section). Fixing this needs no cost trick — only a change in *how the pass expands*:
+**process each vertex together with all its successors**, committing `a`'s single exit and expanding
+**every** successor from it. Written as a successor-oriented sweep (reverse topological order,
+successors first):
+
+```
+F[a][v] = E(a, v) + Σ over a_k ∈ Asucc(a)  min over w ∈ {v} ∪ Bsucc(v)  F[a_k][w]
+                    └──────── every successor a_k expands from a's ONE position v ────────┘
+```
+
+Because every successor `a_k` is forced to start at `v` or one B-arc past it, all outgoing roads leave
+the junction from the **same** point — **(V3) holds by construction**, with no post-hoc repair and
+**independent of the cost split**. Backtrack from a source's `argmin_v F[source][v]`, pushing each
+vertex's committed `v` to all its successors.
+
+This is the exact **mirror** of the predecessor sum: `Σ over Apred` (the recurrence above) coordinates
+merges (V2); `Σ over Asucc` here coordinates branches (V3). A single forward-processing sweep carries
+only **one** of the two — this successor form is exact for a source **out-tree** (branches, no merges);
+a neighbourhood with **both** junction types needs both directions (the backward pass `B`, §3.2a,
+supplies the merge half). Reference implementation: `forward_successor_dp` in
+[`dag_dtw.py`](../network_matching/dag_dtw.py), whose `M` is `check_matching_rules`-clean on (V3).
 
 ### 3.1 The one-step term becomes a Dijkstra (B may cycle, B may be denser)
 
@@ -173,7 +340,7 @@ The summed inner term reads only **already-finalised** A-predecessors, so its on
 computed directly. But two things make it a shortest-path within the A-state `a`, not a lookup:
 `GB` may **cycle** (no topological order on the B side), and B may be **denser than A** (one A-arc
 should be free to ride a run of B-vertices). Both are handled by fixing `a` and relaxing with
-**Dijkstra** over `GB`'s non-negative arc weights, exactly as graph-DTW §3.1 — with the difference
+**Dijkstra** over `GB`'s non-negative arc weights, exactly as graph-DTW §3.1 — the only difference is
 that the seed is now the **summed** predecessor contribution, not a single row:
 
 ```
@@ -184,99 +351,99 @@ pop (c, u); for each GB arc u -> w:  cand = D[a][u] + E(a, w)     # let a run of
 ```
 
 (The diagonal `v'∈Bpred(v)` choices are subsumed: a one-arc B-walk from a predecessor's vertex is
-just the first Dijkstra relaxation.) So the whole algorithm is **one topological sweep of A**, and
+just the first Dijkstra relaxation.) So the whole algorithm is **one topological sweep of A** and
 **one Dijkstra per A-vertex** over B — the exact structure of graph-DTW, with graph-DTW's "row `i`"
 generalised to "A-vertex `a` in topological order," and its single-row seed generalised to the
 **sum over incoming A-branches**.
 
-### 3.2 From a warping *path* to a warping *DAG* — junction consistency
+### 3.2 Junction consistency — from a warping *path* to a warping *DAG*
 
 Graph-DTW backtracks a single warping **path**. DAG-DTW backtracks a warping **DAG**: one monotone
-alignment per source→sink route of A, **sharing state at common A-vertices**. Backtracking:
+alignment per source→sink route of A, **sharing state at common A-vertices**.
 
-The backtrack runs in **reverse topological order** (successors before predecessors) and enforces
-the **monotone-forward rule** — *every* GA arc `a → a'` must map to a **forward** B-step
-`φ(a) → φ(a')` (reachable along GB arcs; never backward, never to a disconnected vertex):
+**The monotone-forward rule.** The backtrack runs in **reverse topological order** (successors
+before predecessors) and requires that *every* GA arc `a → a'` maps to a **forward** B-step
+`φ(a) → φ(a')` — reachable along GB arcs, never backward, never to a disconnected vertex.
+
+**The core difficulty: junction labels must be chosen *jointly*.** It is tempting to think that once
+you have `φ(j)` at every junction the rest is easy — and the rest *is* easy (a chain between two
+fixed B-points is a tiny fixed-endpoint DP, §3.2c). **The hard part is getting the `φ(j)` right**,
+because the labels are coupled: two routes that pass through the same junction `j` may each, on their
+own, prefer a *different* B-vertex there, but `j` is one point and can hold one label. Choosing each
+junction's label in isolation (`argmin` per junction) does **not** guarantee that every chain
+between two junctions still runs forward. Under a rigid shift — which drifts everything by roughly
+the same amount and creates many **near-ties** — independent tie-breaks at neighbouring junctions go
+inconsistent and the chain between them can no longer advance → a **backward step**. So junction
+labelling is a **joint** discrete optimisation, not a bag of independent `argmin`s. §3.2a solves it
+(exactly on trees); §3.2b solves the reconvergent case.
+
+**Backtrack (the shipped approximation).**
 
 1. From each **sink** `t`, take `φ(t) = argmin_v D[t][v]` (free choice at the end).
 2. For every non-sink `a` (all its successors already fixed), pick the **cheapest** `φ(a) = v`
-   (min `D[a][v]`) **subject to `v` forward-reaching every successor's `φ`**. At a **split** this
-   forces the junction to a *common B-ancestor* of its branches — so a junction can never spill
-   onto a cross road, and coincident junction vertices are consistent by construction. (Without
-   the constraint, resolving coincident junction vertices independently produces a **backward
-   step** under perturbation — a real bug the sequence tests catch.)
+   **subject to `v` forward-reaching every successor's `φ`**. At a **split** this forces the junction
+   to a *common B-ancestor* of its branches — so a junction can never spill onto a cross road, and
+   coincident junction vertices are consistent by construction. (Without the constraint, resolving
+   coincident junction vertices independently produces a **backward step** under perturbation — a
+   real bug the sequence tests catch.)
 3. Each A-edge's matched B-route is read off its stretch of the warping DAG (grouping consecutive
    steps by `vert_edge`), and a leading/trailing single-vertex **junction touch** on a neighbouring
    B-edge is trimmed, so the route lists only the edges the A-edge actually traverses.
 
-The trade-off is honest: forcing the junction to the common ancestor can *raise the drift* (the
-spilled match was cheaper pointwise), but it guarantees a **valid monotone sequence** — the rule
-matters more than the pointwise minimum.
+Forcing the junction to the common ancestor can *raise the drift* (the spilled match was cheaper
+pointwise), but it guarantees a **valid monotone sequence** — the rule matters more than the
+pointwise minimum.
 
-**Arc-length re-match (jump-free positions).** The DP + backtrack above decide the *topology* —
-which B-edges each A-edge maps to. A final pass then decides the *position*: each A-vertex is
-placed at its **arc-length fraction** between an entry and an exit point on its route's B-polyline
-(snapped to the nearest route vertex). This is because pure point-to-point picks the *nearest*
-B-vertex per A-vertex, which under a large offset compresses A onto part of a B-edge and produces
-a **jump** at the junction (coincident A-vertices land far apart in B — graph-reachable but
-discontinuous). Re-placing by arc length makes the B-position advance *proportionally* to A, so
-the sequence is jump-free; drift becomes a uniform offset rather than a low-but-discontinuous one.
-
-Two rules make the re-match faithful:
+**Arc-length re-match (jump-free positions).** The DP + backtrack decide the *topology* — which
+B-edges each A-edge maps to. A final pass then decides the *position*: each A-vertex is placed at its
+**arc-length fraction** between an entry and an exit point on its route's B-polyline (snapped to the
+nearest route vertex). Pure point-to-point picks the *nearest* B-vertex per A-vertex, which under a
+large offset compresses A onto part of a B-edge and produces a **jump** at the junction (coincident
+A-vertices land far apart in B — graph-reachable but discontinuous). Re-placing by arc length makes
+the B-position advance *proportionally* to A, so the sequence is jump-free and drift becomes a
+uniform offset rather than a low-but-discontinuous one. Two rules keep it faithful:
 
 - **Free entry / exit.** The endpoint is pinned to the route boundary only at an interior
-  **junction**; at a DAG **source** / **sink** it is FREE — it projects onto the route and may
-  land in the *middle* of a B-edge (exactly graph-DTW's free entry/exit, so the source doesn't
-  have to match the start of a B-edge).
+  **junction**; at a DAG **source** / **sink** it is FREE — it projects onto the route and may land
+  in the *middle* of a B-edge (exactly graph-DTW's free entry/exit).
 - **Boundary yield.** When consecutive A-edges over/undershoot the junction, one's route ends with
-  the B-edge the other's starts with; that shared boundary edge is given to whichever A-edge
-  covers it with **more** vertices, and the other yields it. Otherwise the junction-end would pin
-  to the *far* end of the shared edge — a **backward step**.
+  the B-edge the other's starts with; that shared boundary edge is given to whichever A-edge covers
+  it with **more** vertices, and the other yields it. Otherwise the junction-end pins to the *far*
+  end of the shared edge — a backward step.
 
-The **no-teleport** / monotone rules (§ sequence tests) check both. *Known limit:* under a large
-**lateral** shift a branch edge can physically overlap a neighbouring trunk B-edge, so the DP
-mis-assigns the topology (e.g. a branch grabs the trunk); the re-match cannot repair a wrong
-topology, and the validation flags the resulting backward step rather than hiding it.
+> **Known limit — topology, not position.** Under a large **lateral** shift a branch edge can
+> physically overlap a neighbouring trunk B-edge, so the DP mis-assigns the *topology* (a branch
+> grabs the trunk). The re-match cannot repair a wrong topology; the validation flags the resulting
+> backward step rather than hiding it. This is the nearest-vs-corresponding limit, fixed by the
+> direction term of §3.5, **not** by the junction machinery.
 
 **Tree vs. reconvergence.** When `GA` is a **tree / polytree** (branches never rejoin — the common
-junction-neighbourhood case once edges are oriented by travel direction and a small neighbourhood
-is taken), the per-A-vertex `φ` is globally optimal and the backtrack above is exact. When `GA`
-**reconverges** (a *diamond*: split then merge), the merge vertex is reached by two branches that
-must **agree** on `φ(merge)`; the forward DP already pins `φ(merge) = argmin_v D[merge][v]`, and
-both branches back-trace from that shared label — an explicit agreement point. (The split factor
-already makes the *cost total* exact here (§3.3); what remains is only globally-optimal *labelling*
-at the reconvergence — future work. The debug cases in §4 start as trees, then add a diamond to
-exercise the merge rule.)
+junction-neighbourhood case), the per-A-vertex `φ` is globally optimal and the backtrack is exact.
+When `GA` **reconverges** (a *diamond*: split then merge), the merge vertex is reached by two
+branches that must **agree** on `φ(merge)`; §3.2a pins them to a common label, and §3.2b makes that
+exact.
 
 ### 3.2a Joint junction resolution — the forward–backward pass
 
-> **Status: implemented** (replaces the greedy backtrack of §3.2). Over a wide perturbation sweep
-> (512 configs) the backward step is **eliminated on tree-shaped source DAGs** — `chain`, `merge`
-> clean, `y_split` clean except one extreme case; only the reconvergent **`diamond`** still fails
-> (the documented caveat). The label is chosen by a reverse-topological backtrack that scores by
-> `D[a][v] + B[a][v] − E(a,v)` **subject to** the chosen `v` still reaching every successor's `φ` —
-> the joint score resolves the shared-junction disagreement, and the reachability constraint keeps
-> a shifted source edge from collapsing onto a nearest cross road (a *pure* per-vertex `argmin(D+B)`
-> drops the constraint and regresses that case).
+This is the **shipped** junction solver (it replaced the greedy per-sink backtrack). It is **exact
+on tree-shaped source DAGs** and is what runs in `match_dag_to_bgraph`.
 
-**The real cause of the backward step.** Two routes source₁→sink₁ and source₂→sink₂ pass through
-the **same junction `j`**. Optimised *independently*, route₁ wants `j` at one B-vertex and route₂
-wants it at a **different** one — but `j` is a single point and can hold only one label. The greedy
-backtrack finishes each sink on its own (`argmin` per sink) and traces back, so the two traces
-**collide at `j`** and demand two different `φ(j)`. Forcing them to one label breaks the other
-route → a **backward step**. *You cannot assemble the whole matching from each-sink's-own-best
-pieces* — the pieces disagree where they overlap. (This is distinct from the topology mismatch note
-above; it happens even when every A-edge maps to the right B-edge.)
+**The problem it fixes.** Two routes source₁→sink₁ and source₂→sink₂ pass through the **same
+junction `j`**. Optimised *independently*, route₁ wants `j` at one B-vertex and route₂ at a
+**different** one. A greedy per-sink backtrack finishes each sink on its own (`argmin` per sink) and
+traces back, so the two traces **collide at `j`** and demand two different `φ(j)`; forcing one label
+breaks the other route → a backward step. *You cannot assemble the whole matching from each sink's
+own best pieces — the pieces disagree where they overlap.*
 
 **The fix — score each junction once, for everyone through it.** Keep two cost tables:
 
-- **Forward `D[a][v]`** (already computed, §3–§3.1): cheapest cost to align everything *upstream*
-  of `a` (sources → `a`) with `a` at B-vertex `v`.
+- **Forward `D[a][v]`** (§3–§3.1): cheapest cost to align everything *upstream* of `a`
+  (sources → `a`) with `a` at B-vertex `v`.
 - **Backward `B[a][v]`**: reverse **both** graphs — flip `GA` (sinks become sources) and reverse
-  `GB`'s arcs — and run the *same* DP. This is the cheapest cost to align everything *downstream*
-  of `a` (`a` → sinks) with `a` at `v`. The forward pass sums over predecessors with the
-  `1/outdeg` split; the backward pass sums over successors with the symmetric `1/indeg` split, so
-  the conserved cost-flow (§3.3) is preserved in both directions.
+  `GB`'s arcs — and run the *same* DP. Cheapest cost to align everything *downstream* of `a`
+  (`a` → sinks) with `a` at `v`. The forward pass sums over predecessors with the `1/outdeg` split;
+  the backward pass sums over successors with the symmetric `1/indeg` split, so the conserved
+  cost-flow is preserved in both directions.
 
 Then pin every junction jointly:
 
@@ -288,188 +455,269 @@ The `− E(j, v)` removes the double count — the local cost of `j` at `v` sits
 value is the best whole-DAG cost among matchings that keep `j` at `v`; its minimiser is the label
 **all** routes through `j` agree on.
 
-**Assembling the whole matching.** Once every junction's `φ` is fixed **consistently** (the hard
-part — see §3.2c), the junctions **cut the DAG into simple chains** between now-fixed points, and
-each chain is an ordinary single-path alignment between two *known* B-vertices (a source/sink end
-stays **free**). *If* the junction labels are jointly consistent, there are no conflicts left and
-stitching the chains yields `φ` for all A-vertices — but that "if" is the whole difficulty: choosing
-the labels so every chain still fits is a **joint** decision, not a per-junction `argmin` (§3.2c).
-On a tree this is achievable (exactly, or cheaply via the reachability guard); a **diamond** is
-where it needs the cutset trick of §3.2b.
+The shipped backtrack scores by `D[a][v] + B[a][v] − E(a,v)` in reverse-topological order **subject
+to** the chosen `v` still reaching every successor's `φ` (the same reachability guard as §3.2). The
+guard is what makes the joint choice beat a *pure* per-junction `argmin(D+B−E)`: the pure version
+drops the constraint and regresses `merge`/`y_split` under a shift (a shifted source edge collapses
+onto a nearest cross road). Over a 512-config perturbation sweep the backward step is **eliminated on
+tree-shaped source DAGs** (`chain`, `merge` clean; `y_split` clean except one extreme case); only the
+reconvergent **`diamond`** still fails — the documented caveat, handled by §3.2b/§3.5.
 
-**Whole-DAG cost — compute it from the final matching, not from `D+B`.** The robust total is the
-**realized cost of the final consistent labels**:
-
-```
-C_total = Σ over A-vertices   E(a, φ(a))      # φ = the FINAL consistent labels; always correct
-```
-
-This needs no cut vertex and no `D+B` identity, and is right for **any** shape.
-
-> **Do NOT read the total off `D+B` at a junction.** The tempting identity
-> `C_total = D[j][φ(j)] + B[j][φ(j)] − E(j, φ(j))` — and even the conserved-flow reading
-> `Σ_sinks min_v D[sink][v]` — are **exact only on a tree**. On a **reconvergent diamond** they are
+> **Do NOT read the total cost off `D+B` at a junction.** The tempting identity
+> `C_total = D[j][φ(j)] + B[j][φ(j)] − E(j, φ(j))`, and even the conserved-flow reading
+> `Σ_sinks min_v D[sink][v]`, are **exact only on a tree**. On a **reconvergent diamond** they are
 > wrong: `D` and `B` each conserve the flow *on their own* (`1/outdeg` forward, `1/indeg` backward),
-> but **combining them at one junction** mis-counts the split-then-remerge structure — it gets
-> weighted by *both* splits and they don't cancel. Verified on a perturbed diamond: `D+B−E` at the
-> split gave 112.8 while `Σ_sinks min D` gave 96.9 (they agree exactly on every tree). So these are
-> tree-only shortcuts / sanity checks; the realized sum above is the definition. It is the same
-> reconvergence flaw that breaks the *labelling* (§3.2b) — here it corrupts the *cost*.
+> but **combining them at one junction** mis-counts the split-then-remerge structure — the term gets
+> weighted by *both* splits and they do not cancel. (Measured on a perturbed diamond: `D+B−E` at the
+> split gave 112.8 while `Σ_sinks min D` gave 96.9; they agree exactly on every tree.) These are
+> tree-only shortcuts / sanity checks. The realized sum (§3.3) is the definition of the reported
+> total for any shape.
 
-### 3.2b Reconvergent DAGs — recursive minimum-vertex-cut conditioning
+### 3.2b Reconvergent DAGs — exact conditioning (two reference solvers)
 
-> **Status: implemented as two EXACT, cross-validating reference solvers** in
-> `network_matching/dag_conditioning.py` (`conditioned_labels(..., method="recursive" | "fvs")`).
-> They are **not wired into `match_dag_to_bgraph`** — see the finding below — but they exist as the
-> exact joint solver for a genuine loop and, more importantly, as a **mutual validation**: the
-> recursive minimum-vertex-cut and the one-shot minimum-FVS share an **exact min-sum BP forest
-> solver** (below), so on *any* DAG they must return **equal-cost** labellings. `scripts/
-> dag_conditioning_validate.py` + `tests/test_dag_conditioning.py` check this on the scenarios, on a
-> `double_diamond` (`|F| = 2`, the case that actually separates the two methods), across a
-> perturbation sweep (225/225 agree), and against an independent brute-force optimum.
->
-> **Why not wired in — the finding.** Applied to the synthetic `diamond` under shift it does **not**
-> help and even scores *worse* than the shipped heuristic, because **the `diamond`'s failures are NOT
-> loop failures.** Pin the split `j1` to the *exact* B-split and solve the branches: point mode
-> *still* collapses **both** A-branches onto the nearer B-edge, because that genuinely costs **less**,
-> and the correct split never appears at *any* cut label. That is the **nearest-vs-corresponding**
-> limit (§3.2c note), not reconvergence; the real fix needs a **direction term** (segment/bearing).
-> The exact solver only confirms this — the collapse *is* the true minimum-drift optimum in point
-> mode. So the shipped matcher keeps the §3.2a reachability-guarded backtrack; the conditioning
-> solvers live alongside as exact reference + validation.
->
-> **The exact forest solver (why the two methods provably agree).** Conditioning is only exact if the
-> *forest* base solver is exact. The §3.2a reachability-guarded backtrack is a **heuristic** — and the
-> cross-check caught it: on `double_diamond` the two methods *disagreed* (29.09 vs 29.33) because they
-> condition on different vertices and the heuristic's output depends on that choice. Replacing it with
-> **min-sum belief propagation** on the polytree (unary = drift, folded pinned boundaries; pairwise =
-> the directed reachability constraint; exact on any tree) makes the forest solve a true global
-> optimum, and then both decompositions agree exactly (`double_diamond` → 28.93 for both, *below*
-> either heuristic value). This is the honest lesson of the whole §3.2 arc: **the labels are the hard
-> part, and "conditioning" buys exactness only on top of an exact forest solver.**
+On a **tree**, §3.2a is exact and the story ends there. On a **reconvergent** DAG it is not, because
+message passing (the `D+B−E` argmin) is exact only when the graph has no *undirected* cycle — and a
+DAG has one exactly where two directed paths from a common ancestor **re-meet** at a common
+descendant. The smallest is the diamond (`split j1 → {up, down} → merge j2`, an undirected cycle
+`j1 — up — j2 — down — j1`); real networks can have several, or nested ones. On such a cycle the two
+sides share **both** endpoints, so forward–backward lets each side pick its own label where they
+re-meet, and they disagree there → a backward step. The reachability guard of §3.2a is not enough
+because the loop constrains the two junctions **both** ways at once.
 
-**The general problem.** Choosing the junction labels is a joint discrete optimisation (§3.2c).
-Forward–backward solves it **exactly on a tree** and only on a tree, because message passing is
-exact only when the graph has no undirected cycle. A DAG has an undirected cycle exactly where two
-directed paths from a common ancestor **re-meet** at a common descendant — a **reconvergence**. The
-smallest one is the diamond (`split j1 → {up, down} → merge j2`, an undirected cycle
-`j1 — up — j2 — down — j1`); real networks can have several, or nested ones. On any such cycle the
-two sides share **both** endpoints, and forward–backward lets each side pick its own label where
-they re-meet (the backward table `B[j1][v]` sums the branches as if each could choose its own `j2`),
-so they disagree there → a backward step. The reachability guard of §3.2a is not enough because the
-loop constrains the two junctions **both** ways at once.
+Two **exact** solvers handle this, both in
+[`dag_conditioning.py`](../network_matching/dag_conditioning.py) as
+`conditioned_labels(..., method="recursive" | "fvs")`. They are **not wired into
+`match_dag_to_bgraph`** (see *Why not wired in* below); they exist as an exact reference for a
+genuine loop and as **mutual validation** of each other.
 
-**Two framings — FVS *describes* the problem, a recursive vertex-cut *solves* it.** A **feedback
-vertex set** `F` (the smallest vertex set whose removal makes `GA` a forest) is the clean way to
-*state* when we are done: `F = ∅` ⇔ a tree ⇔ the shipped solver is already exact. But it is a **bad
-way to label**: labelling `F` means enumerating **every combination of labels for the whole set at
-once** — `(#candidates)^|F|`, which blows up as the number of loops grows. *How do you label a big
-`F`?* You don't want to.
+**The shared exact base — the forest solver.** Conditioning is only exact if the *forest* base
+solver is. `_forest_solve` labels a forest with **min-sum belief propagation** on the polytree:
+unary potential = per-vertex drift + folded pinned-boundary reachability; pairwise potential = the
+directed reachability constraint on each A-arc. BP is exact on any tree, so each connected component
+is solved to its **global** optimum. (An earlier version used the §3.2a reachability-guarded
+backtrack as the base; the cross-check caught that it is only a *heuristic* — on `double_diamond` the
+two methods disagreed, 29.09 vs 29.33, because they condition on different vertices and a heuristic
+base depends on that choice. With the exact BP base both agree exactly, `double_diamond → 28.93`,
+below either heuristic value.) Both solvers minimise the **same** realized cost with this **same**
+exact base, so on any DAG they return **equal-cost** labellings — that identity is the whole point of
+keeping two.
 
-The efficient method labels **one small cut at a time, recursively.** A **minimum vertex cut**
-(separator) is small — usually a **single** junction — and removing it **splits `GA` into
-independent pieces**. So enumerate just that one cut, and recurse into the now-independent pieces:
+Removing a set of vertices and pinning them to fixed B-labels turns the loop into a forest the base
+solver can finish. The two methods differ only in *which* vertices they remove and *how many at
+once*:
+
+#### Method 1 — recursive minimum vertex cut (`method="recursive"`)
+
+**What it does.** Labels **one small cut at a time, recursively.** A *minimum vertex cut* is a
+**separator** — the smallest vertex set whose removal **disconnects** the graph into independent
+pieces; in a local junction neighbourhood it is usually a **single** junction. Enumerate just that
+one cut's nearby B-candidates, pin it, and recurse into the now-independent components:
 
 ```
 solve(G):
-    if G is a forest:                      # no undirected cycle  (FVS empty)
-        return forward–backward + reachability guard        # base case — the SHIPPED solver
-    S = a minimum vertex cut of G          # smallest vertex set that disconnects it — usually 1 junction
+    if G is a forest:                       # no undirected cycle
+        return forest_solve(G)              # exact BP base case
+    S = a minimum vertex cut of G           # smallest set that disconnects G — usually ONE junction
     best = ∞
-    for each label combination s of S:     # ~5 B-candidates NEAR each cut vertex, not all of GB
+    for each label combination s of S:      # ~12 B-candidates NEAR the cut vertex, not all of GB
         pin S = s
         cost = E(S = s) + Σ over components of (G − S)   solve(component)   # pieces are independent
         keep the cheapest s by REALIZED cost (§3.3)
     return the winning labels
 ```
 
-**Why recursion beats labelling `F` at once.** Each level labels only **one small cut**, never the
-whole feedback set, and conditioning on a separator makes the sides **genuinely independent**, so
-they are solved (and recursed) **separately**. Complexity is therefore `(#candidates)^w` where `w`
-is the **largest single cut** (usually 1) — *not* `(#candidates)^|F|`. A chain of `k` diamonds:
-FVS-at-once is `(#cand)^k` (exponential); the recursive cut splits at each middle junction and
-solves each diamond alone → `~k · #cand` (**linear**). Same exactness, tiny per-step labelling.
+**Cost.** `(#candidates) ^ w`, where `w` is the size of the **largest single cut** — usually 1.
+Conditioning on a separator makes the sides genuinely independent, so each side is recursed
+**separately** rather than enumerated together. For a chain of `k` diamonds this is `~k · #cand`
+(**linear** in the number of loops).
 
-**Still joint where it must be — never greedy.** Within one level, `S` is enumerated *together*
-(each `s` a full assignment to the cut) and scored by the realized cost of the whole subtree below
-it; we do **not** pin a cut vertex to its own individually-best label and move on (that re-creates
-the disagreement one level up — a cut vertex's best label depends on the pieces it joins). The cut
-is small, so "enumerate it jointly" is cheap. (A single diamond: `S = {j1}`, ~5 tries, each leaving a
-tree; equivalently the 2-D `(φ(j1), φ(j2))` search
-`D_up-to-j1[v1] + up(v1→v2) + down(v1→v2) + B_below-j2[v2]`.)
+**Still joint where it must be.** Within one level `S` is enumerated *together* (each `s` a full
+assignment to the cut) and scored by the realized cost of the whole subtree below it; it never pins a
+cut vertex to its own individually-best label and moves on (that re-creates the disagreement one
+level up). The cut is small, so "enumerate it jointly" is cheap. For a single diamond, `S = {j1}`,
+~12 tries, each leaving a tree — equivalently the 2-D `(φ(j1), φ(j2))` search
+`D_up-to-j1[v1] + up(v1→v2) + down(v1→v2) + B_below-j2[v2]`.
 
-**Graceful degradation.** The base case *is* the shipped code: a tree hits `solve`'s first branch
-and returns immediately. Only genuine loops trigger conditioning, and only over a handful of nearby
-candidates for one cut vertex at a time.
+#### Method 2 — one-shot feedback vertex set (`method="fvs"`)
 
-**Scope & residual limit.** Local junction neighbourhoods have tiny cuts (size 0–1) and few
-candidates, so this is a handful of extra forest-solves — cheap and **exact** for the loop
-inconsistency. (Finding a *minimum* cut/FVS is NP-hard in general, but the local graphs are small; a
-greedy separator — e.g. the lowest-`|F|` junction on a cycle — is fine.) The residual
-**nearest-vs-corresponding** error under an *extreme* shift (a branch physically lying on the wrong
-B-edge) is a separate point-mode limit that conditioning *reduces* (it tries alternative labels) but
-does not remove without a direction term.
+**What it does.** A *feedback vertex set* `F` is the smallest vertex set whose removal makes `GA` a
+**forest** (`F = ∅` ⇔ already a tree ⇔ §3.2a is exact). This method finds the minimum `F`, then
+**enumerates every label combination for the whole set at once** — the Cartesian product over each
+`f ∈ F`'s nearby B-candidates — pins `F` to each combination, solves the forest `GA − F` with the
+same BP base, and keeps the cheapest:
 
-### 3.2c Extracting the matching — the hard part is *jointly-consistent junction labels*
+```
+solve(G):
+    F = minimum feedback vertex set of G      # smallest set whose removal leaves a forest
+    if F is empty: return forest_solve(G)
+    best = ∞
+    for each joint assignment f of ALL of F:  # product of ~12 candidates per f  →  12^|F| combos
+        pin F = f
+        cost = E(F = f) + forest_solve(G − F)
+        keep the cheapest f by REALIZED cost (§3.3)
+    return the winning labels
+```
 
-> **The correction that matters.** It is tempting to think "once we have `φ(j)` at every junction,
-> the rest is easy." **The chains are easy; getting the `φ(j)` right is the hard part.** A chain is
-> a straight piece of A between two *fixed* B-points — a tiny, safe DP. But the junction labels must
-> be chosen **jointly**, so that every chain between them still runs *forward*. Choosing each
-> junction's label on its own (`argmin(D+B−E)` per junction) does **not** guarantee that, and under
-> a shift it fails (below). So the real work is the labels, not the fill-in. This section states the
-> problem that way; the shipped code approximates it, §3.2b solves the loop case.
+**Cost.** `(#candidates) ^ |F|` — **exponential** in the number of loops, because the whole set is
+labelled jointly instead of one separator at a time.
 
-**The two parts.**
+**Role.** FVS *describes* the problem cleanly (are we a forest yet?) but is a **bad way to label** a
+large `F`. It is kept as the simple, obviously-correct reference that the efficient recursive solver
+must match. `double_diamond` (`|F| = 2`) is the smallest case that actually separates the two
+methods, so the cross-validation exercises it specifically.
 
-- **Anchors & chains (structure).** The **anchors** are the non-interior vertices — sources
-  (in-deg 0), sinks (out-deg 0), branches (out-deg > 1), merges (in-deg > 1). They cut `GA` into
-  **chains**: maximal runs of degree-(1-in, 1-out) vertices between two anchors.
-- **Chain fill-in (the easy part).** Given an anchor `a₀` pinned to `v₀` and `a₁` to `v₁`, the
-  chain between them is a linear A-path; align it to the best monotone B-walk **from `v₀` to `v₁`**
-  with a tiny fixed-endpoint DP (seed at `v₀`, force the last vertex to `v₁`, backtrack). Optimal,
-  monotone, jump-free **by construction**. This is the step we both assumed was the whole problem —
-  and it *is* trivial, *once the endpoints are right*.
+#### Why not wired into the matcher
 
-**The hard part — the labels must be jointly consistent.** The problem is not "what is the best
-label for junction `j`?" It is:
+Applied to the synthetic `diamond` under a shift, conditioning does **not** help and even scores
+*worse* than the shipped heuristic — because **the diamond's failures are not loop failures.** Pin
+the split `j1` to the *exact* B-split and solve the branches: in **point mode** both A-branches
+*still* collapse onto the nearer B-edge, because that genuinely costs **less**, and the correct split
+never appears at *any* cut label. That is the **nearest-vs-corresponding** limit (§3.2, §3.5), not
+reconvergence; the exact solver only confirms the collapse *is* the true minimum-drift optimum in
+point mode. The real cure is a **direction term** (segment/bearing, §3.5), not conditioning. So the
+shipped matcher keeps the §3.2a reachability-guarded backtrack, and the conditioning solvers live
+alongside as exact reference + cross-validation.
 
-> Choose B-labels for **all** anchors **at once** so that (a) each is cheap and (b) **every chain
-> between two anchors can still run forward** (`φ(a₀)` reaches `φ(a₁)` along GB arcs).
+> **Scope & residual limit.** Local junction neighbourhoods have tiny cuts (size 0–1) and few
+> candidates (`CAND_K = 12`), so conditioning is a handful of extra forest-solves — cheap and
+> **exact** for a true loop inconsistency. (Finding a *minimum* cut/FVS is NP-hard in general, but
+> the local graphs are small; every undirected cycle in a DAG passes through a branch/merge junction,
+> so the search is restricted to those.) `scripts/dag_conditioning_validate.py` and
+> `tests/test_dag_conditioning.py` check the two methods against each other on the scenarios, on
+> `double_diamond`, across a 225-config sweep (225/225 agree), and against an independent brute-force
+> optimum.
 
-Per-junction `φ(j) = argmin_v (D[j][v] + B[j][v] − E)` optimises each junction **in isolation**. On
-clean data the isolated optima happen to agree. But a rigid shift drifts *everything* by roughly the
-same amount, creating many **near-ties** — two B-spots for a junction cost almost the same. Each
-junction then breaks its tie independently, two neighbours break theirs *inconsistently*, and the
-chain between them can no longer go forward → a **backward step**. (Verified: the pure per-junction
-`argmin` regresses `merge`/`y_split` under perturbation where the joint choice does not.) So the
-junction labels are a **joint** decision, not a bag of independent ones.
+### 3.2c Extracting the matching — anchors, chains, and joint labels
 
-**How the problem is met — cheap vs exact.**
+Once the junction labels are fixed, the matching is read off in two parts. The split matters because
+it locates the difficulty precisely: **the chains are trivial; the labels are the whole problem
+(§3.2).**
 
-- **Cheap (shipped, clean on trees):** a reverse-topological backtrack that scores by
-  `D[a][v]+B[a][v]−E` **subject to a reachability constraint** — the chosen `v` must still reach
-  every successor's `φ`. That constraint is *precisely* a cheap enforcement of joint consistency: it
-  throws away the inconsistent tie-breaks. It is why the messy-looking guard beats the "pure"
-  per-junction `argmin`, and why trees come out clean. *(The current code also carries an arc-length
-  re-match; once the labels are jointly consistent that step can be replaced by the exact
-  fixed-endpoint chain DP above — a cleanup, not a correctness fix.)*
-- **Exact (for loops):** on a **diamond** the reachability guard is not enough, because the split
-  and merge constrain each other *both* ways around the loop. §3.2b's **cutset conditioning** is the
-  exact joint solution: fix one junction, which turns the loop into a tree where the guard *is*
-  enough, try its candidates, keep the best.
+**Anchors & chains (structure).** The **anchors** are the non-interior vertices — sources (in-deg 0),
+sinks (out-deg 0), branches (out-deg > 1), merges (in-deg > 1). They cut `GA` into **chains**:
+maximal runs of degree-(1-in, 1-out) vertices between two anchors.
+
+**Chain fill-in (the easy part).** Given an anchor `a₀` pinned to `v₀` and `a₁` to `v₁`, the chain
+between them is a linear A-path; align it to the best monotone B-walk **from `v₀` to `v₁`** with a
+tiny fixed-endpoint DP (seed at `v₀`, force the last vertex to `v₁`, backtrack). Optimal, monotone,
+and jump-free **by construction** — *once the endpoints are right*.
+
+**The hard part — jointly-consistent anchor labels.** The problem is not "what is the best label for
+junction `j`?" but: *choose B-labels for all anchors at once so that (a) each is cheap and (b) every
+chain between two anchors can still run forward (`φ(a₀)` reaches `φ(a₁)` along GB arcs).* This is met
+two ways:
+
+- **Cheap (shipped, exact on trees):** the reverse-topological backtrack of §3.2a, scoring by
+  `D+B−E` **subject to the reachability constraint**. That constraint is precisely a cheap
+  enforcement of joint consistency — it discards the inconsistent tie-breaks — which is why it beats
+  the "pure" per-junction `argmin` and why trees come out clean.
+- **Exact (for loops):** on a diamond the reachability guard is not enough, because split and merge
+  constrain each other *both* ways around the loop. §3.2b's cutset conditioning fixes one junction,
+  turning the loop into a tree where the guard *is* enough, then tries its candidates and keeps the
+  best.
 
 **Assemble.** `φ` = the jointly-consistent anchor labels ∪ the chain fill-ins. Read each A-edge's
 route off its chain's B-walk; total cost = sum of chain costs + each anchor's `E` once (§3.3).
 
-**Bottom line.** *The chains were never the problem. The junction labels are — and they must be
-chosen together.* The reachability guard is the cheap joint solver (trees); cutset conditioning is
-the exact one (loops).
+> The current shipped code carries the §3.2 arc-length re-match rather than the exact fixed-endpoint
+> chain DP. These are **not cost-interchangeable**: the chain DP recovers the *charged* 1:N coverage
+> and yields `dp_cost`, the geometric re-match does not. §3.2d is the integrated `φ → M` procedure
+> that closes this gap.
+
+### 3.2d From labels to the matching — how `M` is computed exactly
+
+The DP gives a *label per A-vertex*, `φ` (cost `C_total`), but the quantity it **minimizes** is the
+cost of a *warping relation* `M` **with its 1:N coverage** (cost `dp_cost`). `φ` and `M` are
+different objects, and turning one into the other is the whole algorithm. This section is the exact
+procedure. **Input:** the forward table `D`, backward table `B`, emission `E` (all already computed,
+§3–§3.1); `GA` is a tree.
+
+| | what it is | cost |
+|---|---|---|
+| **`φ` — labels** | one B-vertex per A-vertex | `Σ_a E(a, φ(a))` = `C_total` (a *subsample* drift) |
+| **`M` — the warping** | the relation, **incl. the 1:N coverage** | `Σ_(a,v)∈M E(a, v)` = `dp_cost` |
+
+**Notation.** `Bpred(v)` / `Bsucc(v)` = immediate in-/out-neighbours of `v` in `GB`. An **anchor** is
+a source, sink, branch (out-deg > 1) or merge (in-deg > 1); anchors cut `GA` into **chains** =
+maximal runs of degree-(1-in,1-out) A-vertices between two anchors. `M(a) = { v : (a,v) ∈ M }` is
+`a`'s **run** (the B-vertices it rides).
+
+#### Stage 1 — pin the anchors (commit ONE optimum)
+
+Assign a B-label `φ(a)` to every anchor, in **reverse-topological order** (sinks first), threading a
+*single* optimum — never an independent per-vertex `argmin` (that mixes optima and crosses, §3.2a):
+
+```
+for anchor a in reverse topological order:              # its successor anchors are already committed
+    for v in argsort_v ( D[a][v] + B[a][v] − E(a,v) ):  # cheapest whole-tree cost with a pinned at v, first
+        if for every chain a … a' to an already-committed anchor a':   v forward-reaches φ(a') in GB:
+            φ(a) = v ;  break                            # first feasible = cheapest consistent label
+```
+
+`D[a][v]+B[a][v]−E(a,v)` is the **min-marginal** (best whole-tree cost given `a` at `v`); the
+reachability filter keeps the picks inside one optimum. Only anchors are pinned here — the chain
+interiors are decided next.
+
+#### Stage 2 — fill each chain by a pinned-end DP (this IS the coverage)
+
+For a chain `a₀ → a₁ → … → a_k` whose ends are anchors already pinned to `v₀ = φ(a₀)` and
+`v_k = φ(a_k)`, run a small DTW pinned at **both** ends and **backtrack it**:
+
+```
+# forward pass — d[i][v] = min cost to align a₀..a_i with a_i's run EXITING at B-vertex v
+d[0][v] = E(a₀, v₀)  if v == v₀  else +∞                          # pin the start at v₀
+for i = 1 … k:
+    d[i][v] = E(a_i, v) + min(
+        min over v'∈Bpred(v)      d[i][v'] ,                     # (H) a_i rides B  (v'→v, same A-vertex; Dijkstra §3.1)
+        min over v'∈Bpred(v)∪{v}  d[i-1][v'] )                    # (A) advance from a_{i-1} (v'=v vertical, v'→v diagonal)
+
+# backtrack from the PINNED end (a_k, v_k) — every step emits one matched pair
+cur = (a_k, v_k)
+while cur ≠ (a₀, v₀):
+    (a_i, v) = cur ;  add (a_i, v) to M
+    if the (H) term won at d[i][v]:  cur = (a_i, v')             # v' the Bpred used — a_i ALSO rides v'
+    else (the A term won):           cur = (a_{i-1}, v')         # step back to the previous A-vertex
+add (a₀, v₀) to M
+```
+
+The backtrack emits, for each A-vertex, **every** B-vertex it rides — that set is `M(a_i)`, the 1:N
+coverage — and each emitted pair `(a_i, v)` is charged `E(a_i, v)`. (With `α < 1`, weight the *(H)*
+steps' emission by `α`, §3.4.)
+
+#### Assemble and score
+
+```
+M = ⋃ over all chains (their backtracked pairs)      # anchors are shared between adjacent chains → appear once
+cost(M) = Σ_(a,v)∈M  E(a, v)  =  dp_cost
+```
+
+**Worked micro-chain.** `a₀ → a₁ → a₂`, anchors `a₀@v₀` and `a₂@v₃`, over a *denser* B-path
+`v₀ → v₁ → v₂ → v₃`. The pinned-end DP may put `a₁` on the run `{v₁, v₂}` (a 1:N cover):
+
+```
+M    = { (a₀,v₀), (a₁,v₁), (a₁,v₂), (a₂,v₃) }
+cost = E(a₀,v₀) + E(a₁,v₁) + E(a₁,v₂) + E(a₂,v₃)          # the TWO a₁ terms are the coverage cost
+```
+
+`φ` alone would record only `(a₁,v₁)` **or** `(a₁,v₂)` — one B-vertex — dropping the other coverage
+term. That dropped term is exactly the `C_total` vs `dp_cost` difference.
+
+**Why it is correct.** Every emitted step is an `H` (advance B, stay on `a`) or `A` (advance A) move,
+so `M` obeys (V1)–(V4) with no repair. On a tree the anchors cut `GA` into **independent** chains, so
+the sum of each chain's optimal pinned-end DP (anchors counted once) is the global optimum —
+`cost(M) = dp_cost` exactly. The one non-obvious step: **Stage 2 recovers the coverage by
+*backtracking a DP*, not by geometry.**
+
+> **Shipped status.** The code does Stage 1 (guarded backtrack) but replaces **Stage 2 with the
+> arc-length re-match** (§3.2) — geometry, not the pinned-end DP — and reports `C_total = Σ_a E(a, φ)`,
+> the *subsample* drift, not `dp_cost`. Implementing the Stage-2 chain DP is what produces `M`
+> explicitly, makes `cost(M) = dp_cost` provable, and lets `check_matching_rules(M)` (`dag_dtw.py`)
+> certify (V1)–(V4) directly.
 
 ### 3.3 The objective — total map-match cost
 
-The **total match cost of the whole DAG** is the sum of the local costs over every matched step, i.e.
-every A-vertex paired with its **final** assigned B-vertex `φ(a)`:
+The **total match cost of the whole DAG** is the sum of the local costs over every matched step —
+each A-vertex paired with its **final** assigned B-vertex `φ(a)`:
 
 ```
 C_total = Σ over A-vertices a   E(a, φ(a))          # the REALIZED cost of the returned matching
@@ -477,20 +725,20 @@ C_total = Σ over A-vertices a   E(a, φ(a))          # the REALIZED cost of the
 
 Compute it from the `φ` you actually return, **after** the joint junction resolution (§3.2a/§3.2c)
 and any re-match — i.e. sum the per-A-vertex drifts. That is the honest number, consistent with the
-reported `avg_drift = C_total / (matched steps)`.
+reported `avg_drift = C_total / (matched steps)`, and it is correct for **any** DAG shape. It needs
+no cut vertex and no `D+B` identity.
 
 > **Do not report the raw DP optimum as the total.** The forward split factor conserves the
-> cost-flow, so `Σ over sinks t   min_v D[t][v]` equals the cost of the DP's *discrete, unconstrained*
-> optimum — every sink free to pick its own cheapest **sampled** B-vertex. This is **not a bound** on
-> the realized cost, in either direction: the continuous arc-length re-match can place a vertex
-> *between* samples and come in **below** it (clean `y_split`: `Σ_sinks min D` = 11.6 vs realized
-> 11.5), while joint-consistency under a shift pushes the realized cost far **above** it (shift-4
-> `y_split`: 61.7 vs 108.3; diamond 96.9 vs 183.6). And `Σ_sinks min D` is itself exact only on a
-> tree — on a diamond the conserved-flow reading and the `D+B−E`-at-a-junction reading (§3.2a)
-> disagree with each other too. So treat `Σ_sinks min D` as a *DP diagnostic* (`res["dp_cost"]`),
-> never as the cost; the realized sum above is the definition.
+> cost-flow, so `Σ over sinks t   min_v D[t][v]` equals the cost of the DP's *discrete,
+> unconstrained* optimum — every sink free to pick its own cheapest **sampled** B-vertex. This is
+> **not a bound** on the realized cost in either direction: the continuous arc-length re-match can
+> place a vertex *between* samples and come in **below** it (clean `y_split`: `Σ_sinks min D` = 11.6
+> vs realized 11.5), while joint-consistency under a shift pushes the realized cost far **above** it
+> (shift-4 `y_split`: 61.7 vs 108.3; diamond 96.9 vs 183.6). And `Σ_sinks min D` is itself exact only
+> on a tree (§3.2a). So treat `Σ_sinks min D` as a *DP diagnostic* (`res["dp_cost"]`), never as the
+> cost; the realized sum above is the definition.
 
-The conserved-flow identity still makes a clean **worked check on a tree** — Y-split (`a0→a1`,
+The conserved-flow identity still makes a clean **worked check on a tree** — a Y-split (`a0→a1`,
 `a1→a2`, `a1→a3`), every vertex drifting 0.2, `outdeg(a1)=2`, all labels consistent:
 
 ```
@@ -511,14 +759,14 @@ consistency is a structural guarantee, not part of the cost.
 The **(H) horizontal** move is "A stays at `a` while B advances" — how a *single* A-vertex covers a
 *run* of B-vertices (a 1:N match). The plain recurrence pays `E(a, ·)` at **every** covered
 B-vertex, so the cost of one A-point matching a B-stretch grows **linearly with how finely B is
-sampled** — an arbitrary quantity. We want to *decrease the cost of one A-point matching many
+sampled** — an arbitrary quantity. The goal is to *decrease the cost of one A-point matching many
 B-points.*
 
-**Why not discount the carried cost.** The first idea — multiply the *carried* horizontal cost,
-`… + min(α·D[a][v'], (A))` — saturates the coverage cost (nice) but, for `α < 1`, makes the
-horizontal step's effective edge weight **negative** (a low-drift B-vertex can *lower* `D`), so the
-DP "launders" cost by wandering through cheap B-vertices. Verified real: it re-weights the alignment
-by *recency* and shifted `diamond` `avg_drift` 0.55 → 0.74. Rejected.
+> **Rejected first idea — discount the carried cost.** Multiplying the *carried* horizontal cost
+> (`… + min(α·D[a][v'], (A))`) saturates the coverage cost but, for `α < 1`, makes the horizontal
+> step's effective edge weight **negative** (a low-drift B-vertex can *lower* `D`), so the DP
+> "launders" cost by wandering through cheap B-vertices. It re-weights the alignment by *recency* and
+> shifted the `diamond` `avg_drift` 0.55 → 0.74. Rejected.
 
 **The fix — discount the EMISSION, and only on a horizontal step.** Weight `E(a, v)` by `α`, but
 apply the discount **only when the vertex is reached by extending coverage** (the min came from the
@@ -551,34 +799,34 @@ unchanged; only the *emission charged* differs.
 **Implementation.** With `α = 1` the recurrence is bit-for-bit today's (the Dijkstra horizontal is
 untouched). For `α ≠ 1` the emission depends on which move wins, so the (H) pass is resolved in
 **B-topological order** (compute `h = min D[a][v']` and `A`; the winner sets `α`, then
-`D = α·E + min(h, A)`); a cyclic local B-graph falls back to bounded iterative relaxation. The step
-adds a non-negative emission, so — unlike the carried-cost form — plain forward relaxation is valid.
+`D = α·E + min(h, A)`); a cyclic local B-graph falls back to bounded iterative relaxation.
 
 **What it changes.** `α` lives inside the DP's *decision* cost (`D`, `B`), so it shifts **which
 alignment** `φ` is chosen — always toward *more* 1:N coverage (verified: on `diamond`/`double_diamond`
 under shift, `α = 0.3` extends routes like `A_up: [B_up] → [B_up, B_up2]`). The **reported**
 `total_cost` / `avg_drift` stay the **raw** `Σ drift` of that chosen `φ` (still meters, still
-comparable to graph-DTW's `avg_distance`) — α is not folded into the reported metric, only into the
+comparable to graph-DTW's `avg_distance`) — `α` is not folded into the reported metric, only into the
 routing decision. On a plain 1:1 corridor (no coverage choice) `α` therefore changes nothing.
 
 **Trade-offs.** (1) Very small `α` makes extra coverage nearly free, so an A-vertex can
 **over-cover** (grab more B than it should — seen on the shifted `diamond`); keep `α` comfortably
 above 0 unless pay-once is truly wanted. (2) It is **orthogonal** to the junction-label and
-nearest-vs-corresponding problems (§3.2) — it only reshapes 1:N coverage. Default `1.0` (bit-for-bit
-today's result); reach for `α < 1` only when 1:N cost scaling with B-sampling density is the problem.
+nearest-vs-corresponding problems (§3.2, §3.5) — it only reshapes 1:N coverage. Default `1.0`
+(bit-for-bit today's result); reach for `α < 1` only when 1:N cost scaling with B-sampling density is
+the problem.
 
 ### 3.5 Segment-to-segment emission with a bearing term — the direction fix
 
 Point mode's emission `E(a,v) = dist(a,v)` is blind to heading, so under a lateral shift a branch
-collapses onto the *nearest* B-edge rather than the *corresponding* one (the diamond, §3.2b/§3.2c).
+collapses onto the *nearest* B-edge rather than the *corresponding* one (the diamond, §3.2, §3.2b).
 The fix is a **direction term**, added exactly the way graph-DTW's `emission="segment"` does it, and
 gated behind the same second mode (`emission="point" | "segment"`, default `"point"`).
 
 **Per-vertex segment.** Each vertex owns the segment starting at it along its own edge: vertex `v` on
 edge `e` pairs with `w`, its same-edge successor (`vert_edge[w] = e`). Define `mid(v) = ½(v + w)` and
-the **compass bearing** `bear(v) = (deg·atan2(Δx, Δy) + 360) mod 360` (graph-DTW's convention verbatim
-— `0° = north`, clockwise). The **last vertex** of an edge (no same-edge successor) falls back to its
-incoming segment `u → v`; a degenerate 1-vertex edge falls back to `mid=v, bear=0`.
+the **compass bearing** `bear(v) = (deg·atan2(Δx, Δy) + 360) mod 360` (graph-DTW's convention
+verbatim — `0° = north`, clockwise). The **last vertex** of an edge (no same-edge successor) falls
+back to its incoming segment `u → v`; a degenerate 1-vertex edge falls back to `mid=v, bear=0`.
 
 **The emission** (`λ = bearing_weight`, `circ(θ,φ) = min(|θ−φ|, 360−|θ−φ|) ∈ [0,180]`):
 
@@ -590,11 +838,11 @@ E_segment(a, v) = |mid(a) − mid(v)|  +  λ · circ(bear(a), bear(v))     # mid
 **What changes and what does not.** *Only the emission row* changes. The `(a,v)` **vertex DP state**
 and **every** piece of junction machinery — forward `D`, backward `B`, the joint `D+B−E` reachability
 backtrack, `α`, `require_tree`, the arc-length re-match — and **the entire output dict** (`phi`,
-`routes`, `routes_detail`, …) are **untouched**: segment mode returns the *same output* as point mode
-(the user's constraint), only a better alignment. The emission is symmetric, so forward and backward
-share it (reversing both graphs rotates every bearing by 180°, leaving `circ` unchanged). The
-reported `avg_drift` stays the **raw point distance** of the chosen `φ` (decision-only, like `α`);
-`λ` and the middle-to-middle basis transfer directly from graph-DTW, so its tuned `λ ≈ 1–5` applies.
+`routes`, `routes_detail`, …) are **untouched**: segment mode returns the *same output shape* as point
+mode, only a better alignment. The emission is symmetric, so forward and backward share it (reversing
+both graphs rotates every bearing by 180°, leaving `circ` unchanged). The reported `avg_drift` stays
+the **raw point distance** of the chosen `φ` (decision-only, like `α`); `λ` and the middle-to-middle
+basis transfer directly from graph-DTW, so its tuned `λ ≈ 1–5` applies.
 
 **Guarantees & the diamond.** `emission="point"` (default) is **bit-for-bit** today's result.
 `emission="segment", λ = 0` is deliberately **under-constrained** (middle-to-middle only, no heading)
@@ -604,15 +852,15 @@ wrong-heading match now costs `λ·(90–180)` "metres", dwarfing the few-metre 
 the actual cure for the nearest-vs-corresponding limit — orthogonal to `α` (§3.4, coverage) and to
 the junction machinery (§3.2a).
 
-**Measured effect & the rotation caveat.** Over the perturbation sweep, restricted to **lateral shift
-+ noise** (`rot = 0`, the realistic regime), `segment@λ = 3` reduces the reconvergent failures without
-touching trees — `double_diamond` 14→8, `diamond` 9→7 of 32, `chain`/`y_split`/`merge` stay 0. The
-one honest caveat: the bearing term is, by design, sensitive to a **relative rotation between A and
-B**. Real conflation matches the *same* roads (A and B differ by a metre, not a heading), so this is
-harmless; but the synthetic sweep *rotates A while leaving B fixed*, which manufactures a global
-heading offset the term (correctly) penalises — so the `rot ≠ 0` rows of the sweep are adversarial to
-*any* heading model and should not be read as a regression. Tune `λ` to the expected A↔B rotation
-noise (0 if it can be large).
+> **Measured effect & the rotation caveat.** Over the perturbation sweep, restricted to **lateral
+> shift + noise** (`rot = 0`, the realistic regime), `segment@λ = 3` reduces the reconvergent
+> failures without touching trees — `double_diamond` 14→8, `diamond` 9→7 of 32;
+> `chain`/`y_split`/`merge` stay 0. The one honest caveat: the bearing term is, by design, sensitive
+> to a **relative rotation between A and B**. Real conflation matches the *same* roads (A and B differ
+> by a metre, not a heading), so this is harmless; but the synthetic sweep *rotates A while leaving B
+> fixed*, which manufactures a global heading offset the term (correctly) penalises — so the `rot ≠ 0`
+> rows are adversarial to *any* heading model and should not be read as a regression. Tune `λ` to the
+> expected A↔B rotation noise (0 if it can be large).
 
 ---
 
@@ -624,7 +872,7 @@ DAG-DTW that `tests/test_graph_dtw.py`'s hand-built B-edge lists play for graph-
 one behaviour at a time, in a plain meter CRS, with no DuckDB or real data. Each test fixes an
 expected `φ` at the junctions and an expected per-A-edge route, so the DP can be debugged exactly.
 
-The starter ladder (each a topologically-ordered edge list):
+The starter ladder (each a topologically-ordered edge list, in `network_matching/dag_synthetic.py`):
 
 | DAG test | shape | what it isolates |
 |----------|-------|------------------|
@@ -632,7 +880,7 @@ The starter ladder (each a topologically-ordered edge list):
 | `y_split` | `a0→a1`, then `a1→a2` **and** `a1→a3` | a branch: two exits share junction `a1`; `φ(a1)` is one B-vertex for both |
 | `merge` | `a0→a2` **and** `a1→a2` | two approaches meet at `a2`; both must agree on `φ(a2)` |
 | `diamond` | `a0→a1`, `a0→a2`, `a1→a3`, `a2→a3` | split **and** re-merge — exercises the reconvergence / agreement rule (§3.2) |
-| `stub_branch` | main path + a short dead-end spur off a junction | a spur that leaves a junction but has no B continuation |
+| `double_diamond` | two diamonds in series, joined by a chain (`\|F\| = 2`) | the case that separates the two conditioning solvers (§3.2b) |
 
 Invariants every DAG test asserts:
 
@@ -663,16 +911,16 @@ Target GB:
                     └─(B_right)─► B3
 ```
 
-- Topological sweep: `a0, a1, a2, a3`. At `a1` (the junction) the DP settles
-  `φ(a1) = argmin_v D[a1][v]` — the B-junction `B1`.
+- Topological sweep: `a0, a1, a2, a3`. At `a1` (the junction) the DP settles `φ(a1)` at the
+  B-junction `B1` (jointly, via §3.2a).
 - Backtracking from sink `a2` fixes the route `A_main → A_left ≈ B_main → B_left`, memoising
   `φ(a1)=B1`; backtracking from sink `a3` **reuses** `φ(a1)=B1` and yields
   `A_main → A_right ≈ B_main → B_right`.
-- `A_main` is matched **once** (shared prefix), and both branches agree that the split happens at
-  `B1`. Edge-by-edge matching guarantees none of this.
+- `A_main` is matched **once** (shared prefix), and both branches agree the split happens at `B1`.
+  Edge-by-edge matching guarantees none of this.
 
-The debug view (forthcoming, mirroring `scripts/graph_dtw_debug_viz.py`) draws `GA` as several
-coloured A-edges, the joint correspondence, and `φ` at each junction.
+The debug view (mirroring `scripts/graph_dtw_debug_viz.py`) draws `GA` as several coloured A-edges,
+the joint correspondence, and `φ` at each junction.
 
 ---
 
@@ -731,23 +979,22 @@ stays as the terse id-only list for callers that don't need the detail.
 - **Target B** is the same forward-only directed graph as graph-DTW; it may cycle (handled by the
   per-A-vertex Dijkstra).
 - **Directed A → B** only (no symmetric B→A reconciliation).
-- **Tree / polytree** source DAGs are handled exactly; **reconvergent** DAGs (diamonds) use the
-  merge-agreement rule of §3.2 (exact joint optimisation of reconvergence is future work).
+- **Tree / polytree** source DAGs are handled **exactly** (§3.2a). **Reconvergent** DAGs (diamonds)
+  use the same joint resolution, exact on trees; a globally-optimal joint diamond labelling *inside
+  the matcher* is future work — the exact conditioning solvers of §3.2b exist as reference and
+  confirm the point-mode diamond failure is nearest-vs-corresponding (fixed by §3.5), not a loop bug.
 - **`require_tree` option** — pass `require_tree=True` to assert the source has **no undirected
   loop** (a forest / polytree — no reconvergence). The matcher verifies `GA`'s undirected skeleton
   is acyclic (cyclomatic number `E − V + C = 0`) and raises **`NotATree`** on any diamond. Because
   trees are solved **exactly** (§3.2a) and never hit the nearest-vs-corresponding diamond limit,
-  this guarantees the exact regime for callers who know their source is a tree. It composes with
-  both emission modes (point and, when added, segment) and with `α`. Default `False` (any DAG).
-- **Junction consistency is now enforced by a monotone backtrack (§3.2).** The reverse-topological
-  backtrack forces every junction to a common B-ancestor of its branches, so the matched sequence
-  is always a **valid monotone forward B-walk** (no backward or disconnected step, no spill onto a
-  cross road) — validated on clean and rigidly-shifted DAGs by
-  [`scripts/dag_dtw_validate.py`](../scripts/dag_dtw_validate.py) and the sequence-rule tests.
-  Implemented in [`network_matching/dag_dtw.py`](../network_matching/dag_dtw.py); demo in
-  [`notebooks/dag_dtw_playground.ipynb`](../notebooks/dag_dtw_playground.ipynb).
+  this guarantees the exact regime for callers who know their source is a tree. It composes with both
+  emission modes (`point`/`segment`) and with `α`. Default `False` (any DAG).
 - Cost is **count-weighted** (inherited from graph-DTW): route choice depends on `step_meters`
   density; a length-weighted objective remains future work.
+
+Junction consistency is enforced by the monotone reachability-guarded backtrack (§3.2), validated on
+clean and rigidly-shifted DAGs by [`scripts/dag_dtw_validate.py`](../scripts/dag_dtw_validate.py) and
+the sequence-rule tests.
 
 ---
 
@@ -761,8 +1008,8 @@ stays as the terse id-only list for callers that don't need the detail.
 | target | directed graph `GB` (Dijkstra) | directed graph `GB` (Dijkstra) — unchanged |
 | result | one B-route per A-edge | junction-consistent B-route per A-edge + label map `φ` |
 | entry / exit | free entry row 0 / exit last row | free entry at **sources** / exit at **sinks** |
-| local cost | `point` / `segment` (unchanged) | `point` / `segment` (unchanged) |
-| primitive | `match_edge_to_bgraph` | `match_dag_to_bgraph` (forthcoming) |
+| local cost | `point` / `segment` | `point` / `segment` (unchanged) |
+| primitive | `match_edge_to_bgraph` | `match_dag_to_bgraph` |
 
 DAG-DTW is a strict superset: give it a single-path DAG and it **is** graph-DTW.
 

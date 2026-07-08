@@ -144,6 +144,109 @@ def check_sequence_rules(res: Dict[str, Any], jump_tol: float = 3.0) -> Dict[str
             "arc_viol": arc_viol, "route_viol": route_viol, "jump_viol": jump_viol}
 
 
+def check_matching_rules(M, ga, gb) -> Dict[str, Any]:
+    """Validate a (possibly **many-to-many**) matching ``M`` against the four local warping rules of
+    docs/dag_dtw_matching.md ("The problem -- a constrained optimization over valid matchings",
+    (V1)-(V4)). This is the exact *structural* definition on a general relation; :func:`check_sequence_rules`
+    is the metric-tolerant validator for the shipped **single-valued** ``φ`` (whose 1:N coverage lives
+    on the edge route, not on ``φ`` -- so a subsampled ``φ`` is deliberately *not* a full valid warping).
+
+    ``M`` may be a mapping ``{a: v}`` / ``{a: iterable-of-v}`` or an iterable of ``(a, v)`` pairs.
+    Returns ``{ok, v1_cross, v2_predecessor, v3_successor, v4_uncovered}`` -- each a list of offending
+    cells. Uses only immediate neighbours (``Apred/Asucc = ga.pred_arcs/succ_arcs``, ``Bpred/Bsucc =
+    gb.pred_arcs/succ_arcs``) and membership -- **no reachability**. (V2)/(V3) are named by the
+    neighbours they inspect -- predecessors / successors -- not "backward/forward," which is ambiguous.
+
+    - **(V1) no cross**: no DAG-predecessor of ``a`` sits on a B-successor of ``v``.
+    - **(V2) predecessor rule** (every cell is *fed*): ``(a,v)`` either rode B inside ``a``'s run (has
+      a matched ``Bpred`` at ``a``) or **every** ``Apred(a)`` feeds it (held at ``v`` or advanced
+      ``v⁻→v``); sources satisfy the ``∀`` vacuously. Catches a **merge** entered at two points.
+    - **(V3) successor rule** (every cell *continues*): the mirror of (V2) with ``Asucc``/``Bsucc``;
+      sinks vacuous. Catches a **branch** left at two points.
+    - **(V4) coverage**: every A-vertex is matched.
+    """
+    Ma: Dict[int, set] = {}
+    if isinstance(M, dict):
+        for a, vs in M.items():
+            Ma[int(a)] = ({int(vs)} if isinstance(vs, (int, np.integer))
+                          else set(int(v) for v in vs))
+    else:
+        for a, v in M:
+            Ma.setdefault(int(a), set()).add(int(v))
+
+    def has(a, v):
+        return v in Ma.get(a, ())
+
+    v1: List = []; v2: List = []; v3: List = []
+    for a, vs in Ma.items():
+        for v in vs:
+            # (V1) no cross
+            for am in ga.pred_arcs[a]:
+                for vp in gb.succ_arcs[v]:
+                    if has(am, vp):
+                        v1.append((a, v, am, vp))
+            # (V2) predecessor rule (fed): rode B, OR every incoming arc feeds this cell (∀ over Apred;
+            #      empty Apred -> vacuously true -> a source's run-entry is free, no boundary exemption)
+            if not any(has(a, vm) for vm in gb.pred_arcs[v]) and not all(
+                    has(am, v) or any(has(am, vm) for vm in gb.pred_arcs[v])
+                    for am in ga.pred_arcs[a]):
+                v2.append((a, v))
+            # (V3) successor rule (continues): continues in B, OR every outgoing arc carries this cell on
+            if not any(has(a, vp) for vp in gb.succ_arcs[v]) and not all(
+                    has(ap, v) or any(has(ap, vp) for vp in gb.succ_arcs[v])
+                    for ap in ga.succ_arcs[a]):
+                v3.append((a, v))
+
+    v4 = [a for a in range(ga.n_vertices) if not Ma.get(a)]   # (V4) every A-vertex matched
+    return {"ok": not (v1 or v2 or v3 or v4),
+            "v1_cross": v1, "v2_predecessor": v2, "v3_successor": v3, "v4_uncovered": v4}
+
+
+def forward_successor_dp(a_edges, b_edges, *, snap_tolerance_m=0.5, step_meters=2.0):
+    """Forward DP that enforces the **(V3) successor rule by construction** (docs §3.0a): process each
+    vertex **together with all its successors**, committing its single exit and expanding *every*
+    successor from it, so a branch is always left at **one** point.
+
+    ``F[a][v]`` = min cost of ``a``'s subtree with ``a`` **at** ``v``; every successor ``a_k`` expands
+    from that one ``v`` (held, or one B-arc past it), so the branch cannot smear. Point-to-point, and
+    exact for a source **out-tree** (branches, no merges — the predecessor/(V2) coordination is the
+    mirror, the backward pass, not included here). Returns ``(ga, gb, phi, M)`` with ``M`` the set of
+    ``(a, phi[a])`` pairs; ``check_matching_rules(M, ga, gb)["v3_successor"]`` is empty by construction.
+    """
+    a_pts = [(float(x), float(y)) for _id, g in a_edges for (x, y) in g.coords]
+    b_pts = [(float(x), float(y)) for _id, g in b_edges for (x, y) in g.coords]
+    ga = build_local_digraph(a_edges, b_pts, snap_tolerance_m, step_meters)
+    gb = build_local_digraph(b_edges, a_pts, snap_tolerance_m, step_meters)
+    order = topological_order(ga)
+    NA, NB = ga.n_vertices, gb.n_vertices
+    ax, ay, bx, by = ga.vx, ga.vy, gb.vx, gb.vy
+
+    F: List = [None] * NA                                          # F[a][v] over all B-vertices v
+    for a in reversed(order):                                      # successors are finalised first
+        Fa = np.hypot(bx - ax[a], by - ay[a]).astype(float)       # base: a's own drift at each v
+        for ak in ga.succ_arcs[a]:
+            m = F[ak].copy()                                       # w = v : successor held at v
+            for v in range(NB):
+                for w in gb.succ_arcs[v]:                          # w one B-arc past v
+                    if F[ak][w] < m[v]:
+                        m[v] = F[ak][w]
+            Fa = Fa + m                                            # every successor expands from v
+        F[a] = Fa
+
+    phi: Dict[int, int] = {}                                       # backtrack: source argmin, push down
+    for s in (a for a in range(NA) if not ga.pred_arcs[a]):
+        phi[s] = int(np.argmin(F[s]))
+    for a in order:
+        v = phi.get(a)
+        if v is None:
+            continue
+        for ak in ga.succ_arcs[a]:
+            cands = [v] + list(gb.succ_arcs[v])                    # all successors leave from a's ONE v
+            phi[ak] = min(cands, key=lambda w: F[ak][w])
+    M = {(a, phi[a]) for a in phi}
+    return ga, gb, phi, M
+
+
 # --------------------------------------------------------------------------------------
 # Topological order, laid out as [sources | middle | sinks] (docs §2)
 # --------------------------------------------------------------------------------------

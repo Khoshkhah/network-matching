@@ -14,7 +14,9 @@ import pytest
 from shapely.geometry import LineString
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from network_matching.dag_dtw import NotADAG, NotATree, match_dag_to_bgraph, topological_order  # noqa: E402
+from network_matching.dag_dtw import (  # noqa: E402
+    NotADAG, NotATree, check_matching_rules, forward_successor_dp, match_dag_to_bgraph,
+    topological_order)
 from network_matching.dag_dtw import build_local_digraph  # noqa: E402
 from network_matching.dag_synthetic import DAG_SCENARIOS, get_dag  # noqa: E402
 from network_matching.dag_playground import perturb_dag, _edges_to_ls  # noqa: E402
@@ -286,3 +288,97 @@ def test_horizontal_weight_extends_coverage():
     r1 = match_dag_to_bgraph(A, sc["b_edges"], horizontal_weight=1.0, **sc["defaults"])
     r_low = match_dag_to_bgraph(A, sc["b_edges"], horizontal_weight=0.3, **sc["defaults"])
     assert dict(r1["routes"]) != dict(r_low["routes"]), "α<1 should change the coverage here"
+
+
+# ----------------------------------------------------------------------------------------------
+# check_matching_rules: the exact structural (V1)-(V4) validator (docs "The problem ...").
+# Built on tiny hand-wired graphs so the matching M and its arcs are fully controlled -- these pin
+# the two counterexamples that fixed (V3): an orphan run-entry (only V2 catches) and an orphan
+# run-exit (only V3 catches), plus a cross (V1) and a clean 1:N warping that must pass.
+# ----------------------------------------------------------------------------------------------
+class _G:
+    """Minimal directed graph exposing the fields check_matching_rules reads."""
+    def __init__(self, n, arcs):
+        self.n_vertices = n
+        self.succ_arcs = [[] for _ in range(n)]
+        self.pred_arcs = [[] for _ in range(n)]
+        for u, w in arcs:
+            self.succ_arcs[u].append(w)
+            self.pred_arcs[w].append(u)
+
+
+def test_matching_rules_valid_1toN_passes():
+    # a0->v0 ; a1 covers the run v1->v2 (a genuine 1:N).  Fully valid.
+    ga = _G(2, [(0, 1)])
+    gb = _G(3, [(0, 1), (1, 2)])
+    M = {0: {0}, 1: {1, 2}}
+    r = check_matching_rules(M, ga, gb)
+    assert r["ok"], r
+
+
+def test_matching_rules_v2_catches_orphan_entry():
+    # arc a'->a ; M(a')={u}, M(a)={v1,v2,v3} run v1->v2->v3, but a' feeds v2 (mid-run):
+    # v1 is an entry reachable by nothing -> ONLY the predecessor rule (V2) may flag it.
+    ga = _G(2, [(0, 1)])                      # a'=0 -> a=1
+    gb = _G(4, [(1, 2), (2, 3), (0, 2)])      # u=0->v2=2 ; v1=1->v2=2->v3=3
+    M = {0: {0}, 1: {1, 2, 3}}
+    r = check_matching_rules(M, ga, gb)
+    assert not r["ok"]
+    assert (1, 1) in r["v2_predecessor"], r       # (a=1, v1=1) orphan entry flagged
+    assert r["v1_cross"] == [] and r["v3_successor"] == []   # nothing else fires
+
+
+def test_matching_rules_v3_catches_orphan_exit():
+    # mirror: arc a->a' ; M(a)={v1,v2,v3}, M(a')={w}, a' fed from v2 (mid-run):
+    # v3 is an exit that continues into nothing -> ONLY the successor rule (V3) may flag it.
+    ga = _G(2, [(0, 1)])                      # a=0 -> a'=1
+    gb = _G(4, [(0, 1), (1, 2), (1, 3)])      # v1=0->v2=1->v3=2 ; v2=1->w=3
+    M = {0: {0, 1, 2}, 1: {3}}
+    r = check_matching_rules(M, ga, gb)
+    assert not r["ok"]
+    assert (0, 2) in r["v3_successor"], r         # (a=0, v3=2) orphan exit flagged
+    assert r["v1_cross"] == [] and r["v2_predecessor"] == []
+
+
+def test_matching_rules_v1_catches_cross():
+    # a0->a1 (later in A) but a0->v1 (later in B) while a1->v0 (earlier in B): an inversion.
+    ga = _G(2, [(0, 1)])
+    gb = _G(2, [(0, 1)])                      # v0=0 -> v1=1
+    M = {0: {1}, 1: {0}}
+    r = check_matching_rules(M, ga, gb)
+    assert not r["ok"]
+    assert any(c[:2] == (1, 0) for c in r["v1_cross"]), r   # (a1=1, v0=0) crosses a0 on v1
+
+
+def test_matching_rules_v4_catches_uncovered():
+    ga = _G(2, [(0, 1)])
+    gb = _G(2, [(0, 1)])
+    M = {0: {0}}                              # a1 left unmatched
+    r = check_matching_rules(M, ga, gb)
+    assert not r["ok"] and r["v4_uncovered"] == [1]
+
+
+def test_matching_rules_merge_needs_every_approach():
+    # merge a0->a2, a1->a2 ; both approaches must feed a2's cell (the ∀ over Apred in V2).
+    ga = _G(3, [(0, 2), (1, 2)])              # a0=0, a1=1 -> a2=2
+    gb = _G(4, [(0, 2), (1, 2)])              # v0=0->v2=2 ; v1=1->v2=2 ; x=3 isolated
+    good = {0: {0}, 1: {1}, 2: {2}}           # both approaches feed the merge point v2
+    assert check_matching_rules(good, ga, gb)["ok"]
+    bad = {0: {0}, 1: {3}, 2: {2}}            # a1 sits on the isolated x=3 -> does NOT feed the merge
+    r = check_matching_rules(bad, ga, gb)
+    assert not r["ok"]
+    assert (2, 2) in r["v2_predecessor"]      # a2's entry is not fed by every approach
+
+
+def test_forward_successor_dp_is_v3_clean():
+    # y_split is a source OUT-TREE (one source, a branch, no merges). The successor-DP forces BOTH
+    # branches to leave the junction from the SAME point, so the (V3) successor rule holds by
+    # construction -- no post-hoc repair (docs §3.0a).
+    sc = get_dag("y_split")
+    ga, gb, phi, M = forward_successor_dp(
+        sc["a_edges"], sc["b_edges"],
+        snap_tolerance_m=sc["defaults"].get("snap_tolerance_m", 0.5),
+        step_meters=sc["defaults"].get("step_meters", 2.0))
+    r = check_matching_rules(M, ga, gb)
+    assert r["v3_successor"] == [], r      # branch left at one point -> V3 clean by construction
+    assert r["ok"], r                      # out-tree + single-valued -> V1/V2/V4 also clean
