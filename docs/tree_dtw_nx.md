@@ -310,6 +310,47 @@ A failure is a genuine forward/backward disagreement on the optimum — a bug in
 something to repair by forcing the tables to agree: forcing picks a winner and reintroduces the very
 split- / merge-optimism the two-pass design exists to avoid (main §4.2). Fix the pass at its source.
 
+### 6c Table reachability — sources ↔ sinks by back-pointers
+
+`validate_tables` (§6) checks each cell's back-pointer chain is a legal warping; `check_reciprocity`
+(§6b) checks the two tables **agree**. This is a third, **per-table structural** test: each table's
+back-pointers must reconstruct the tree's own **source ↔ sink reachability**.
+
+A **cell** is a pair `(a, v)` — a source vertex `a` pinned at a target cell `v`. Every back-pointer step
+is **cell → cell**. From the tree `A` we know, for every source, the set of **sinks reachable** from it
+(its descendant leaves), and for every sink, the **sources** that reach it (its ancestor roots):
+`ancestor_sources(t) = (ancestors(t) ∪ {t}) ∩ sources`, `descendant_sinks(s) = (descendants(s) ∪ {s}) ∩ sinks`.
+
+* **Forward `D`** — `bpD` points **upstream** (predecessor cells); a source has `bpD = []`. For **every
+  finite cell of every sink** `t`, walk `bpD` from that cell, **branching at every predecessor entry**,
+  and collect the vertices of the terminal cells (`bpD = []`). They must equal **exactly
+  `ancestor_sources(t)`**.
+* **Backward `B`** — `bpB` points **downstream** (successor cells); a sink has `bpB = []`. For **every
+  finite cell of every source** `s`, walk `bpB`, branching at every successor, and collect the terminal
+  vertices. They must equal **exactly `descendant_sinks(s)`**.
+
+Branching is the whole point: a **split** makes `bpB` fork so one source cell must reach **all** its
+downstream sinks; a **merge** makes `bpD` fork so one sink cell must reach **all** its upstream sources.
+Because a source vertex may span a 1:N coverage run, a step to a cell with the **same** source vertex (a
+COVER pointer `[(a, w')]`) stays on `a`, and a step to a **different** vertex (an ADVANCE) moves on — the
+move is cell → cell either way; the reached set is read off the **vertex component** of each terminal cell.
+
+A cell is **invalid** if the walk (i) hits a `None` cell reference — the path is severed (a defensive
+guard), or (ii) its reached endpoint set ≠ the tree's required set (a branch is missing or spurious).
+`∞`-cost cells are infeasible **by construction** and are skipped.
+
+**Empirically the two passes always pass this** — every finite cell reconstructs exactly the tree's
+reachability (0 invalid cells over a 22 500-case α,β × point/segment sweep, including cases where the
+*extraction* crashes or returns an invalid matching). So its value is twofold: a **regression guard** on
+the table-filling, and a **localiser** — it certifies the known failures (the merge `KeyError`, the
+invalid/sub-optimal matchings) live **downstream of the tables**, in the extraction/coverage, not in the
+tables' reachability. (The merge `KeyError` is an *extraction* fault: it follows a `None` back-pointer
+that sits on an `∞` cell, which this test skips — the table itself is sound.)
+
+`check_reachability(A, which)` runs this for `which ∈ {"D", "B"}` and returns the invalid cells (empty ⇒
+the table's back-pointers encode exactly the tree's reachability). Point mode runs on `A`, segment mode
+on `L(A)` — same function, different index set.
+
 ---
 
 ## Segment mode = the same six parts on the line-graph

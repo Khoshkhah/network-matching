@@ -1,11 +1,13 @@
-"""Tests for the networkx tree-DTW rebuild (`tree_dtw_nx`), focused on §6b cross-table agreement:
-the forward table `D` and backward table `B` must agree on the one optimum -- every source edge the
-forward back-pointers thread, the backward ones thread back (`check_reciprocity`)."""
+"""Tests for the networkx tree-DTW rebuild (`tree_dtw_nx`): §6b cross-table agreement
+(`check_reciprocity`) and §6c per-table source<->sink reachability (`check_reachability`)."""
+import math
+
 import networkx as nx
 import pytest
 
 from network_matching.tree_dtw_nx import (digraph, line_digraph, prepare, forward, backward,
-                                          extract, check_reciprocity, check_rules, _advance_anchor)
+                                          extract, check_reciprocity, check_reachability,
+                                          check_rules, _advance_anchor)
 
 
 def make(name):
@@ -82,3 +84,48 @@ def test_reciprocity_on_coverage_run():
     assert check_reciprocity(A, committed) == []            # 0->1 threaded at the run-end b2, reciprocally
     A.nodes[0]["cand"]["b2"]["bpB"] = []                    # sever 0's continuation into 1
     assert check_reciprocity(A, committed)                  # ... and it is caught
+
+
+# ---------------------------------------------------------------------------------------------------
+# §6c per-table reachability: each table's back-pointers reconstruct the tree's source<->sink structure
+# ---------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
+def test_reachability_holds_point(name, alpha, beta):
+    """Every finite sink cell's bpD reaches exactly its ancestor sources, and every finite source cell's
+    bpB reaches exactly its descendant sinks -- for every scenario and weighting (docs §6c)."""
+    A, B = make(name)
+    prepare(A, B, r=20.0); forward(A, B, alpha=alpha, beta=beta); backward(A, B, alpha=alpha, beta=beta)
+    assert check_reachability(A, "D") == [], f"{name} a={alpha} b={beta}: forward reachability broken"
+    assert check_reachability(A, "B") == [], f"{name} a={alpha} b={beta}: backward reachability broken"
+
+
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("bw", [0.0, 3.0])
+def test_reachability_holds_segment(name, bw):
+    """Same reachability soundness on the line-graph tables (segment mode)."""
+    A, B = make(name)
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0, bearing_weight=bw); forward(LA, LB); backward(LA, LB)
+    assert check_reachability(LA, "D") == [] and check_reachability(LA, "B") == []
+
+
+def test_reachability_has_teeth():
+    """A severed back-pointer (a None cell reference) on a finite endpoint cell must be caught, both
+    directions -- a sink whose bpD can no longer reach its sources / a source whose bpB can't reach its
+    sinks."""
+    A, B = make("merge")                                    # sources 0,1 ; sink 3 ; merge at 2
+    prepare(A, B, r=20.0); forward(A, B); backward(A, B)
+    assert check_reachability(A, "D") == [] and check_reachability(A, "B") == []
+
+    for v, c in A.nodes[3]["cand"].items():                # forward: break a finite sink cell's bpD
+        if not math.isinf(c["D"]) and c["bpD"]:
+            c["bpD"] = [(c["bpD"][0][0], None)]; break
+    assert check_reachability(A, "D"), "severed forward path not caught"
+
+    A2, B2 = make("merge")
+    prepare(A2, B2, r=20.0); forward(A2, B2); backward(A2, B2)
+    for v, c in A2.nodes[0]["cand"].items():               # backward: break a finite source cell's bpB
+        if not math.isinf(c["B"]) and c["bpB"]:
+            c["bpB"] = [(c["bpB"][0][0], None)]; break
+    assert check_reachability(A2, "B"), "severed backward path not caught"

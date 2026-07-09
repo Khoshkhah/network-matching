@@ -401,6 +401,63 @@ def check_reciprocity(A: nx.DiGraph, committed: Dict[Hashable, Hashable]):
     return bad
 
 
+def _reach(A: nx.DiGraph, start, bpkey: str):
+    """Walk ``bpkey`` back-pointers cell -> cell from ``start``, branching at every entry. Return
+    ``(terminals, hit_none)``: ``terminals`` = the vertex component of every terminal cell reached (an
+    empty back-pointer list -- a source for ``bpD``, a sink for ``bpB``); ``hit_none`` flags a severed
+    path (a ``None`` cell reference). Cover pointers (same vertex) and advances (a new vertex) are both
+    just cell -> cell moves; a vertex is tallied only where the walk terminates (docs §6c)."""
+    reached, seen, hit_none = set(), set(), False
+    stack = [start]
+    while stack:
+        a, v = stack.pop()
+        if (a, v) in seen:
+            continue
+        seen.add((a, v))
+        bp = A.nodes[a]["cand"][v][bpkey]
+        if not bp:
+            reached.add(a)                                  # terminal cell: a is a source (D) / sink (B)
+            continue
+        for (a2, v2) in bp:
+            if v2 is None:
+                hit_none = True                             # severed path
+            else:
+                stack.append((a2, v2))
+    return reached, hit_none
+
+
+def check_reachability(A: nx.DiGraph, which: str = "D"):
+    """Per-table reachability (docs §6c): a table's back-pointers must reconstruct the tree's own
+    source <-> sink reachability. ``which="D"`` -- from every finite cell of every SINK, walking ``bpD``
+    (upstream, branching at each predecessor) must reach **exactly** that sink's ancestor sources.
+    ``which="B"`` -- from every finite cell of every SOURCE, walking ``bpB`` (downstream) must reach
+    exactly that source's descendant sinks. Returns invalid cells as ``(vertex, cell, reason)`` (empty ⇒
+    the table is sound). ``∞``-cost cells are infeasible by construction and are skipped. Works on ``A``
+    (point) or ``line_digraph(A)`` (segment)."""
+    key = "D" if which == "D" else "B"
+    bpkey = "bpD" if which == "D" else "bpB"
+    sources = {n for n in A.nodes if A.in_degree(n) == 0}
+    sinks = {n for n in A.nodes if A.out_degree(n) == 0}
+    if which == "D":
+        ends = sinks
+        expected = {t: (nx.ancestors(A, t) | {t}) & sources for t in sinks}
+    else:
+        ends = sources
+        expected = {s: (nx.descendants(A, s) | {s}) & sinks for s in sources}
+    bad = []
+    for a in ends:
+        want = expected[a]
+        for v, c in A.nodes[a]["cand"].items():
+            if math.isinf(c[key]):                          # infeasible cell -- expected not to reach
+                continue
+            reached, hit_none = _reach(A, (a, v), bpkey)
+            if hit_none:
+                bad.append((a, v, "severed: back-pointer to a None cell"))
+            elif reached != want:
+                bad.append((a, v, f"reached {sorted(map(str, reached))} != required {sorted(map(str, want))}"))
+    return bad
+
+
 if __name__ == "__main__":
     def dump(A: nx.DiGraph, title: str) -> None:
         print(f"\n=== {title} ===")
