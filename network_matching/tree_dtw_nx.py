@@ -146,15 +146,20 @@ def digraph(nodes: Dict[Hashable, tuple[float, float]], edges: List[tuple]) -> n
 # ---------------------------------------------------------------------------------------
 # Part 3 -- forward table D (upstream cost), stored on the node
 # ---------------------------------------------------------------------------------------
+def _b_order(B: nx.DiGraph) -> Dict[Hashable, int]:
+    """A fixed total order on B's vertices (sorted by id). Used to break argmin ties **identically** in
+    the forward and backward passes, so equal-cost choices don't diverge between them (docs §4b)."""
+    return {v: i for i, v in enumerate(sorted(B.nodes, key=str))}
+
+
 def _pass(A: nx.DiGraph, B: nx.DiGraph, order, pred, succ, bpred, bsucc,
-          key: str, bpkey: str, alpha: float, beta: float) -> None:
+          key: str, bpkey: str, alpha: float, beta: float, border: Dict[Hashable, int]) -> None:
     """One min-sum sweep filling ``cand[v][key]`` / ``cand[v][bpkey]`` for every A-vertex, in ``order``.
     Parameterised so the *same* body serves the forward pass (``pred=A.predecessors``,
     ``bpred=B.predecessors``, ``outdeg`` = A out-degree) and the backward pass (all reversed, Part 4).
-    Implements the §3 three-way min: (D) advance, (V) β-stall, (H) α-coverage."""
+    Implements the §3 three-way min: (D) advance, (V) β-stall, (H) α-coverage. ``border`` breaks argmin
+    ties by a fixed B-vertex order, identically in both passes."""
     import heapq
-    from itertools import count
-    tick = count()
     deg = {n: max(1, len(list(succ(n)))) for n in A.nodes}      # the 1/outdeg split factor (§3)
 
     for a in order:
@@ -172,8 +177,10 @@ def _pass(A: nx.DiGraph, B: nx.DiGraph, order, pred, succ, bpred, bsucc,
                 pc = A.nodes[p]["cand"]
                 sp, spx = INF, None
                 for x in bpred(v):                              # advance: one B-arc into v
-                    if x in pc and pc[x][key] < sp:
-                        sp, spx = pc[x][key], x
+                    if x in pc:
+                        val = pc[x][key]                        # tie -> smaller B-order cell (both passes)
+                        if val < sp or (val == sp < INF and border[x] < border[spx]):
+                            sp, spx = val, x
                 stall = pc[v][key] if v in pc else INF          # stall: p already on v
                 step[p] = (sp, spx, stall)
             # (D) every predecessor advances into v  (full E)
@@ -206,7 +213,7 @@ def _pass(A: nx.DiGraph, B: nx.DiGraph, order, pred, succ, bpred, bsucc,
         # (H) 1:N coverage: within-row shortest path over B restricted to cand(a) (Dijkstra)
         D = dict(base)
         bp = dict(base_bp)
-        pq = [(D[v], next(tick), v) for v in cand]
+        pq = [(D[v], border[v], v) for v in cand]               # B-order breaks heap ties (was insertion order)
         heapq.heapify(pq)
         while pq:
             dv, _, v = heapq.heappop(pq)
@@ -218,7 +225,7 @@ def _pass(A: nx.DiGraph, B: nx.DiGraph, order, pred, succ, bpred, bsucc,
                 nw = dv + alpha * cand[w]["E"]
                 if nw < D[w]:
                     D[w], bp[w] = nw, [(a, v)]
-                    heapq.heappush(pq, (nw, next(tick), w))
+                    heapq.heappush(pq, (nw, border[w], w))
         for v in cand:
             cand[v][key], cand[v][bpkey] = D[v], bp[v]
 
@@ -228,7 +235,7 @@ def forward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0)
     (docs §3). Requires :func:`prepare` to have run. Returns ``A`` (mutated in place)."""
     order = list(nx.topological_sort(A))
     _pass(A, B, order, A.predecessors, A.successors, B.predecessors, B.successors,
-          "D", "bpD", alpha, beta)
+          "D", "bpD", alpha, beta, _b_order(B))
     return A
 
 
@@ -239,7 +246,7 @@ def backward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0
     Requires :func:`prepare`. Returns ``A`` (mutated in place)."""
     order = list(reversed(list(nx.topological_sort(A))))
     _pass(A, B, order, A.successors, A.predecessors, B.successors, B.predecessors,
-          "B", "bpB", alpha, beta)
+          "B", "bpB", alpha, beta, _b_order(B))
     return A
 
 

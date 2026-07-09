@@ -157,3 +157,20 @@ def test_coverage_gap_fill_backward_run():
     v1, v2, v3 = check_rules(M, A, B)
     assert not (v1 or v2 or v3), f"dropped-coverage gap not filled: V2={v2} V3={v3}"
     assert (2, "b3") in M                                  # the previously-dropped cell is now covered
+
+
+def test_argmin_tie_break_deterministic():
+    """§4b: advance-argmin ties are broken by a fixed B-vertex order -- the smaller-border cell wins,
+    and the forward/backward tables are invariant to B's dict/insertion order."""
+    A = digraph({0: (0, 0), 1: (0, 0), 2: (5, 0)}, [(0, 2), (1, 2)])          # merge at 2, preds coincident
+    B = digraph({"b0": (0, 0), "b1": (0, 0), "m": (5, 0)}, [("b0", "m"), ("b1", "m")])   # b0,b1 tie as pred cells
+    prepare(A, B, r=10.0); forward(A, B); backward(A, B)
+    assert all(x == "b0" for (_p, x) in A.nodes[2]["cand"]["m"]["bpD"])       # smaller-border cell (b0) wins
+
+    A2 = digraph({0: (0, 0), 1: (0, 0), 2: (5, 0)}, [(0, 2), (1, 2)])
+    B2 = digraph({"m": (5, 0), "b1": (0, 0), "b0": (0, 0)}, [("b0", "m"), ("b1", "m")])   # reversed insertion
+    prepare(A2, B2, r=10.0); forward(A2, B2); backward(A2, B2)
+    for a in A.nodes:
+        for v in A.nodes[a]["cand"]:
+            assert A.nodes[a]["cand"][v]["bpD"] == A2.nodes[a]["cand"][v]["bpD"]
+            assert A.nodes[a]["cand"][v]["bpB"] == A2.nodes[a]["cand"][v]["bpB"]

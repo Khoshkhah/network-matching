@@ -231,6 +231,22 @@ shortest-path relaxation over B restricted to `cand(a)` — topological when B i
 `A.nodes[a]["cand"][v]` as `B`, `bpB`. This is the split coupling (V3) exactly as `D` is the merge
 coupling (V2) (main §4.2, §6).
 
+### 4b Deterministic argmin — a fixed B-vertex order
+
+Every `argmin` in Parts 3–4 (the advance step's choice of predecessor cell `spx`, and the (H) coverage
+Dijkstra) is broken among **equal-cost** options by iteration order — which is arbitrary and, worse, can
+be broken **differently** by the forward and backward passes (they scan `Bpred` vs `Bsucc`). That makes
+the tables non-reproducible and lets `bpD`/`bpB` diverge on a tie.
+
+`_b_order(B)` fixes one total order on B's vertices, `border = {v: rank}` (sorted by id, independent of
+insertion order), and both passes use it to break ties: among cells of equal cost the **smallest-`border`
+one wins** (`val == sp < INF and border[x] < border[spx]`), and the Dijkstra heap keys on `border` instead
+of an insertion counter. This changes only *which* of two **exactly-equal** cells is stored — never a
+strictly-cheaper choice — so `D`/`B` **costs and optimality are unchanged**; only the tie is resolved,
+**identically in both passes**. Result: the forward/backward tables are **deterministic** (invariant to B's
+dict order). *(It does not, by itself, make reciprocity hold under weighting — those failures are strict
+cost preferences, not ties, §6b/main §4.2. The extraction seed is a separate order-dependent site, §5.)*
+
 ---
 
 ## Part 5 — Extraction → `M`
