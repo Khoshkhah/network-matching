@@ -16,7 +16,15 @@ The source is a directed graph $G_A$ representing the path traveled:
 The target $G_B$ is any **directed network** and **may cycle** (e.g., roundabouts, city grids). We write $B_{\text{pred}}(v)$ / $B_{\text{succ}}(v)$ for the immediate in-/out-neighbours of a target point $v$.
 
 ### The Local Emission Cost
-Every time we pair a source point $a$ to a target point $v$, we pay a penalty called the **emission cost**, denoted $E(a, v)$. It usually represents the geographic distance or heading difference between the two points. A single source point may also cover a **run** of target points — the ordinary DTW "stay" move — priced along the run (see the coverage weight $\alpha$ in §4.1).
+Every time we pair a source point $a$ to a target point $v$, we pay a penalty called the **emission cost**, denoted $E(a, v)$. A single source point may also cover a **run** of target points — the ordinary DTW "stay" move — priced along the run (see the coverage weight $\alpha$ in §4.1).
+
+The library offers **two matching modes**, selected by the `emission` argument. They differ in **what a DP state is** — not merely in a cost formula:
+
+* **`"point"` (default).** A state is a **point pair** $(a, v)$: one source point matched to one target point, scored by plain distance $E(a, v) = \lVert a - v\rVert$. This is the algorithm specified in §2–§7. Point distance is blind to heading, so under a lateral shift a fork's arm can collapse onto the *nearest* target point rather than the *corresponding* one — the **nearest-vs-corresponding** limit.
+
+* **`"segment"` (specified in §8).** A state is a **segment pair** $(\text{A-arc}, \text{B-arc})$: a directed source *micro-segment* matched to a directed target *arc*, scored **middle-to-middle** with an optional heading term. Because the state is two real segments, the local cost — heading included — is defined on *every* move and no alignment can bypass it. This is **true segment-to-segment** matching (the warping path pairs segments, not points), and it is what resolves nearest-vs-corresponding. The point-state core of §2–§7 is reused wholesale, lifted from points to arcs (§8).
+
+> A middle-to-middle *cost* on point states is **not** segment-to-segment: scoring $(a, v)$ by the midpoints of the segments each vertex happens to own leaves the state a point pair, so a stall (many source points → one target point) still has no target segment and the heading term is silently free (graph-DTW's `weighted_emission.md` §9–§11). What makes §8 segment-to-segment is that the **state itself is a segment pair**.
 
 ---
 
@@ -96,30 +104,78 @@ $$D[a][v] = E(a, v) + \sum_{p \in A_{\text{pred}}(a)} \frac{1}{\text{outdeg}(p)}
 * **Merge** (more than one predecessor): the sum couples the roads. $D[c][v]$ is finite **only if every road can reach $v$**, forcing a merge onto one common target point — this is (V2), folded into the cost. The sum is a true cost precisely because the roads are independent (§2).
 * **The Split Factor $\frac{1}{\text{outdeg}(p)}$:** a point feeding several successors would otherwise have its cost counted once **per** branch; dividing by its out-degree splits that cost equally down the branches, so **each point's cost is counted exactly once** in the total. On a tree the branches go to separate sinks and never rejoin, so this conserves the cost exactly.
 
-At every cell **store a back-pointer**: for each predecessor $p$, the $x \in \text{reach}(v)$ that achieved the inner $\min$. The backward traceback follows these.
+#### The back-pointer every cell stores
 
-#### 1:N coverage and the horizontal weight `α`
+Like classic DTW, the cost is only half the table — each cell must also **record how it was reached**, so the extraction (§5) can *follow* the optimum instead of guessing it. Alongside `D[a][v]` store `bp_D[a][v]` = **the list of cells whose `D`-value this cell was computed from**:
 
-**Coverage** is a single point $a$ **staying** while B advances — the DTW "stay" move — so one A-point covers a run $v_0 \to \dots \to v_k$. It is realized by a **horizontal (H) move** ($a$ holds while B steps one arc), chained to ride the whole run. But the plain recurrence pays $E(a,\cdot)$ at **every** covered point, so the cost of one point matching a B-stretch grows **linearly with how finely B is sampled** — an arbitrary quantity. The **horizontal weight $\alpha \le 1$** fixes this: discount the emission to $\alpha \cdot E$, but **only when the point is reached by extending coverage** (a horizontal step); a genuinely new match (reached by an A-advance) pays full $E$:
-
-```
-D[a][v] = α·E(a,v) + min(
-    (H)  min over v'∈Bpred(v)  D[a][v'],                                    # B advances, A STAYS  (coverage)
-    (A)  Σ over a'∈Apred(a) (1/outdeg(a'))·min over x∈reach(v) D[a'][x]     # A advances           (new match)
-)
-    with  α = horizontal_weight (≤ 1)   if the min is the (H) term   (extending coverage)
-          α = 1                         if the min is the (A) term   (a new point's first match)
+```text
+bp_D[a][v] = [ (a', x'), (a'', x''), … ]      # the source cells this value was built from
 ```
 
-Unrolling a run of drift $\delta$: $v_0$ is entered by A-advance (full $\delta$), the rest horizontally ($\alpha\cdot\delta$ each), so the coverage cost is $\delta \cdot (1 + \alpha k)$:
+That single list is the whole back-pointer — it is the classic-DTW arrow generalised from *one* predecessor cell to a **list** (a merge is fed by several). You never need a separate "kind" tag: the move type is read straight off **whose** source point appears in the list:
 
-| B-run length k | α = 1 | α = 0.5 | α = 0 |
+- **`[]` (empty)** — `a` is a **source** (`Apred(a)=∅`): nothing fed it, a free entry at `v`.
+- **`[(a, v')]` — one pair whose source point is `a` itself** — a **coverage** step (the 1:N horizontal move): the same source point `a`, one B-step on from `v'` (`v' → v` a B-arc, `v' ∈ Bpred(v)`).
+- **`[(p₁, x₁), (p₂, x₂), …]` — pairs whose source points are the predecessors of `a`** — an **advance**: for each predecessor `pᵢ ∈ Apred(a)`, the cell `xᵢ ∈ reach(v) = {v} ∪ Bpred(v)` it sat on to feed `v`.
+
+**Worked micro-example** — a 3-point chain `a₀→a₁→a₂` matched onto `b₀→b₁→b₂`:
+
+| cell | `bp_D[a][v]` | reads as |
+|---|---|---|
+| `D[a₀][·]` | `[]` | `a₀` is a source — free start, nothing before it |
+| `D[a₁][b₁]` | `[(a₀, b₀)]` | to put `a₁` on `b₁`, its predecessor `a₀` was on `b₀` |
+| `D[a₂][b₂]` | `[(a₁, b₁)]` | to put `a₂` on `b₂`, `a₁` was on `b₁` |
+
+If B is **finer** than A (one source segment `a₀→a₁` over `b₀→b₁→b₂`), `a₁` covers a run — note the coverage pair's source point is `a₁`, the *row itself*:
+
+| `D[a₁][b₁]` | `[(a₀, b₀)]` | advance — `a₁`'s real match (its run starts here) |
+| `D[a₁][b₂]` | `[(a₁, b₁)]` | coverage — **same** `a₁`, one B-step on from `b₁` |
+
+At a **merge** `p, q → m`, the cell is `bp_D[m][v] = [(p, x_p), (q, x_q)]` with **both** `x_p, x_q ∈ {v} ∪ Bpred(v)` — that both branches sit on `v` or one step before it *is* the merge coupling (V2), recorded in the one list.
+
+**How the list is filled — while the row `a` is filled** (mirrors the recurrence exactly):
+
+1. Compute the **advance** value `adv = E(a,v) + Σ_p (1/outdeg(p))·min_{x∈reach(v)} D[p][x]`; while taking each predecessor's inner `min`, **collect the winning `x`** so the list becomes `[(p, x_p) for p ∈ Apred(a)]` (empty for a source). Set `D[a][v] ← adv`.
+2. Run the horizontal coverage relaxation: for every B-arc `v' → v` (`v' ∈ Bpred(v)`), if `α·E(a,v) + D[a][v'] < D[a][v]`, **lower** `D[a][v]` and **replace** the list with `[(a, v')]`.
+
+So `bp_D[a][v]` always lists the exact cells that produced `D[a][v]`. There is **no guessing later** — the extraction reads this list. (The α/β weights of §4.1 change nothing here: a β-stall is just an advance pair `(p, v)`, a 1:N step is the coverage pair `(a, v')`.)
+
+#### Coverage weights: 1:N with `α`, N:1 with `β`
+
+When the two graphs are sampled at different densities, one point on one side must span a **run** on the other. Each direction is a DTW "stay" move with its own weight that prices the *extra* pairs it creates; the 1:1 diagonal always stays at full cost.
+
+* **1:N — one source point covers a run of target points** ($a$ **stays** while B advances; the **horizontal (H)** move), so one A-point rides $v_0 \to \dots \to v_k$ within its row. Unweighted it pays $E(a,\cdot)$ at *every* covered point, so the cost of one point matching a B-stretch grows **linearly with how finely B is sampled**. The **horizontal weight $\alpha \le 1$** discounts each *extra* covered point to $\alpha\cdot E$.
+
+* **N:1 — many source points collapse onto one target point** (A advances while $v$ **stays**; the **vertical (V)** move), so consecutive source points $p_0 \to \dots \to a$ all land on the *same* $v$ — a source sampled finer than the target. Unweighted it pays $E(\cdot,v)$ at *every* stacked source point, so the cost grows with how finely **A** is sampled. The **vertical weight $\beta \le 1$** discounts each *extra* stacked point to $\beta\cdot E$.
+
+The two are exact mirrors: $\alpha$ prices coverage **along B** (a within-row extension); $\beta$ prices coverage **along A** (an extension along the topological source sweep). For each predecessor $p$ write its two ways into $v$:
+
+$$\text{step}_p = \min_{x\in B_{\text{pred}}(v)} D[p][x] \quad(\text{$p$ advances into } v),\qquad \text{stall}_p = D[p][v] \quad(\text{$p$ is already on } v).$$
+
+The cell is then the cheapest of a full-cost advance, a $\beta$-discounted stall, and an $\alpha$-discounted coverage step:
+
+$$D[a][v] = \min\begin{cases}
+E(a,v) + \sum_{p\in A_{\text{pred}}(a)} \tfrac{1}{\text{outdeg}(p)}\,\text{step}_p & \text{(D) every branch advances into } v \quad(\text{full } E) \\[4pt]
+\beta\cdot E(a,v) + \displaystyle\min_{q\in A_{\text{pred}}(a)}\!\Big[\tfrac{\text{stall}_q}{\text{outdeg}(q)} + \sum_{p\neq q}\tfrac{\min(\text{stall}_p,\ \text{step}_p)}{\text{outdeg}(p)}\Big] & \text{(V) at least one branch stalls on } v \quad(\beta E) \\[8pt]
+\alpha\cdot E(a,v) + \min_{v'\in B_{\text{pred}}(v)} D[a][v'] & \text{(H) 1:N coverage along B} \quad(\alpha E)
+\end{cases}$$
+
+**Why $\beta$ triggers on *one* stall, not all.** Point $a$ landing on $v$ becomes an *extra* point on $v$ — an N:1 stack, so $\beta\cdot E$ — the moment **any one** incoming branch is already sitting on $v$. The other branches are free to advance or stall, each as it prefers ($\min(\text{stall}_p,\text{step}_p)$). The inner $\min_q$ **forces at least one branch to stall**, so the $\beta$ discount is never taken on a pure advance (line (D) already covers that at full $E$). And $a$'s emission is discounted **once**, however many branches sit on $v$: $a$ contributes a single new pair $(a,v)$; each upstream branch's own emissions are already paid inside its $D[p][\cdot]$.
+
+* **Chain** (one predecessor $p$): (D) $= E + \text{step}_p$, (V) $= \beta E + \text{stall}_p$ — the ordinary discounted stay.
+* **Merge**: (V) lets one branch stall on $v$ (unlocking $\beta$) while the rest independently advance or stall; the predecessor **sum** still forces every road onto the one $v$ — that is (V2), unchanged by $\beta$.
+
+Because $\text{step}_p \ge \min(\text{stall}_p,\text{step}_p)$ and $\text{stall}_q \ge \min(\dots)$, **$\alpha = \beta = 1$ is bit-for-bit** the point-to-point cost of §4.1: the discounted lines never beat the full-cost advance when the optimum has no stall, and reproduce it exactly when it does. Both weights are $\ge 0$ per step, so $D$ never decreases along a run (no cost "laundering"). Unrolling a run of drift $\delta$ costs $\delta(1 + \alpha k)$ for a 1:N B-run of length $k$, and $\delta(1 + \beta m)$ for an N:1 A-stack of $m$ extra points:
+
+| run length | weight = 1 | weight = 0.5 | weight = 0 |
 |---|---|---|---|
 | 1 (1:1) | δ | δ | δ |
 | 6 | 7δ | 4δ | δ |
 | 30 | 31δ | 16δ | δ |
 
-So $\alpha = 1$ is the plain per-point charge; $\alpha < 1$ discounts each *extra* covered point; $\alpha \to 0$ charges the run essentially **once** (sampling-independent). Because $\alpha \cdot E \ge 0$ is a **non-negative** per-step emission, $D$ never decreases along a run — there is **no cost "laundering"**, and the routing decision $\min(H, A)$ on the carried cost is unchanged; only the emission *charged* differs. $\alpha$ lives inside the DP's decision cost, so it shifts **which** matching is chosen (always toward *more* coverage), not the reported drift, which stays the raw $\sum E$ of the chosen matching. **Default $\alpha = 1$** (point-to-point pricing, unchanged); reach for $\alpha < 1$ only when 1:N cost scaling with B's sampling density is the problem, and keep it comfortably above 0 to avoid over-covering.
+(the same schedule for $\alpha$ over a B-run and $\beta$ over an A-stack). Lower $\alpha$ when a source point legitimately spans a finely-sampled B stretch; lower $\beta$ when many source points legitimately fall on one B point. Both live **inside the decision cost**: they steer *which* matching is chosen (toward more coverage in that direction), never the reported drift, which stays the raw $\sum E$ of the chosen matching. **Use $\alpha, \beta \in (0, 1]$** (defaults $1$); the $\to 0$ limit charges a whole run essentially once but *over-collapses* — a free stay is never dominated, so the matching can degenerate (and, in segment mode, cease to be a valid warping). Keep both comfortably above $0$.
+
+> **$\beta$ vs. the merge coupling.** $\beta$ discounts only $a$'s *emission* when $a$ stacks on $v$; the requirement that **all** incoming branches reach the *same* $v$ (V2) is the predecessor sum itself and is untouched. Coverage prices *how much a stacked point costs*; the junction rule fixes *where the branches must meet* — independent concerns.
 
 #### Why the total cost is *not* $\sum_{\text{sinks}} \min_v D$
 
@@ -142,6 +198,8 @@ The `0` is a phantom — $s$ at $\sigma$ for $a$ and $\sigma'$ for $b$ *simultan
 To force splits to agree on a single physical location, we build a mirror table $B$ by sweeping the source in **reverse topological order** (sinks first) and summing over **successors**:
 
 $$B[a][v] = E(a, v) + \sum_{s \in A_{\text{succ}}(a)} \frac{1}{\text{indeg}(s)} \min_{w \in \{v\} \cup B_{\text{succ}}(v)} B[s][w]$$
+
+$B$ stores the **mirror back-pointer** `bp_B[a][v]` — the same kind of list, but over **successors**: `[]` for a sink; `[(a, w')]` (source point `a` *itself*, `w' ∈ Bsucc(v)`) for a downstream coverage step; or `[(s₁, w₁), (s₂, w₂), …]` (each successor `sᵢ` at `wᵢ ∈ {v} ∪ Bsucc(v)`) for an advance. It is populated exactly as $D$'s list is (§4.1), with successors in place of predecessors. The extraction reads `bp_D` upstream and `bp_B` downstream.
 
 **(V3) is enforced by the shared cell index — and computing its cost is then a sum, not a joint search.** (V3) requires every successor of a split to leave from the *same* point, the split point $v$. That shared point **is the cell's index**: every successor's minimum in $B[a][v]$ is taken relative to the *same* $v$ (over $\{v\} \cup B_{\text{succ}}(v)$ = "continue from $v$"), so a matching in which two successors leave from *different* points is **not even representable** in a single cell. The traceback (§5.2) then commits one $v$ for the split and sends **all** its successors out of it — that is (V3), by construction; nothing is relaxed. This is the exact **mirror** of how the predecessor coupling in $D$ enforces (V2) at a merge — *each coupling enforces its own rule by construction*. What a single directed sweep cannot do is carry **both** rules at once: the successor coupling alone is exact for an **out-tree** (splits, no merges), the predecessor coupling alone for an in-tree (merges, no splits). A source with **both** junction types keeps both tables and threads them together in the joint traceback (§5) — that combination is not a repair, it is how the two by-construction couplings are reconciled.
 
@@ -170,15 +228,19 @@ The recurrences are evaluated as a DP with **two nested levels**: an outer sweep
   $$D[a][v] = E(a,v) + \sum_{p \in A_{\text{pred}}(a)} \tfrac{1}{\text{outdeg}(p)} \min_{x \in \text{reach}(v)} D[p][x]$$
   reads only the *predecessor* rows — never $D[a][\cdot]$ itself. So the cells of a row are **independent**; fill them in any order with a **plain scan** over the candidate B-points. Cost $O(\text{band})$ per row, $O(|A| \times \text{band})$ overall. **No Dijkstra.**
 
-* **1:N coverage (the $\alpha$ horizontal move).** Now the horizontal term $\min_{v' \in B_{\text{pred}}(v)} D[a][v']$ makes a cell depend on **other cells in the same row**, along the B-edges — a within-row shortest path. Fill the row in two steps: (1) **inject** each B-point $v$ with its A-advance cost (the $(A)$ term, full emission); (2) **relax** the horizontal edges $v' \to v$ with weight $\alpha\,E(a,v)$:
+* **N:1 coverage (the $\beta$ vertical move).** Alongside the full-cost advance (line (D), each predecessor takes $\text{step}_p$), take the $\beta$-discounted stall (line (V)):
+  $$D[a][v] \leftarrow \min\Big(\, D[a][v],\ \ \beta\,E(a,v) + \min_{q\in A_{\text{pred}}(a)}\big[\tfrac{D[q][v]}{\text{outdeg}(q)} + \sum_{p\neq q}\tfrac{\min(D[p][v],\ \text{step}_p)}{\text{outdeg}(p)}\big] \,\Big).$$
+  It reads only **already-filled predecessor rows** (never $D[a][\cdot]$), so it is a **plain per-cell update** in the outer topological sweep — coverage along A needs **no search**, because $A$ is a tree. The $\min_q$ forces one branch to stall on $v$, so $\beta$ is never charged on a pure advance; for a **chain** it collapses to $\beta E + D[p][v]$. It costs $O(\text{in-degree})$ per cell (equivalently $\sum_p \tfrac{\min(\text{stall}_p,\text{step}_p)}{\text{outdeg}(p)} + \min_q \tfrac{\text{stall}_q-\min(\text{stall}_q,\text{step}_q)}{\text{outdeg}(q)}$, the second term $0$ once any branch already stalls). Chaining is automatic: $D[q][v]$ may itself have come from *its* stall, so a run of $m$ stacked A-points accrues $\beta E$ each.
+
+* **1:N coverage (the $\alpha$ horizontal move).** The horizontal term $\min_{v' \in B_{\text{pred}}(v)} D[a][v']$ makes a cell depend on **other cells in the same row**, along the B-edges — a within-row shortest path. Fill the row in two steps: (1) **inject** each B-point $v$ with its A-advance / $\beta$-stall cost above; (2) **relax** the horizontal edges $v' \to v$ with weight $\alpha\,E(a,v)$:
   $$D[a][v] \leftarrow \min\big(\, D[a][v],\ \ \alpha\,E(a,v) + D[a][v'] \,\big).$$
   Because those weights are **non-negative** ($\alpha E \ge 0$):
   * if the local B-graph is **acyclic**, one pass in **B-topological order** suffices;
   * if it **cycles** (roundabouts, one-way loops — $G_B$ may cycle), use **Dijkstra** (multi-source, one entry per injected point) or bounded iterative relaxation until convergence.
 
-  This within-row relaxation is the **only** place a shortest-path search appears; with $\alpha = 1$ it is the plain per-point coverage charge, and it never runs at all in the point-to-point case above.
+  This within-row relaxation is the **only** place a shortest-path search appears; with $\alpha = 1$ it is the plain per-point coverage charge, and with $\alpha = \beta = 1$ neither extension ever lowers a cell, so the point-to-point recurrence above is recovered exactly.
 
-$B$ is filled the same way, with the mirror horizontal move over $B_{\text{succ}}(v)$ on the reversed local B-graph.
+$B$ is filled the same way, with both moves mirrored: the $\beta$ stall over successors ($\sum_{s} D[s][v]$) and the $\alpha$ horizontal over $B_{\text{succ}}(v)$ on the reversed local B-graph.
 
 ---
 
@@ -187,45 +249,66 @@ $B$ is filled the same way, with the mirror horizontal move over $B_{\text{succ}
 ### 5.1 Intuitive Concept
 
 1. **Why one table isn't enough.** Each coupling enforces its own rule **by construction**: the predecessor sum in $D$ makes every merge's approaches meet at one point (V2), and — its exact mirror — the successor sum in $B$ makes every split's exits leave one point (V3). But a single directed sweep carries only **one** of the two. If you take just $D$ and read an independent $\arg\min$ per sink, the splits are left uncoordinated: two branches of a fork place it at **different** points — the phantom of §4.1.
-2. **The fix — thread both couplings together.** Perform an ordered traceback that **commits one coherent optimum** — *not* an independent $\arg\min$ per point (at ties, independent choices can stitch together pieces of *different* optima that don't fit). Each junction is pinned once, jointly, by both tables ($\arg\min_v D[a][v] + B[a][v] - E(a,v)$, §4.2). A **merge** is then traversed upstream by reading the back-pointers stored in $D$ — its approaches already agree (V2); a **split** uses $B$ so **all** its branches leave the one committed point (V3).
+2. **The fix — seed once, then *follow the stored back-pointers*.** There is exactly **one** $\arg\min$ in the whole extraction: the seed, which pins one representative point per source-tree component to its joint optimum $\arg\min_v\, D[a][v] + B[a][v] - E(a,v)$. From there the walk **reads the back-pointers `bp_D`/`bp_B` recorded during the passes** — it never re-minimises per point and never guesses a connection. Upstream it follows `bp_D` (a merge's approaches already agree on the cell — V2); downstream it follows `bp_B` (a split's exits all leave the one committed cell — V3); a source point's 1:N coverage run is read straight off its **same-source pairs** (the `(c, v')` entries). Because every transition was constrained to $\text{reach}(v)$ / $\{v\}\cup B_{\text{succ}}(v)$ **when the cell was written**, each committed point sits within one B-step of its neighbour, so the extracted matching is monotone **by construction**. (Reading a stored pointer, not re-solving, is the whole point: it is why classic DTW keeps back-pointers, and it is what makes the result the *actual* optimum the tables found rather than a re-guess of it.)
 
 ### 5.2 Extraction Pseudocode
 
 ```text
-Algorithm: Extract-Tree-DTW-Matching(G_A, G_B, D, B, E)
-Input:  G_A, G_B ; D (forward table with back-pointers) ; B (backward table) ; E
+Algorithm: Extract-Tree-DTW-Matching(G_A, G_B, D, B, bp_D, bp_B, E)
+Input:  the two cost tables AND their back-pointers bp_D, bp_B (§4.1 / §4.2)
 Output: M — set of matched pairs (a, v)
 
-Initialize:
-    M         ← ∅
-    Committed ← empty map   (source point → committed target point)
-    Queue     ← empty
+M ← ∅ ;  Committed ← empty map ;  Queue ← empty
 
-Step 1 — Seed at the global optimum.
-    Pick any point r (seed one per weakly-connected component if the source is a forest).
-    Commit it to its whole-tree optimum:
-        v_opt = argmin_v ( D[r][v] + B[r][v] − E(r, v) )
-    Committed[r] ← v_opt ;  M.add((r, v_opt)) ;  Queue.enqueue(r)
+commit(x, w):                                     # pin source point x to target cell w, once
+    if x ∉ Committed:
+        Committed[x] ← w ;  M.add((x, w)) ;  Queue.enqueue(x)
 
-Step 2 — Propagate outward until every point is committed.
-While Queue is not empty:
+# --- Step 1 — the ONLY argmin: seed one representative per source-tree component ---
+for each weakly-connected component of G_A, pick a representative r:
+    commit( r, argmin_v ( D[r][v] + B[r][v] − E(r, v) ) )
+
+# --- Step 2 — FOLLOW the stored back-pointers until every point is committed ---
+while Queue not empty:
     c ← Queue.dequeue() ;  v ← Committed[c]
 
-    # DOWNSTREAM — commit EVERY successor (chains and splits alike)
-    For each s in Asucc(c) with s not committed:
-        legal = {v} ∪ Bsucc(v)                    # s must leave legally from c's point v  → (V3)
-        w*    = argmin over w in legal of B[s][w] # cheapest downstream, given c fixed at v
-        Committed[s] ← w* ;  M.add((s, w*)) ;  Queue.enqueue(s)
+    # (a) c's 1:N coverage run: follow the coverage pairs (a pair whose source point is c itself)
+    head ← v ;  while bp_D[c][head] = [(c, v')]:  head ← v'        # same-c pair -> step back
+    tail ← v ;  while bp_B[c][tail] = [(c, w')]:  tail ← w'        # same-c pair -> step forward
+    for w on the B-path head → … → v → … → tail:  M.add((c, w))    # c covers this whole run
 
-    # UPSTREAM — commit EVERY predecessor via the stored forward back-pointer
-    For each p in Apred(c) with p not committed:
-        w* = D[c][v].back_pointer_for(p)          # the point p used to feed c at v  → (V2)
-        Committed[p] ← w* ;  M.add((p, w*)) ;  Queue.enqueue(p)
+    # (b) UPSTREAM — the pairs stored at the run's head ARE c's predecessors (V2, no re-min)
+    for (p, x) in bp_D[c][head]:   commit(p, x)
 
-Return M
+    # (c) DOWNSTREAM — the pairs stored at the run's tail ARE c's successors (V3, no re-min)
+    for (s, w) in bp_B[c][tail]:   commit(s, w)
+
+return M
 ```
 
-Two things make this correct on a tree. **Downstream is unconditional** — every successor is committed, not only at splits (a chain point has one successor, a split has several; both must be walked). At a split, all children are constrained to $\{v\} \cup B_{\text{succ}}(v)$, so they all leave from $c$'s committed point $v$ — that is (V3) — and each then takes its own cheapest downstream because their subtrees are disjoint. **Upstream reads $D$'s back-pointers**, which already agree on $v$ — that is (V2). Because the source is a tree, this single walk commits every point **exactly once**, consistently; there is no loop to force a split and a merge to fight over the same point.
+Everything after the seed is a **list read, never a search**. At the run's `head`, `bp_D[c][head]` is exactly the list of predecessor cells `D[c][head]` was summed from — they already agree on `head`, so committing them all **is** (V2); symmetrically the list at `tail` sends every successor out of the one cell, which **is** (V3). A source point's coverage run is walked off the same-`c` pairs — exactly the run the DP priced. Because $G_A$ is a tree, the walk reaches every point on exactly one path and `commit` fixes it once; a split and a merge can never fight over a cell. The result is the exact optimum the tables encode, valid V1–V4 by the construction of §4.1/§4.2 — the extraction only *reads* it.
+
+#### Worked walk — the order points are committed
+
+Source `a₀ → a₁ → {a₂, a₃}` (a chain that splits at `a₁`), with the back-pointer lists the passes stored (no coverage, so every run is a single cell):
+
+```text
+bp_D[a₀][w₀] = []                 bp_B[a₀][w₀] = [(a₁,w₁)]
+bp_D[a₁][w₁] = [(a₀,w₀)]          bp_B[a₁][w₁] = [(a₂,w₂),(a₃,w₃)]   # split → both exits
+bp_D[a₂][w₂] = [(a₁,w₁)]          bp_B[a₂][w₂] = []                  # sink
+bp_D[a₃][w₃] = [(a₁,w₁)]          bp_B[a₃][w₃] = []                  # sink
+```
+
+Seed the first uncommitted point, `a₀` → `commit(a₀, w₀)`, then drain the queue — each pop commits the neighbours named in its two lists, skipping any already committed:
+
+| pop | `bp_D` (predecessors, upstream) | `bp_B` (successors, downstream) | queue after | committed |
+|---|---|---|---|---|
+| `a₀` | `[]` — source | `(a₁,w₁)` → commit `a₁` | `[a₁]` | `a₀, a₁` |
+| `a₁` | `(a₀,w₀)` — already committed | `(a₂,w₂), (a₃,w₃)` → commit `a₂, a₃` | `[a₂, a₃]` | `a₀…a₃` |
+| `a₂` | `(a₁,w₁)` — already | `[]` — sink | `[a₃]` | all |
+| `a₃` | `(a₁,w₁)` — already | `[]` — sink | `[]` | all |
+
+The walk **floods outward from the seed in both directions** — down `a₀→a₁`, then from `a₁` back up to `a₀` (already done) *and* down to **both** `a₂` and `a₃`; it is **not** a topological sweep. **Every point is committed exactly once** — the "already committed" guard turns each examined edge into at most one commit (siblings are reached by going up to the shared parent, then back down). The seed's identity is irrelevant: seeding the leaf `a₂` instead gives the order `a₂ → a₁ → {a₀, a₃}` but the **same** points and pins. A forest seeds one representative per component.
 
 ### 5.3 The Split from §4.1, Resolved
 
@@ -272,3 +355,95 @@ On a genuine directed tree, Tree-DTW returns a matching $M$ that is:
 * **Point-to-point (or 1:N)** — in the common case each point matches exactly one target point, so $M$ is a one-arrow-per-point map; under coverage a point's run contributes several pairs to $M$ (priced by $\alpha$, §4.1). Per-source-edge routes are read off $M$ by grouping consecutive matches by target edge.
 
 The one thing Tree-DTW requires is that the source really is a **tree**. A source in which a road forks and later rejoins itself is not a tree: its merge-roads share an ancestor, the forward sum stops being a true cost (§2), and the guarantees above no longer hold — that structure needs a different treatment and is out of scope here.
+
+---
+
+## 8. Segment-to-Segment Matching — the Segment-State DP (`emission="segment"`)
+
+> Implemented in `network_matching/tree_dtw.py` (`_segment_anchors`). `emission="point"` (§2–§7) is unchanged and stays the default.
+
+### 8.1 Why a segment *state*, not a segment *cost*
+
+The point-state DP of §2–§7 pairs **points**: a state is $(a, v)$ and the warping path is a chain of point-to-point arrows. You can dress up its *cost* with a heading term — score $a$ against $v$ using the midpoints of the micro-segments each vertex happens to own — but the **state is still a point pair**, and that has a concrete failure. On a coverage/stall move several source points collapse onto **one** target point, where there is no target *segment* at all; a heading penalty is then undefined and silently charged as zero, so the DP can dodge it by stalling. This is the documented graph-DTW finding (`weighted_emission.md` §9–§11).
+
+True segment-to-segment matching makes the **state itself a segment pair**. Every state is two real directed segments, so the local cost — heading included — is always defined and **no move can bypass it**.
+
+### 8.2 The lift: run the point-state algorithm on arcs
+
+Both local digraphs already carry the segments we need. A **source micro-segment** is an *arc* of $G_A$ — a directed edge $s = (t \to h)$ between consecutive pooled source points; a **target arc** is an edge $e = (u \to v)$ of $G_B$. The segment-state DP is the §4–§5 algorithm run on the **arc line-graph** $L(G_A)$ — its nodes are the source arcs, with $s \to s'$ whenever $\text{head}(s) = \text{tail}(s')$ — against the target **arcs**. Everything else is a term-by-term substitution:
+
+| point-state (§2–§7) | segment-state (§8) |
+|---|---|
+| source point $a$ | source arc $s = (t \to h)$ |
+| target point $v$ | target arc $e = (u \to v)$ |
+| $E(a, v) = \lVert a - v\rVert$ | $E(s, e) = \lVert \operatorname{mid}(s) - \operatorname{mid}(e)\rVert + \lambda\cdot\operatorname{circ}\!\big(\operatorname{bear}(s), \operatorname{bear}(e)\big)$ |
+| predecessors $A_{\text{pred}}(a)$ | source arcs ending at $t$ (predecessors in $L(G_A)$) |
+| reach $\{v\} \cup B_{\text{pred}}(v)$ | $\{e\} \cup \{p : \text{head}(p) = \text{tail}(e)\}$ — the same target arc (stall) or one adjacent before |
+| horizontal coverage over $B_{\text{succ}}(v)$ | coverage over target arcs adjacent to $e$ |
+
+$\operatorname{mid}(\cdot)$ is the segment midpoint; $\operatorname{bear}(\cdot)$ the compass bearing $(\deg\cdot\operatorname{atan2}(\Delta x, \Delta y)+360)\bmod 360$ ($0°=$ north); $\operatorname{circ}(\theta,\phi)=\min(|\theta-\phi|, 360-|\theta-\phi|)\in[0,180]$; $\lambda=$ `bearing_weight`. Because the substitution is exact, the forward table $D$ (§4.1), the backward table $B$ (§4.2), and the joint $D+B-E$ traceback (§5) carry over unchanged **in form** — only the index sets (arcs, not vertices) and $E$ differ. $L(G_A)$ is a directed acyclic graph whenever $G_A$ is ($s \to s' \to \cdots \to s$ would trace a directed cycle in $G_A$), so the topological sweeps of §4.3 still apply.
+
+### 8.3 Emission paid by every state; stitches are free
+
+Every hosted state $(s, e)$ pays $E(s, e)$ — **including on the N:1 stall (§8.5)** — so the §8.1 bypass is closed: a stall costs $\beta\cdot E$ for each additional source arc, never zero. **Junction-snap stitches** (the sub-half-metre connectors that stitch coincident endpoints into a junction) are pure connectivity, not segments: a stitch arc **hosts no state** and is **free** to pass through. This holds on both sides — a source stitch carries no $(s, e)$ state; a target stitch is a zero-cost pass-through inside the coverage move. (Without this rule the DP parks source arcs on free stitches and the §8.1 collapse reappears — the graph-DTW lesson, `weighted_emission.md` §10.)
+
+### 8.4 Junctions — how segment-states couple at a merge and a split
+
+The couplings are the §4/§6 couplings, read at the shared **target vertex** where the junction pins:
+
+* **Merge** (source vertex $m$: incoming arcs $s_1, \dots, s_d$, one outgoing arc $s'$ riding $e = (u \to v)$). All approaches meet at one target point — here $u = \text{tail}(e)$. The **forward** table sums the predecessors, each minimised over its reach that **ends at $u$**: $D[s'][e]$ is finite only if *every* $s_i$ can end on a target arc whose head is $u$. That is (V2), in arc form.
+* **Split** (a source vertex with one incoming arc and outgoing arcs $s_1, \dots, s_d$). All exits leave one target point $\sigma$. The **backward** table sums the successors over the shared cell — each $s_j$ rides a target arc with $\text{tail} = \sigma$. That is (V3), in arc form.
+* **Merge *and* split at the same vertex.** The incoming and outgoing arcs of $m$ all pin to the **one** target vertex $\sigma$: incoming end at $\sigma$ (forward), outgoing start at $\sigma$ (backward), the joint traceback commits the single $\sigma$. In $L(G_A)$ these arcs form a small bipartite cluster (for a 2-in/2-out vertex, an *undirected* 4-cycle), but this is **not a reconvergence** — it is one shared pin, exactly the §5.2 vertex coupling applied to a vertex that is both merge and split. Independence (§2) is untouched: the incoming cones are disjoint, the outgoing cones are disjoint, and given $\sigma$ the two sides do not interact. So $L(G_A)$'s undirected cycles are harmless; the reconvergence that §7 forbids (in $G_A$ itself) is what would break independence, and that is still rejected by `NotATree`.
+
+### 8.5 Moves and the coverage weights $\alpha$, $\beta$
+
+Three moves generate every alignment — the §4.1 moves with arcs in place of points:
+
+| move | meaning | weight |
+|---|---|---|
+| **both advance** | the next source arc rides an *adjacent* target arc (one step in $G_B$) — 1:1 | full $E$ |
+| **A-advance, same arc** | consecutive source arcs ride the *same* target arc — **N:1**, a source denser than the target | $\beta\,E$ |
+| **coverage** | one source arc spans a *run* of consecutive target arcs — **1:N**, a target denser than the source (a within-row shortest path over adjacent arcs) | $\alpha\,E$ |
+
+$\beta$ is the (V) stall of §4.1 read with arcs: it discounts an *extra* source arc landing on the **same** target arc, triggered by ≥1 predecessor arc already on it (the same ≥1-stall, charge-once, force-one-stall rule). $\alpha$ is the (H) coverage. The coverage relaxation is the only shortest-path search — Dijkstra when $G_B$ cycles, a topological pass when it does not. $\alpha, \beta, \lambda$ (bearing weight, §8.2) are **call-time hyperparameters**; $\alpha = \beta = 1$ (defaults) charge every arc in full — segment mode's point-to-point-equivalent pricing.
+
+### 8.6 Output — the matching lives on the line-graph (no point conversion)
+
+Segment mode's matching **is** a relation on segments: $M_{\mathrm{seg}} \subseteq \mathrm{arcs}(G_A)\times\mathrm{arcs}(G_B)$, each source arc paired with the target arc it was committed to (§5) plus any target arcs on its 1:N coverage run. It is emphatically **not** collapsed to a point matching. A segment matcher emits segment pairs; a per-point $\varphi$ would re-introduce exactly the collapse §8.1 exists to prevent — several source points landing on one target point, where the segment and its heading vanish — so the segment matching is neither *produced* nor *validated* through a point conversion.
+
+The extraction stores the §4.1/§4.2 back-pointers on the **arc** tables and runs the §5 walk over $L(G_A)$: seed one arc per component, then follow `bp_D`/`bp_B`. Because it only reads the stored pointers (written constrained to adjacent arcs), a split's arms leave the **one** committed target arc (V3) and a merge's arms meet on one (V2) *by construction*.
+
+**Coverage partitions the target arcs.** Each source arc's 1:N run is read from the **forward-table** COVER chain only — the target arcs strictly after its predecessor's committed arc, up to and including its own. So every target arc belongs to **at most one** source arc: no run reaches past the next source arc, no two runs overlap, and there is no gap-fill. (Combining the forward *and* backward COVER chains — as a naïve seed-in-the-middle walk would — double-counts the arcs between two neighbours' anchors and is the one thing that breaks the partition.)
+
+Outputs are all read **directly from $M_{\mathrm{seg}}$**:
+
+* `routes` — per source edge, the target edges its arcs match, by grouping $M_{\mathrm{seg}}$ on source/target edge id.
+* `segment_pairs` — per source arc, the middle-to-middle link (and endpoints) to its committed target arc, for the correspondence view.
+* `M_seg` — the arc relation itself.
+
+A per-point `M`/$\varphi$ may still be offered as a clearly-labelled interop convenience, but it is a *derived* object and is **never** validated in place of $M_{\mathrm{seg}}$.
+
+### 8.7 Validation — V1–V4 on the line-graph (independent of the point validator)
+
+Segment mode is validated by the four rules of §3 read **on the arc line-graph**, against $M_{\mathrm{seg}}$ — never by converting to a point matching and running the point validator (`check_tree_rules`). That conversion is the §8.1 collapse; it would test a derived object rather than the matching, and its over-assigned coverage produces phantom V1 crosses even when the segment matching is monotone and correct.
+
+`check_segment_rules($M_{\mathrm{seg}}$)` uses the $L(G_A)$ adjacency (predecessor/successor **arcs**) and the target-arc adjacency ($B_{\text{pred}}$/$B_{\text{succ}}$ on arcs), each rule restricted to matched neighbours:
+
+* **(V1) no cross** — for $(s,e)\in M_{\mathrm{seg}}$, no predecessor arc of $s$ is matched to a successor arc of $e$.
+* **(V2) merge** — $s$ either continues a run ($e$ has a matched target-arc-predecessor also on $s$) or **every** matched predecessor arc of $s$ lands on $e$ or a target-arc-predecessor of $e$.
+* **(V3) split** — symmetrically, over successors and target-arc-successors.
+* **(V4) coverage** — every source arc appears in $M_{\mathrm{seg}}$.
+
+This is exactly the per-cell check the table validator already applies (`scripts/validate_tables.py`, §8.9), now applied to the final arc matching. It is a **separate** function from `check_tree_rules`; the two never substitute for each other.
+
+### 8.8 What is unchanged
+
+(V1)–(V4) (§3) — now read on $L(G_A)$ (§8.7) — the coverage weights $\alpha$ and $\beta$ (§4.1), the tree-only requirement and `NotATree` (§7), and the exactness/efficiency guarantees (§7) hold verbatim: the segment-state DP is the same algorithm on $L(G_A)$, whose junction cones stay independent (§2) exactly when $G_A$ is a tree. Complexity is the same order — $|L(G_A)| = |{\it arcs}(G_A)| \approx |G_A|$ states against $\approx |G_B|$ target arcs, one forward and one backward sweep plus the per-row coverage relaxation. `emission="point"` remains the default and byte-for-byte the §2–§7 algorithm, validated by `check_tree_rules` on its point $M$.
+
+### 8.9 Implementation notes
+
+* **One filler serves both modes.** `_forward_table` fills $D$ and $B$ for point mode (indices = vertices) and segment mode (indices = arcs); segment mode passes the *arc* line-graph adjacency, the *target-arc* adjacency, the arc emission, and a `ridable` mask so junction stitches can pass through but never host. No separate segment filler was needed. `_segment_tables` exposes the arc tables (with back-pointers) so both the matcher and the table validator (§8.7) run on the same structure.
+* **The A-side line-graph contracts junction stitches.** A real source segment's neighbours are the real segments reachable through one junction stitch, so a merge/split at a junction becomes several real predecessors/successors directly — the coupling of §8.4 falls out of the ordinary predecessor/successor sums with no special case.
+* **One arc-$E$ serves both sweeps.** $E(s, e)$ = middle-to-middle + $\operatorname{circ}$ is invariant under reversing both graphs (every bearing rotates $180°$, $\operatorname{circ}$ unchanged), so $D$ and $B$ share the single arc emission matrix, exactly as point mode shares $\lVert a-v\rVert$.
+* **Segment mode's output and validation are native to $L(G_A)$.** The matcher returns $M_{\mathrm{seg}}$ (the arc relation, §8.6) and `segment_pairs`; `routes` are grouped from $M_{\mathrm{seg}}$; validation is `check_segment_rules` on $L(G_A)$ (§8.7). Any per-point `M`/$\varphi$ is a clearly-derived interop convenience and is never validated in place of $M_{\mathrm{seg}}$.
+* **The extraction is shared with point mode via the back-pointers, each on its own index set.** Both modes store `bp_D`/`bp_B` (§4.1/§4.2) and run the one §5 back-pointer walk — point mode over **vertices** (yielding the point $M$), segment mode over **arcs** (yielding $M_{\mathrm{seg}}$). Following the stored pointers is what makes each junction consistent by construction: a split's arms leave the one committed cell (V3) and a merge's arms meet on one (V2), because those cells were fixed when the pointers were written. Segment coverage is read from the forward COVER chain only, so runs partition (§8.6).
