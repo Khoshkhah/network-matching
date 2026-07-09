@@ -129,3 +129,15 @@ def test_reachability_has_teeth():
         if not math.isinf(c["B"]) and c["bpB"]:
             c["bpB"] = [(c["bpB"][0][0], None)]; break
     assert check_reachability(A2, "B"), "severed backward path not caught"
+
+
+def test_extract_raises_feasibility_not_keyerror():
+    """A merge whose branches can't co-reach within r must raise the feasibility ValueError -- not crash
+    with KeyError on a None back-pointer (the coupled-infeasibility guard in extract)."""
+    A = digraph({0: (26.65, 8.0), 1: (17.66, 17.2), 2: (6.86, 10.31)}, [(0, 1), (2, 1)])   # merge at 1
+    B = digraph({"b0": (19.95, 17.41), "b1": (1.14, 15.82), "b2": (12.09, 1.99),
+                 "b3": (3.67, -1.07), "b4": (5.08, 4.52), "b5": (9.15, -1.29)},
+                [("b0", "b1"), ("b0", "b3"), ("b1", "b2"), ("b1", "b3"), ("b3", "b4"), ("b3", "b5"), ("b4", "b5")])
+    prepare(A, B, r=5.0); forward(A, B); backward(A, B)
+    with pytest.raises(ValueError):
+        extract(A, B)

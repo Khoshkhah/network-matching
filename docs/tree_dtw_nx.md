@@ -126,6 +126,11 @@ vertex becomes `∞`. So:
 * `r` should be **≥ the largest expected A↔B drift** (synthetic tests: < 2 m; NVDB↔OSM: 10–20 m).
 * After the DP (parts 3–5), if any A-vertex has **no finite** `D+B` entry, **raise**
   `ValueError("vertex … unreachable within r=…; increase match_radius_m")` — never return a broken match.
+* The per-vertex check above is **not sufficient at a merge/split**, whose arms are only coupled during
+  the traceback: a vertex can have a finite `D+B` at its arg-min yet the coupled optimum still runs
+  through an infeasible cell, recorded as a **severed back-pointer** (a `None` cell reference). The
+  extraction (Part 5) guards this — a `None` while following `bpD`/`bpB` raises the same feasibility
+  `ValueError` rather than dereferencing the missing cell (which previously crashed with `KeyError`).
 
 ### 1.4 What Part 1 delivers
 

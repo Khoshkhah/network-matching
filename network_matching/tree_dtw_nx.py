@@ -260,11 +260,17 @@ def extract(A: nx.DiGraph, B: nx.DiGraph):
     no gap-fill). Returns ``(M, committed)`` — ``M ⊆ V(A)×V(B)`` and ``committed`` = each vertex's pivot
     cell. Works identically on ``A, B`` (point) or ``line_digraph`` graphs (segment)."""
     from collections import deque
+    # A severed back-pointer (a cell reference of None) means the coupled optimum runs through an
+    # infeasible cell -- the per-vertex feasibility check (§1.3) is not enough at a merge/split, whose
+    # arms are only coupled here. Raise the feasibility error rather than dereference the missing cell.
+    _unreach = "coupled matching infeasible within r (a merge/split branch is unreachable) -- increase match_radius_m"
     committed: Dict[Hashable, Hashable] = {}
     M: set = set()
     q: deque = deque()
 
     def commit(c, v):
+        if v is None:
+            raise ValueError(_unreach)
         if c not in committed:
             committed[c] = v
             q.append(c)
@@ -288,6 +294,8 @@ def extract(A: nx.DiGraph, B: nx.DiGraph):
             run, head = [v], v                              # coverage run = forward COVER chain only
             while _is_cover(cc[head]["bpD"], c):
                 head = cc[head]["bpD"][0][1]
+                if head is None:
+                    raise ValueError(_unreach)
                 run.append(head)
             for w in run:
                 M.add((c, w))
@@ -296,6 +304,8 @@ def extract(A: nx.DiGraph, B: nx.DiGraph):
             tail = v                                        # successors: past c's own backward cover
             while _is_cover(cc[tail]["bpB"], c):
                 tail = cc[tail]["bpB"][0][1]
+                if tail is None:
+                    raise ValueError(_unreach)
             for (s, w) in cc[tail]["bpB"]:
                 commit(s, w)
     return M, committed
