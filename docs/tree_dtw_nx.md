@@ -380,6 +380,27 @@ that sits on an `∞` cell, which this test skips — the table itself is sound.
 the table's back-pointers encode exactly the tree's reachability). Point mode runs on `A`, segment mode
 on `L(A)` — same function, different index set.
 
+### 6d Per-table coupling — forward vs V3, backward vs V2
+
+The two passes enforce **complementary** rules: the **forward** table couples **merges** (V2) but is
+*optimistic at splits* (main §4.2) — so, read on its own, it **can violate V3**; the **backward** table
+couples **splits** (V3) and can violate **V2**. `validate_tables` (§6) only tests V3 on the forward table
+*vacuously* (an upstream cone never holds both branches of a split, so there is nothing to couple there).
+This is the **non-vacuous** test.
+
+`check_forward_v3(A, B)` reconstructs the **forward-only** matching — seed each sink at its arg-min `D`,
+follow `bpD` to the sources, union over sinks — and returns its V3 violations: at a split, two sinks'
+upstream walks can land the split vertex on **different** cells (the forward table never coupled them).
+`check_backward_v2(A, B)` mirrors it (sources, `bpB`, V2).
+
+On clean inputs at **α=β=1** both are empty (each table happens to be fully consistent). Under weighting
+(α<1/β<1) they fire — and this is **not a bug**: it is *why the second pass exists* and why the §5
+traceback must couple both. It also **explains the §6b reciprocity failures under weighting**: where the
+forward table cuts the V3 corner and the backward cuts the V2 corner, the two disagree, so their
+back-pointers can't be reciprocal. (Over a 16 425-case α,β sweep: forward violates V3 on **4 317**,
+backward violates V2 on **3 038**; ~**2 220** of those coincide with a reciprocity failure.) These checks
+are therefore diagnostics of the two-pass complementarity, **not** invariants to enforce on a single table.
+
 ---
 
 ## Segment mode = the same six parts on the line-graph

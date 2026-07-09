@@ -7,7 +7,7 @@ import pytest
 
 from network_matching.tree_dtw_nx import (digraph, line_digraph, prepare, forward, backward,
                                           extract, check_reciprocity, check_reachability,
-                                          check_rules, _advance_anchor)
+                                          check_forward_v3, check_backward_v2, check_rules, _advance_anchor)
 
 
 def make(name):
@@ -174,3 +174,17 @@ def test_argmin_tie_break_deterministic():
         for v in A.nodes[a]["cand"]:
             assert A.nodes[a]["cand"][v]["bpD"] == A2.nodes[a]["cand"][v]["bpD"]
             assert A.nodes[a]["cand"][v]["bpB"] == A2.nodes[a]["cand"][v]["bpB"]
+
+
+def test_forward_v3_backward_v2_coupling():
+    """§6d: the forward table couples merges (V2), not splits -- read alone it CAN violate V3 (and the
+    backward table mirror-violates V2). Clean α=β=1 inputs don't; a weighted split does."""
+    A = digraph({0: (0, 0), 1: (10, 0), 2: (20, 0)}, [(0, 1), (1, 2)])                # chain, no split/merge
+    B = digraph({"b0": (0, .5), "b1": (10, .5), "b2": (20, .5)}, [("b0", "b1"), ("b1", "b2")])
+    prepare(A, B, r=20.0); forward(A, B); backward(A, B)
+    assert check_forward_v3(A, B) == [] and check_backward_v2(A, B) == []
+
+    A2 = digraph({0: (6.73, 18.65), 1: (28.37, 0.46), 2: (25.41, 14.29)}, [(1, 0), (1, 2)])   # split at 1
+    B2 = digraph({"b0": (10.71, 2.92), "b1": (30.12, 17.11), "b2": (-1.67, 12.48)}, [("b1", "b2")])
+    prepare(A2, B2, r=40.0); forward(A2, B2, alpha=0.2, beta=0.2); backward(A2, B2, alpha=0.2, beta=0.2)
+    assert check_forward_v3(A2, B2)                        # split vertex 1 lands on two cells -> V3 violation

@@ -488,6 +488,47 @@ def check_reachability(A: nx.DiGraph, which: str = "D"):
     return bad
 
 
+def _one_sided(A: nx.DiGraph, ends, key: str, bpkey: str) -> set:
+    """The matching implied by ONE table on its own: seed each end (sinks for the forward table, sources
+    for the backward) at its arg-min cell and follow that table's back-pointers, unioning the walks
+    (docs §6d)."""
+    M: set = set()
+    for e in ends:
+        cand = A.nodes[e]["cand"]
+        finite = [v for v in cand if math.isfinite(cand[v][key])]
+        if not finite:
+            continue
+        vstar = min(finite, key=lambda v: cand[v][key])
+        stack, seen = [(e, vstar)], set()
+        while stack:
+            a, v = stack.pop()
+            if (a, v) in seen:
+                continue
+            seen.add((a, v)); M.add((a, v))
+            for (a2, v2) in A.nodes[a]["cand"][v][bpkey]:
+                if v2 is not None:
+                    stack.append((a2, v2))
+    return M
+
+
+def check_forward_v3(A: nx.DiGraph, B: nx.DiGraph):
+    """Read the FORWARD table on its own (seed each sink at its arg-min ``D``, follow ``bpD``) and test
+    **V3** (the split rule). The forward pass couples **merges** (V2) but is *optimistic at splits*, so
+    its own matching **can violate V3 — by design** (main §4.2); this surfaces exactly where. Returns the
+    V3-violating ``(a, v)`` pairs (empty ⇒ the forward table is also split-consistent on this input).
+    Mirror of :func:`check_backward_v2`."""
+    sinks = [n for n in A.nodes if A.out_degree(n) == 0]
+    return check_rules(_one_sided(A, sinks, "D", "bpD"), A, B)[2]
+
+
+def check_backward_v2(A: nx.DiGraph, B: nx.DiGraph):
+    """Read the BACKWARD table on its own (seed each source at its arg-min ``B``, follow ``bpB``) and test
+    **V2** (the merge rule) — the mirror of :func:`check_forward_v3`. Backward couples **splits** (V3),
+    is optimistic at merges. Returns the V2-violating pairs."""
+    sources = [n for n in A.nodes if A.in_degree(n) == 0]
+    return check_rules(_one_sided(A, sources, "B", "bpB"), A, B)[1]
+
+
 if __name__ == "__main__":
     def dump(A: nx.DiGraph, title: str) -> None:
         print(f"\n=== {title} ===")
