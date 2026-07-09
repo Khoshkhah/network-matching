@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-viz = ["folium>=0.14.0", "branca>=0.6.0", "matplotlib>=3.5.0"]
+viz = ["folium>=0.14.0", "branca>=0.6.0", "matplotlib>=3.5.0", "plotly>=5.0", "ipywidgets>=8.0"]
 ml = ["scikit-learn>=1.0"]   # IsolationForest in suggest_thresholds (optional; guarded import)
 dev = ["pytest", "ipykernel", "nbconvert", "scipy>=1.7.0", "scikit-learn>=1.0"]
 
