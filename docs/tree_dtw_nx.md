@@ -271,6 +271,45 @@ Segment mode is validated on `L(A)`/`L(B)`, **not** by collapsing `M_seg` to a p
 collapse is what over-assigned coverage and produced phantom crosses. Point and segment validation are
 the *same function* on different graphs; neither substitutes for the other.
 
+### 6b Cross-table agreement — reciprocity on `M`
+
+`validate_tables` (§6) checks each `D`/`B` cell is a legal warping **in isolation**; it never checks
+that the two independently-computed tables **agree**. `check_reciprocity` does — on the committed
+matching only: whenever the **forward** table threads a source edge `p → c`, the **backward** table
+must thread the same edge, at the same committed cells.
+
+For a committed vertex `c` (pivot `committed[c]`), let `head(c)` / `tail(c)` be its forward / backward
+**advance anchors** — `committed[c]` walked along its own COVER chain (a `bpD` / `bpB` list that is a
+single same-source pair `[(c, ·)]`) to the run's start / end. The real advance pointers live there:
+`bpD[c][head(c)] = [(p, x_p)…]` (predecessors, `p ≠ c`) and `bpB[c][tail(c)] = [(s, w_s)…]`
+(successors, `s ≠ c`). A vertex connects to its **predecessors at its run-start** `head(c)` and to its
+**successors at its run-end** `tail(c)`. The invariant, over every source edge `p → c`:
+
+```
+(p, tail(p)) ∈ bpD[c][head(c)]   ⟺   (c, head(c)) ∈ bpB[p][tail(p)]
+```
+
+Forward "feeds `c` from `p`'s run-end" iff backward "continues `p` into `c` at `c`'s run-start", on the
+**same** cells. (With no coverage every anchor equals the pivot, so it reads `(p, committed[p]) ∈
+bpD[c][committed[c]] ⟺ (c, committed[c]) ∈ bpB[p][committed[p]]`.) This is the structural twin of the
+numeric agreement `g(a) = min_v ( D[a][v] + B[a][v] − E(a,v) )` being **constant** across a component
+(§5 seeds one representative precisely because it is): both certify the two passes found the *one*
+optimum. `check_reciprocity` returns the offending edges — empty ⇒ agree.
+
+**Only on `M`, never table-wide.** Off the optimum the reciprocity is *false*, and a check over all
+finite cells would flag correct tables. `D[a][v]` and `B[a][v]` optimise **differently-pinned**
+subproblems (best way *into* `a@v` vs best way *out of* `a@v`); fan-in lets several forward cells name
+one predecessor cell whose backward-optimal successor is only one of them. Minimal counterexample — a
+plain chain `a₀→a₁` over target `v₀→v₁→v₂`: `bpD[a₁][v₂] = [(a₀, v₁)]` (advance) while
+`bpB[a₀][v₁] = [(a₁, v₁)]` (stall), so `(a₁, v₂) ∉ bpB[a₀][v₁]` — both cells correct, reciprocity absent.
+
+**Coverage is excluded.** Same-source COVER pairs `[(c, v′)]` are read from the forward chain only (§5)
+and have no backward mirror, so the `head` / `tail` walk consumes them rather than testing them.
+
+A failure is a genuine forward/backward disagreement on the optimum — a bug in one pass, **not**
+something to repair by forcing the tables to agree: forcing picks a winner and reintroduces the very
+split- / merge-optimism the two-pass design exists to avoid (main §4.2). Fix the pass at its source.
+
 ---
 
 ## Segment mode = the same six parts on the line-graph

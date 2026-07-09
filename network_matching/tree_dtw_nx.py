@@ -357,6 +357,50 @@ def validate_tables(A: nx.DiGraph, B: nx.DiGraph, which: str = "D"):
     return n, bad
 
 
+def _advance_anchor(A: nx.DiGraph, c: Hashable, v: Hashable, bpkey: str) -> Hashable:
+    """Walk ``c``'s own COVER chain from cell ``v`` to where its ADVANCE pointers live (the run's
+    start for ``bpD``, its end for ``bpB``). A COVER step is a single same-source pair ``[(c, ·)]``."""
+    x = v
+    while _is_cover(A.nodes[c]["cand"][x][bpkey], c):
+        x = A.nodes[c]["cand"][x][bpkey][0][1]
+    return x
+
+
+def check_reciprocity(A: nx.DiGraph, committed: Dict[Hashable, Hashable]):
+    """Cross-table agreement on the committed matching (docs §6b): every source edge the FORWARD table
+    threads must be threaded identically by the BACKWARD table. Each committed vertex ``c`` connects to
+    its predecessors at its run-START ``head(c)`` (``bpD`` advance anchor) and to its successors at its
+    run-END ``tail(c)`` (``bpB`` advance anchor) -- the pivot ``committed[c]`` walked along ``c``'s own
+    COVER chain. The invariant, over every source edge ``p → c``::
+
+        (p, tail(p)) ∈ bpD[c][head(c)]   ⟺   (c, head(c)) ∈ bpB[p][tail(p)]
+
+    i.e. ``p`` feeds ``c`` from ``p``'s run-end, and ``c`` continues ``p`` back at ``c``'s run-start --
+    reciprocally, at the same cells. (No coverage ⇒ every anchor equals the pivot.) Same-source COVER
+    pairs are consumed by the anchor walk, not tested (they have no backward mirror). Returns a list of
+    offending ``(p, c, reason)`` edges -- empty iff the two tables agree on the optimum. NOT valid off
+    ``M``: table-wide reciprocity is false (see docs §6b)."""
+    head = {c: _advance_anchor(A, c, v, "bpD") for c, v in committed.items()}   # run start (fwd advance)
+    tail = {c: _advance_anchor(A, c, v, "bpB") for c, v in committed.items()}   # run end   (bwd advance)
+    bad = []
+    for c in committed:
+        for (p, x) in A.nodes[c]["cand"][head[c]]["bpD"]:       # forward: c fed by predecessor p
+            if p == c or p not in committed:                    # COVER guard / p outside this component
+                continue
+            if x != tail[p]:
+                bad.append((p, c, f"bpD[{c}][{head[c]}] pins {p}@{x}, but {p}'s run-end anchor is @{tail[p]}"))
+            if (c, head[c]) not in A.nodes[p]["cand"][tail[p]]["bpB"]:
+                bad.append((p, c, f"forward {p}->{c} unmirrored: ({c},{head[c]}) not in bpB[{p}][{tail[p]}]"))
+        for (s, w) in A.nodes[c]["cand"][tail[c]]["bpB"]:       # backward: c continues into successor s
+            if s == c or s not in committed:
+                continue
+            if w != head[s]:
+                bad.append((c, s, f"bpB[{c}][{tail[c]}] pins {s}@{w}, but {s}'s run-start anchor is @{head[s]}"))
+            if (c, tail[c]) not in A.nodes[s]["cand"][head[s]]["bpD"]:
+                bad.append((c, s, f"backward {c}->{s} unmirrored: ({c},{tail[c]}) not in bpD[{s}][{head[s]}]"))
+    return bad
+
+
 if __name__ == "__main__":
     def dump(A: nx.DiGraph, title: str) -> None:
         print(f"\n=== {title} ===")
@@ -424,9 +468,10 @@ if __name__ == "__main__":
         M, committed = extract(GA, GB)
         v1, v2, v3 = check_rules(M, GA, GB)
         v4 = [a for a in GA.nodes if not any(x == a for (x, _w) in M)]     # every source vertex covered?
+        recip = check_reciprocity(GA, committed)                          # §6b cross-table agreement
         ok = not (v1 or v2 or v3 or v4)
         am = {a: sorted((str(w) for (x, w) in M if x == a)) for a in GA.nodes}
-        print(f"\n{name}: |M|={len(M)}  valid(V1-V4)={ok}"
+        print(f"\n{name}: |M|={len(M)}  valid(V1-V4)={ok}  reciprocity={'AGREE' if not recip else recip}"
               + ("" if ok else f"   V1={v1} V2={v2} V3={v3} V4={v4}"))
         for a in GA.nodes:
             print(f"   A[{a}] -> {am[a]}   (pivot {committed.get(a)})")
