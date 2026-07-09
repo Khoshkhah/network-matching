@@ -308,6 +308,19 @@ def extract(A: nx.DiGraph, B: nx.DiGraph):
                     raise ValueError(_unreach)
             for (s, w) in cc[tail]["bpB"]:
                 commit(s, w)
+
+    # Coverage gap-fill (§8.6). A 1:N run recorded on the *backward* cover chain is missed by the
+    # forward-only read above, leaving an uncovered target cell between two committed neighbours. Fill
+    # it from the committed pivots, not the cover chains: for each source edge, cover the B-path between
+    # the two pivots, assigning each still-uncovered cell to the downstream vertex it is a candidate of.
+    covered = {w for (_a, w) in M}
+    for pa, ch in A.edges:
+        xa, yb = committed[pa], committed[ch]
+        if xa == yb or not nx.has_path(B, xa, yb):
+            continue
+        for cell in nx.shortest_path(B, xa, yb)[1:]:            # strictly after the predecessor, up to ch
+            if cell not in covered and cell in A.nodes[ch]["cand"]:
+                M.add((ch, cell)); covered.add(cell)
     return M, committed
 
 

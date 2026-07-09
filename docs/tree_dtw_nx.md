@@ -245,10 +245,18 @@ The joint traceback (main spec §5), reading only the stored back-pointers.
    Following predecessors (up), successors (down), and siblings (down from a shared parent) reaches the
    seed's **entire weakly-connected component** — and since a connected tree *is* one component, a single
    seed commits **every** vertex. The flood never crosses into a disconnected part (no back-pointer spans
-   the gap). **Coverage is read from the forward COVER chain only**, so each target vertex belongs to at
-   most one source vertex — runs partition, no overlap, no gap-fill (the fix for the old over-assignment).
+   the gap). **Coverage is read from the forward COVER chain only** (never both chains — that was the old
+   over-assignment) — but a 1:N run can be recorded on the *backward* chain instead, which the
+   forward-only read then **drops**, leaving an uncovered target cell between two committed neighbours.
 3. **Re-seed only if needed.** If any A-vertex is still uncommitted, go to step 1. This happens **only
    when A is a forest** (≥ 2 disconnected trees); a single connected tree needs exactly **one** seed.
+4. **Coverage gap-fill (§8.6).** Once every vertex is committed, close the dropped-run gaps **from the
+   committed pivots, not the cover chains**: for each source edge `p → c`, walk the B-path between
+   `committed[p]` and `committed[c]` and assign each still-uncovered cell to the downstream vertex it is a
+   candidate of. This partitions correctly — only real gaps *between committed pivots* are filled, never
+   the phantom coverage the cover chains also hold — and adds nothing to an already-covered matching
+   (zero-regression). *Known residual:* complex **split/merge** coverage gaps (not simple linear ones)
+   are not yet closed by this pass.
 
 Output is the relation on the graph, **never converted to another index space**:
 

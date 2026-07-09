@@ -141,3 +141,19 @@ def test_extract_raises_feasibility_not_keyerror():
     prepare(A, B, r=5.0); forward(A, B); backward(A, B)
     with pytest.raises(ValueError):
         extract(A, B)
+
+
+def test_coverage_gap_fill_backward_run():
+    """A 1:N run recorded on the BACKWARD cover chain must be materialised (§8.6 gap-fill), not dropped:
+    a chain 0->1->2 at alpha=0.5 where node 2 covers b3->b5 -- b3 is recorded backward. extract() now
+    fills the gap (2, b3) instead of leaving a V2/V3 hole."""
+    import random
+    A = digraph({0: (1.34, 12.48), 1: (16.92, 1.96), 2: (0.9, 18.8)}, [(0, 1), (1, 2)])
+    r = random.Random(127 + 90001)
+    Bn = {f"b{i}": (round(r.uniform(-3, 33), 2), round(r.uniform(-3, 23), 2)) for i in range(7)}
+    B = digraph(Bn, [("b0", "b1"), ("b1", "b2"), ("b1", "b3"), ("b3", "b5"), ("b4", "b6")])
+    prepare(A, B, r=40.0); forward(A, B, alpha=0.5, beta=1.0); backward(A, B, alpha=0.5, beta=1.0)
+    M, _ = extract(A, B)
+    v1, v2, v3 = check_rules(M, A, B)
+    assert not (v1 or v2 or v3), f"dropped-coverage gap not filled: V2={v2} V3={v3}"
+    assert (2, "b3") in M                                  # the previously-dropped cell is now covered
