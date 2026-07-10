@@ -3,14 +3,15 @@
 > **Status: specified and PROTOTYPE-VERIFIED** — `scripts/junction_join_prototype.py`: root-table
 > minimum == brute-force optimum on **96/96** runs (chain, y-split, split-under-split, the canonical
 > merge shape × 4 in-domain weights, + 80 random subdivided-polytree runs), root through-cost ==
-> honest `C(M)` exactly, every returned `M` valid. Not yet wired in as the library extraction.
+> honest `C(M)` exactly, every returned `M` valid. **Implemented as `extract_join`** alongside the
+> branching `extract`; the two cross-validate each other (below).
 > A second extraction for Tree-DTW, alternative to the
 > §5 branching exploration of `docs/tree_dtw_matching.md`: instead of enumerating candidate
 > relations and judging them, it computes the **optimal labels for all sinks and split vertices
 > directly**, by a recursive **table join over the split hierarchy** — using only the forward table
 > `D`/`bpD`. Everything here uses the notation of `docs/tree_dtw_matching.md` (§3 objective, §4
-> forward table). Verification plan at the end; the merge bookkeeping (last section) is the one
-> open arithmetic item.
+> forward table). The merge bookkeeping is resolved (§5); the exactness claim is scoped by **cell
+> resolution** (§6a) — the one caution to keep in mind.
 
 ## 1. The enabling facts
 
@@ -111,7 +112,34 @@ Verified on the canonical shape (`U → x → m ← z ← V`, sinks below `m` an
 junction-join == brute force at all four in-domain weights (cost 6.500), and across 80 random
 subdivided polytrees with natural merges — **96/96 agreement overall, 0 disagreements**.
 
-## 6. Complexity & properties
+## 6a. Exactness scope — cell resolution
+
+The join works **vertex to vertex**: a table row is one label per vertex, and its history is the
+stored `bpD` walk. But some moves live **between cells inside one vertex** — the (H) coverage runs.
+Those intra-vertex alternatives (where a run starts, which of a parent's run cells a child connects
+through) are frozen to the single stored history per label; the join is therefore **exact over the
+stored-history family**, not over all valid relations. The branching `extract` explores exactly
+those cell-level alternatives — so the two engines are complementary:
+
+* **join**: global junction coupling, exact within its family, polynomial, no caps;
+* **branching**: cell-resolution run alternatives, best-of-enumerated, capped.
+
+Measured (structured 384-case sweep, both engines on the same tables): join valid **379/384**,
+branching valid **376/384** (the join also succeeds on the deep×dense cases where branching hits its
+state cap); **61 cost divergences where the branching beat the join — ALL in dense-target (coverage)
+regimes, 0 elsewhere, present even at `α = β = 1`** — i.e. purely the cell-resolution gap, not a
+weight effect.
+
+**Cross-validation practice**: run both, take the cheaper valid `M`; a divergence *is information* —
+it flags a coverage-regime case. The suite pins the verified invariant: a join loss to the branching
+**must involve coverage** (`test_extractions_cross_validate`); a loss without coverage would be a
+real exactness bug.
+
+**Future refinement** (if the gap matters on real data): lift the join to cell resolution by keying
+table rows on the run's **boundary cells** (entry, exit) instead of a single label — the join logic
+is unchanged, the tables get one extra dimension.
+
+## 6b. Complexity & properties
 
 | | junction-join | §5 branching exploration |
 |---|---|---|
@@ -134,7 +162,7 @@ reconstruction by bp up-flood, honest `C(M)` costing):
 | chain, y-split, split-under-split, merge shape | 4 in-domain `(α,β)` each | **16/16 agree**, root through == `C(M)` exactly, all `M` valid |
 | 40 random subdivided polytrees (natural merges) | 2 weights each | **80/80 agree**, 0 infeasible, 0 skipped |
 
-Remaining before promotion into `docs/tree_dtw_matching.md` §5: wire the join in as the library
-extraction's label-finder (judge unchanged), run the structured envelope
-(`scripts/test_tree_point.py`) and the suite against it, and decide whether the branching engine
-stays as cross-check or retires.
+Library wiring done: `extract_join` (judge unchanged — root rows tried cheapest-first, first
+valid wins), suite 191 passing incl. `test_extract_join_exact_on_merge_shape` (vs brute force) and
+the cross-validation tests; dual-engine envelope: join 379/384, branching 376/384, divergences
+confined to coverage regimes (§6a). Both engines stay — they cross-validate each other.

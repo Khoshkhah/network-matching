@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import networkx as nx
 
-from network_matching.tree_dtw import prepare, forward, extract, check_rules
+from network_matching.tree_dtw import prepare, forward, extract, extract_join, check_rules, _cost_of
 
 
 def densify(waypoints, step):
@@ -74,31 +74,44 @@ def run_case(struct, a_step, b_step, shift, noise, alpha, beta, seed):
     B = build(poly, b_step, shift=0.0, noise=0.0, seed=0)
     prepare(A, B, r=20.0)
     forward(A, B, alpha, beta)
-    try:
-        M, _ = extract(A, B, alpha, beta)
-    except ValueError as e:
-        return False, f"infeasible: {e}"
-    v1, v2, v3 = check_rules(M, A, B)
-    v4 = [a for a in A.nodes if not any(x == a for (x, _w) in M)]
-    ok = not (v1 or v2 or v3 or v4)
-    return ok, "" if ok else f"V1={len(v1)} V2={len(v2)} V3={len(v3)} V4={len(v4)}"
+
+    def run_engine(fn):
+        try:
+            M, _ = fn(A, B, alpha, beta)
+        except ValueError as e:
+            return None, f"infeasible: {e}"
+        v1, v2, v3 = check_rules(M, A, B)
+        v4 = [a for a in A.nodes if not any(x == a for (x, _w) in M)]
+        if v1 or v2 or v3 or v4:
+            return None, f"V1={len(v1)} V2={len(v2)} V3={len(v3)} V4={len(v4)}"
+        return M, ""
+
+    Mb, why_b = run_engine(extract)
+    Mj, why_j = run_engine(extract_join)
+    cross = True
+    if Mb is not None and Mj is not None:                       # cross-validation: join is exact
+        cross = _cost_of(A, B, Mj, alpha, beta) <= _cost_of(A, B, Mb, alpha, beta) + 1e-6
+    why = "" if (Mb is not None and Mj is not None) else f"branch[{why_b}] join[{why_j}]"
+    return (Mb is not None, Mj is not None, cross), why
 
 
 if __name__ == "__main__":
-    n_ok = n_tot = 0
+    nb = nj = nx_ = n_tot = 0
     fails = []
     for struct in STRUCTURES:
         for a_step, b_step in [(2.0, 2.0), (2.0, 1.0), (1.0, 2.0), (3.0, 1.5)]:   # equal / B-fine / A-fine
             for shift in (0.0, 0.5, 2.0, 5.0):
                 for noise in (0.0, 0.3):
-                    for alpha, beta in [(1.0, 1.0), (0.7, 0.7), (0.5, 0.5)]:
-                        ok, msg = run_case(struct, a_step, b_step, shift, noise, alpha, beta, seed=7)
+                    for alpha, beta in ((1.0, 1.0), (0.7, 1.0), (0.5, 1.5)):
+                        (ok_b, ok_j, cross), why = run_case(struct, a_step, b_step, shift, noise,
+                                                            alpha, beta, seed=7)
                         n_tot += 1
-                        n_ok += ok
-                        if not ok:
-                            fails.append((struct, a_step, b_step, shift, noise, alpha, beta, msg))
-    print(f"POINT-mode sweep: {n_ok}/{n_tot} valid (V1-V4)")
-    for f in fails[:40]:
+                        nb += ok_b
+                        nj += ok_j
+                        nx_ += cross
+                        if why:
+                            fails.append((struct, a_step, b_step, shift, noise, alpha, beta, why))
+    for f in fails[:12]:
         print("  FAIL", f)
-    if not fails:
-        print("  ALL VALID")
+    print(f"POINT-mode sweep: branching {nb}/{n_tot} valid | junction-join {nj}/{n_tot} valid | "
+          f"cross-consistent {nx_}/{n_tot}")

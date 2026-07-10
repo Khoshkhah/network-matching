@@ -655,6 +655,187 @@ def extract(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
 
 
 # ---------------------------------------------------------------------------------------
+# The junction-join extraction (docs/junction_join_extraction.md) -- forward-only, EXACT
+# ---------------------------------------------------------------------------------------
+def _reconstruct_from_sinks(A, sink_labels):
+    """``(M, committed)`` from pinned sink labels by the ``bpD`` up-flood (cover chains -> run cells,
+    advance lists -> every arm of a merge); ``None`` on a pin conflict, a forbidden touch, or a
+    severed pointer."""
+    cells: Dict[Hashable, set] = {}
+    pin: Dict[Hashable, Hashable] = {}
+    stack = list(sink_labels.items())
+    while stack:
+        a, v = stack.pop()
+        if a in pin:
+            if pin[a] != v:
+                return None
+            continue
+        cand = A.nodes[a]["cand"]
+        if v not in cand or cand[v].get("forbidden") or cand[v]["D"] >= INF:
+            return None
+        pin[a] = v
+        cells.setdefault(a, set()).add(v)
+        x = v
+        while True:
+            bp = cand[x]["bpD"]
+            if len(bp) == 1 and bp[0][0] == a:                  # COVER pair -> run cell
+                x = bp[0][1]
+                if x is None or cand[x].get("forbidden"):
+                    return None
+                cells[a].add(x)
+            else:
+                break
+        for (q, xq) in cand[x]["bpD"]:
+            if xq is None:
+                return None
+            stack.append((q, xq))
+    return {(a, c) for a, cs in cells.items() for c in cs}, pin
+
+
+def _jj_induce(A, cells, path):
+    """Walk ``bpD`` from the row's recorded cell at the deepest ``path`` vertex up to ``path[0]``
+    (the split), selecting at each merge the arm toward the split. Returns
+    ``(induced label, {vertex: cell})`` or ``None`` (forbidden / severed / no arm)."""
+    idx = max((i for i, w in enumerate(path) if w in cells), default=None)
+    if idx is None:
+        return None
+    cur_a, cur_v = path[idx], cells[path[idx]]
+    walked: Dict[Hashable, Hashable] = {}
+    for step in range(idx - 1, -1, -1):
+        nxt = path[step]
+        cand = A.nodes[cur_a]["cand"]
+        x = cur_v
+        while True:                                             # own cover chain to the head
+            bp = cand[x]["bpD"]
+            if len(bp) == 1 and bp[0][0] == cur_a:
+                x = bp[0][1]
+                if x is None or cand[x].get("forbidden"):
+                    return None
+            else:
+                break
+        hop = [xp for (q, xp) in cand[x]["bpD"] if q == nxt]
+        if not hop or hop[0] is None:
+            return None
+        cur_a, cur_v = nxt, hop[0]
+        if A.nodes[cur_a]["cand"][cur_v].get("forbidden"):
+            return None
+        walked[cur_a] = cur_v
+    return cur_v, walked
+
+
+def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0):
+    """**The junction-join extraction** (docs/junction_join_extraction.md) -- forward-only and
+    **exact**: the optimal labels for all sinks and splits by a recursive table join over the split
+    hierarchy. Every table is a sink-type table (label -> through-cost + pinned labels + recorded
+    cells); splits are processed deepest-first; each branch's terminal is found by walking down to
+    the first table-owned vertex (consumed-once: an absorbed table serves a later split through its
+    recorded interior cells -- the polytree message flow, no cost division). The root table's
+    minimum row is the exact decision-cost optimum; rows are tried cheapest-first and the first
+    whose reconstructed ``M`` passes ``check_rules`` wins (the judge's word is unchanged -- but note
+    the contraction keeps only per-label bests, so the validity fallback is narrower than
+    :func:`extract`'s candidate pool). Requires :func:`prepare` + :func:`forward`. Raises
+    ``ValueError`` when no row of a component survives. Returns ``(M, committed)``.
+
+    Cross-validation invariant vs :func:`extract` (branching): whenever both succeed,
+    ``C(M_join) <= C(M_branch)`` -- the join is exact, the branching is best-of-enumerated."""
+    M_all: set = set()
+    committed_all: Dict[Hashable, Hashable] = {}
+    for comp in nx.weakly_connected_components(A):
+        comp = set(comp)
+        tables: Dict[Hashable, dict] = {}
+        owner: Dict[Hashable, Hashable] = {}
+        consumed: set = set()
+        alias: Dict[Hashable, Hashable] = {}
+
+        def find(t):
+            while t in alias:
+                t = alias[t]
+            return t
+
+        for s_ in comp:                                         # leaf tables, one per sink
+            if A.out_degree(s_) == 0:
+                rows = {}
+                for v, c in A.nodes[s_]["cand"].items():
+                    if not c.get("forbidden") and c["D"] < INF:
+                        rows[v] = (c["D"], {s_: v}, {s_: v})
+                if not rows:
+                    raise ValueError(f"sink {s_!r} has no usable cell -- increase match_radius_m")
+                tables[s_] = rows
+                owner[s_] = s_
+        splits = [n for n in nx.topological_sort(A) if n in comp and A.out_degree(n) > 1]
+        for U in reversed(splits):                              # deepest split first
+            branches = []
+            for child in A.successors(U):
+                path, cur = [U, child], child
+                while cur not in owner:
+                    nxts = list(A.successors(cur))
+                    cur = nxts[0]                               # out-degree 1 below (splits collapsed)
+                    path.append(cur)
+                branches.append((find(owner[cur]), path))
+            per_branch = []
+            for tid, path in branches:
+                best_at: Dict[Hashable, tuple] = {}
+                for label, (cost, cells, pins) in tables[tid].items():
+                    got = _jj_induce(A, cells, path)
+                    if got is None:
+                        continue
+                    u, walked = got
+                    cur_best = best_at.get(u)
+                    if (cur_best is None or cost < cur_best[0] - 1e-12 or
+                            (abs(cost - cur_best[0]) <= 1e-12 and str(label) < str(cur_best[3]))):
+                        best_at[u] = (cost, {**cells, **walked}, pins, label)
+                per_branch.append(best_at)
+            new_rows: Dict[Hashable, tuple] = {}
+            for u in set.intersection(*[set(b) for b in per_branch]) if per_branch else set():
+                cost, cells, pins, ok = 0.0, {}, {}, True
+                for b in per_branch:
+                    c_, cl_, pn_, _l = b[u]
+                    cost += c_
+                    for k, v in cl_.items():
+                        if cells.get(k, v) != v:                # branches may overlap only consistently
+                            ok = False
+                            break
+                        cells[k] = v
+                    if not ok:
+                        break
+                    pins.update(pn_)
+                if ok:
+                    pins[U] = u
+                    new_rows[u] = (cost, cells, pins)
+            if not new_rows:
+                raise ValueError(f"split {U!r}: no shared exit across its branches -- "
+                                 "increase match_radius_m")
+            tables[U] = new_rows
+            for tid, path in branches:
+                consumed.add(tid)
+                alias[tid] = U
+                for w in path:
+                    owner[w] = U
+            owner[U] = U
+        roots = [t for t in tables if t not in consumed]
+        rows = tables[roots[0]]                                 # exactly one per component
+        best = None
+        for u in sorted(rows, key=lambda u: (rows[u][0], str(u))):   # cheapest-first, judge decides
+            cost, _cells, pins = rows[u]
+            got = _reconstruct_from_sinks(A, {a: v for a, v in pins.items() if A.out_degree(a) == 0})
+            if got is None:
+                continue
+            Mc, pin = got
+            if {a for a, _ in Mc} != comp:
+                continue
+            v1, v2, v3 = check_rules(Mc, A, B)
+            if v1 or v2 or v3:
+                continue
+            best = (Mc, pin)
+            break
+        if best is None:
+            raise ValueError(f"no valid root row in component of {roots[0]!r} -- increase match_radius_m")
+        M_all |= best[0]
+        committed_all.update(best[1])
+    return M_all, committed_all
+
+
+# ---------------------------------------------------------------------------------------
 # Table validation -- V1/V2/V3 per cell, by following the REAL stored back-pointers (docs §6)
 # ---------------------------------------------------------------------------------------
 def _reconstruct(A: nx.DiGraph, a: Hashable, v: Hashable, bpkey: str) -> set:

@@ -6,9 +6,10 @@ import networkx as nx
 import pytest
 
 from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward,
-                                       extract, extract_two_table, check_reciprocity,
+                                       extract, extract_join, extract_two_table, check_reciprocity,
                                        check_reachability, check_forward_v3, check_backward_v2,
-                                       check_rules, check_split_exits, layer_order, _advance_anchor)
+                                       check_rules, check_split_exits, layer_order, _advance_anchor,
+                                       _cost_of, _reconstruct_from_sinks, INF)
 
 
 def make(name):
@@ -435,3 +436,148 @@ def test_extract_raises_when_infeasible_forward_only():
     forward(A, B)
     with pytest.raises(ValueError):
         extract(A, B)
+
+
+# ---------------------------------------------------------------------------------------------------
+# The junction-join extraction (docs/junction_join_extraction.md) + cross-validation of both engines
+# ---------------------------------------------------------------------------------------------------
+IN_DOMAIN = [(1.0, 1.0), (0.5, 1.0), (0.3, 1.5), (1.0, 2.0)]
+
+
+def _merge_shape():
+    """The canonical shape U -> x -> m <- z <- V with sinks below m and on both other branches."""
+    A = digraph({"sU": (0, 10), "U": (6, 10), "x": (12, 8), "sV": (0, -10), "V": (6, -10),
+                 "z": (12, -8), "m": (18, 0), "d1": (24, 0), "T": (30, 0),
+                 "y1": (12, 16), "T2": (18, 16), "w1": (12, -16), "T3": (18, -16)},
+                [("sU", "U"), ("U", "x"), ("x", "m"), ("sV", "V"), ("V", "z"), ("z", "m"),
+                 ("m", "d1"), ("d1", "T"), ("U", "y1"), ("y1", "T2"), ("V", "w1"), ("w1", "T3")])
+    B = digraph({"BsU": (0, 10.5), "BU": (6, 10.5), "Bx": (12, 8.5), "BsV": (0, -9.5),
+                 "BV": (6, -9.5), "Bz": (12, -7.5), "Bm": (18, .5), "Bd": (24, .5),
+                 "BT": (30, .5), "By": (12, 16.5), "BT2": (18, 16.5), "Bw": (12, -15.5),
+                 "BT3": (18, -15.5)},
+                [("BsU", "BU"), ("BU", "Bx"), ("Bx", "Bm"), ("BsV", "BV"), ("BV", "Bz"),
+                 ("Bz", "Bm"), ("Bm", "Bd"), ("Bd", "BT"), ("BU", "By"), ("By", "BT2"),
+                 ("BV", "Bw"), ("Bw", "BT3")])
+    return A, B
+
+
+def _rand_polytree_case(seed):
+    """Random undirected tree -> random orientation -> subdivide every edge: a subdivided polytree
+    with natural splits AND merges, over a random (often cyclic) target."""
+    import random
+    rng = random.Random(seed)
+    n = rng.randint(4, 7)
+    und = [(rng.randrange(i), i) for i in range(1, n)]
+    pos = {i: (rng.uniform(0, 30), rng.uniform(0, 30)) for i in range(n)}
+    A = nx.DiGraph()
+    for i in range(n):
+        A.add_node(i, x=pos[i][0], y=pos[i][1])
+    for k, (a, b) in enumerate(und):
+        if rng.random() < 0.5:
+            a, b = b, a
+        mid = f"m{k}"
+        A.add_node(mid, x=(pos[a][0] + pos[b][0]) / 2, y=(pos[a][1] + pos[b][1]) / 2)
+        A.add_edge(a, mid)
+        A.add_edge(mid, b)
+    B = nx.DiGraph()
+    nb = rng.randint(6, 10)
+    vs = [f"v{i}" for i in range(nb)]
+    for v in vs:
+        B.add_node(v, x=rng.uniform(0, 30), y=rng.uniform(0, 30))
+    for i in range(nb - 1):
+        B.add_edge(vs[i], vs[i + 1])
+    for _ in range(rng.randint(1, nb // 2)):
+        u, v = rng.choice(vs), rng.choice(vs)
+        if u != v:
+            B.add_edge(u, v)
+    return A, B
+
+
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", IN_DOMAIN)
+def test_extract_join_scenarios_valid(name, alpha, beta):
+    """extract_join returns a legal, fully-covering, deterministic matching on every scenario and
+    in-domain weighting."""
+    A, B = make(name)
+    prepare(A, B, r=20.0)
+    forward(A, B, alpha=alpha, beta=beta)
+    M, committed = extract_join(A, B, alpha=alpha, beta=beta)
+    v1, v2, v3 = check_rules(M, A, B)
+    assert not (v1 or v2 or v3)
+    assert set(committed) == set(A.nodes)
+    M2, c2 = extract_join(A, B, alpha=alpha, beta=beta)
+    assert M2 == M and c2 == committed
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.3, 1.5)])
+def test_extract_join_segment_mode(alpha, beta):
+    """The identical join on the line graphs (segment mode)."""
+    A, B = make("split")
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0)
+    forward(LA, LB, alpha=alpha, beta=beta)
+    M, committed = extract_join(LA, LB, alpha=alpha, beta=beta)
+    v1, v2, v3 = check_rules(M, LA, LB)
+    assert not (v1 or v2 or v3)
+    assert set(committed) == set(LA.nodes)
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 2.0)])
+def test_extract_join_exact_on_merge_shape(alpha, beta):
+    """The consumed-once merge arithmetic: on the canonical U->x->m<-z<-V shape the join equals the
+    brute-force optimum over all sink-label combinations (docs/junction_join_extraction.md §5)."""
+    import itertools
+    A, B = _merge_shape()
+    prepare(A, B, r=40.0)
+    forward(A, B, alpha=alpha, beta=beta)
+    Mj, _ = extract_join(A, B, alpha=alpha, beta=beta)
+    sinks = [n for n in A.nodes if A.out_degree(n) == 0]
+    options = [[v for v, c in A.nodes[s]["cand"].items()
+                if not c.get("forbidden") and c["D"] < INF] for s in sinks]
+    best = None
+    for combo in itertools.product(*options):
+        got = _reconstruct_from_sinks(A, dict(zip(sinks, combo)))
+        if got is None:
+            continue
+        M, _pin = got
+        if {a for a, _ in M} != set(A.nodes) or any(check_rules(M, A, B)):
+            continue
+        cost = _cost_of(A, B, M, alpha, beta)
+        if best is None or cost < best - 1e-12:
+            best = cost
+    assert best is not None
+    assert abs(_cost_of(A, B, Mj, alpha, beta) - best) < 1e-6
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
+def test_extractions_cross_validate(alpha, beta):
+    """The two engines check each other: whenever both succeed, both matchings are valid, and the
+    join can lose to the branching ONLY through coverage (intra-vertex run alternatives -- outside
+    the join's stored-history family). Random subdivided polytrees over often-cyclic targets."""
+    for seed in range(16):
+        A, B = _rand_polytree_case(seed)
+        prepare(A, B, r=40.0)
+        forward(A, B, alpha=alpha, beta=beta)
+        try:
+            Mj, _ = extract_join(A, B, alpha=alpha, beta=beta)
+        except ValueError:
+            Mj = None
+        try:
+            Mb, _ = extract(A, B, alpha=alpha, beta=beta)
+        except ValueError:
+            Mb = None
+        if Mj is not None:
+            assert not any(check_rules(Mj, A, B)), f"seed {seed}: join returned invalid M"
+        if Mb is not None:
+            assert not any(check_rules(Mb, A, B)), f"seed {seed}: branching returned invalid M"
+        if Mj is not None and Mb is not None:
+            cj = _cost_of(A, B, Mj, alpha, beta)
+            cb = _cost_of(A, B, Mb, alpha, beta)
+            if cj > cb + 1e-6:
+                # the join is exact over the STORED-HISTORY family (vertex resolution); branching
+                # can only beat it through intra-vertex run alternatives -- so a divergence must
+                # involve coverage (docs/junction_join_extraction.md, cell-resolution scope)
+                runs = any(len({v for a2, v in M if a2 == a}) > 1
+                           for M in (Mj, Mb) for a in {x for x, _ in M})
+                assert runs, (f"seed {seed}: join ({cj:.3f}) > branching ({cb:.3f}) "
+                              f"WITHOUT coverage -- a real exactness bug")
