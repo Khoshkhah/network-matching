@@ -312,9 +312,11 @@ def forward_v3(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1
     one is chosen at extraction, which never commits a vertex to a forbidden cell).
 
     Plain :func:`forward` remains the uncoupled §4.1 sweep; this pass owns the ``forbidden`` flags and
-    resets them first. Requires :func:`prepare`. Raises ``ValueError`` if a split is left with no
-    surviving exit (no V3-valid warping within ``match_radius_m``) or if A is not subdivided (a split's
-    children spanning layers — add an interior point on every real edge, docs §4.0)."""
+    resets them first. **Run before** :func:`backward`: the backward pass reads the flags, so its
+    pointers never target a forbidden cell (the reverse order lets the unconstrained backward table
+    point into cells forbidden afterwards). Requires :func:`prepare`. Raises ``ValueError`` if a split
+    is left with no surviving exit (no V3-valid warping within ``match_radius_m``) or if A is not
+    subdivided (a split's children spanning layers — add an interior point on every real edge, §4.0)."""
     order, L = layer_order(A)
     border = _b_order(B)
     deg = {n: max(1, len(list(A.successors(n)))) for n in A.nodes}

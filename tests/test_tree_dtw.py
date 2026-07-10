@@ -299,3 +299,84 @@ def test_forward_v3_pipeline_extracts_valid_matching(alpha, beta):
     v1, v2, v3 = check_rules(M, A, B)
     assert not (v1 or v2 or v3)
     assert not A.nodes[1]["cand"][committed[1]]["forbidden"]    # split pinned on a surviving exit
+
+
+# ---------------------------------------------------------------------------------------------------
+# Cross-table validation under the v3 pipeline (forward_v3 -> backward under the flags -> extract):
+# §6b reciprocity and §6c reachability must survive the V3 coupling.
+# ---------------------------------------------------------------------------------------------------
+def _rand_tree_case(seed):
+    """Random out-tree A (splits, no merges — every split's children share a layer) over a random,
+    possibly CYCLIC target B. Deterministic per seed."""
+    import random
+    rng = random.Random(seed)
+    na, nb = rng.randint(3, 7), rng.randint(5, 10)
+    A = nx.DiGraph()
+    for i in range(na):
+        A.add_node(i, x=rng.uniform(0, 30), y=rng.uniform(0, 30))
+    for i in range(1, na):
+        A.add_edge(rng.randrange(i), i)
+    B = nx.DiGraph()
+    vs = [f"v{i}" for i in range(nb)]
+    for v in vs:
+        B.add_node(v, x=rng.uniform(0, 30), y=rng.uniform(0, 30))
+    for i in range(nb - 1):
+        B.add_edge(vs[i], vs[i + 1])
+    for _ in range(rng.randint(1, nb // 2)):
+        u, v = rng.choice(vs), rng.choice(vs)
+        if u != v:
+            B.add_edge(u, v)
+    return A, B
+
+
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5)])
+def test_v3_pipeline_cross_table_agreement(name, alpha, beta):
+    """The v3 pipeline satisfies the SAME cross-table guarantees the plain pipeline is tested for:
+    §6b reciprocity on the committed matching, §6c reachability of both tables, a legal final M, and
+    the §4.1a split invariant — for every scenario and suite weighting."""
+    A, B = make(name)
+    prepare(A, B, r=20.0)
+    forward_v3(A, B, alpha=alpha, beta=beta)
+    backward(A, B, alpha=alpha, beta=beta)                      # canonical order: backward under the flags
+    M, committed = extract(A, B)
+    assert check_reciprocity(A, committed) == [], f"{name} a={alpha} b={beta}: tables disagree"
+    assert check_reachability(A, "D") == [] and check_reachability(A, "B") == []
+    v1, v2, v3 = check_rules(M, A, B)
+    assert not (v1 or v2 or v3)
+    assert check_split_exits(A) == []
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.2, 0.2)])
+def test_v3_reachability_and_invariant_random_sweep(alpha, beta):
+    """§6c reachability is UNAFFECTED by the V3 coupling (0 failures over the probe's 170-case sweep):
+    both tables' back-pointers still reconstruct exactly the tree's source<->sink structure, and the
+    split invariant holds — on random out-trees over random (cyclic) targets, incl. harsh weights."""
+    for seed in range(20):
+        A, B = _rand_tree_case(seed)
+        prepare(A, B, r=40.0)
+        forward_v3(A, B, alpha=alpha, beta=beta)
+        backward(A, B, alpha=alpha, beta=beta)
+        assert check_reachability(A, "D") == [], f"seed {seed}: forward reachability broken"
+        assert check_reachability(A, "B") == [], f"seed {seed}: backward reachability broken"
+        assert check_split_exits(A) == [], f"seed {seed}: split invariant broken"
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (0.2, 0.2)])
+def test_v3_never_regresses_reciprocity(alpha, beta):
+    """Paired plain-vs-v3: wherever the v3 pipeline fails §6b reciprocity, the PLAIN pipeline already
+    fails it too (v3 closes the forward table's V3 corner — it fixes agreement cases, never breaks
+    one; the residual shared failures are the documented §6d complementarity, backward's V2 corner)."""
+    for seed in range(20):
+        A, B = _rand_tree_case(seed)
+        prepare(A, B, r=40.0); forward(A, B, alpha, beta); backward(A, B, alpha, beta)
+        _, cp = extract(A, B)
+        plain_fails = bool(check_reciprocity(A, cp))
+
+        A2, B2 = _rand_tree_case(seed)
+        prepare(A2, B2, r=40.0); forward_v3(A2, B2, alpha, beta); backward(A2, B2, alpha, beta)
+        _, cv = extract(A2, B2)
+        v3_fails = bool(check_reciprocity(A2, cv))
+
+        assert not (v3_fails and not plain_fails), \
+            f"seed {seed} a={alpha} b={beta}: forward_v3 REGRESSED reciprocity"

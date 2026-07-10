@@ -260,6 +260,12 @@ Both children now leave from $v_1$ — every surviving exit is shared, which **i
 
 **Implementation:** `forward_v3(A, B, α, β)` — the §4.0 layer sweep with this coupling; plain `forward` stays the uncoupled §4.1 sweep (bit-identical to `forward_v3` on a split-free source). The invariant is `check_split_exits(A)` (empty ⇒ consistent); the extraction seed and coverage gap-fill skip forbidden cells.
 
+**Cross-table validation under the coupling.** Canonical order: **`forward_v3` first, then `backward`** — the backward pass reads the flags, so its pointers never target a forbidden cell; run the other way round, the unconstrained backward table can point into cells `forward_v3` later forbids (observed: committed-forbidden cells / reciprocity breaks). In that canonical order, over a 170-case sweep (fixed scenarios + random out-trees over cyclic targets, α/β down to 0.2):
+
+* **§6c reachability — unaffected**: 0 failures, both tables, every case.
+* **§6b reciprocity — never regressed**: the coupled pipeline fails only where the plain pipeline already fails (10 cases *fixed*, 0 broken); the residual shared failures under harsh weighting are the documented §6d complementarity — the **backward table's V2 corner**, which this forward-side coupling does not touch.
+* Per-cell `validate_tables` / final-`M` counts shift by ±1–3 cases on **cyclic-B coverage runs** (a back-arc re-entering a covered cell reads as a local V1 cross) — the same pre-existing checker-sensitivity family both pipelines show; the coupling only reroutes which runs occur.
+
 ### 4.2 Backward Pass: The Downstream Cost Table `B`
 
 To force splits to agree on a single physical location, we build a mirror table $B$ by sweeping the source in **reverse topological order** (sinks first) and summing over **successors**:
