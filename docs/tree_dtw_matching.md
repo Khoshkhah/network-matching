@@ -93,6 +93,36 @@ These are structural properties of the matching itself — no algorithm, no cost
 
 Because the source is a tree, an exact optimum is reached by one **forward** cost pass, one **backward** cost pass, and one **traceback** (min-sum message passing on the tree). Every table cell holds a single number.
 
+### 4.0 Vertex Ordering — Longest-Path Layering
+
+Any topological order suffices for the plain cost recurrences (§4.1, §4.2). The forward V3 coupling (§4.1a) needs a **stronger** property: **every split's children are placed before any of their successors** — the split's sibling group is *complete and grouped* before anything downstream of it is filled, so the group can be reconciled (forbid-and-rebuild) while nothing has yet read it.
+
+**Why a plain topological sort is not enough.** Take a split $J \to \{b_1, b_2\}$ with $b_1 \to x$. The order $J,\ b_1,\ x,\ b_2$ is perfectly topological — every edge points forward — yet $x$ (a successor of $b_1$) is filled **before** the sibling $b_2$. If $b_2$ then forbids an exit cell of $J$ that $b_1$ had used, $b_1$'s row is rebuilt — but $x$ has *already read* $b_1$'s old row. The layered order below makes that impossible: $x$ waits until the whole sibling group $\{b_1, b_2\}$ is settled.
+
+**The algorithm.** Assign each vertex a depth $L(v)$ = the **longest path** (in edges) from any source to $v$:
+
+1. sweep $A$ in **topological order** (a vertex is reached only after all its ancestors);
+2. a **source** ($\text{in-degree}=0$) gets $L(s) = 0$;
+3. every other vertex gets $L(v) = \max_{p \in A_{\text{pred}}(v)} L(p) + 1$;
+4. **sort** all vertices by $L$ ascending (ties broken by id, for determinism). The result is the sweep order $\pi$.
+
+$\pi$ is always a valid topological order ($L$ strictly increases along every edge), computed in $O(|A|)$.
+
+**Worked example** — a subdivided source with a split, unequal branch lengths, and a merge (interior points $a_1, b_1, b_2, c_1, d_1$ on the real edges):
+
+```text
+S → a₁ → J ─→ b₁ ────────→ M → d₁ → T          L:  S=0  a₁=1  J=2
+             └→ b₂ → c₁ ──↗                        b₁=3  b₂=3   ← the split's children share a layer
+                                                   c₁=4  M=5  d₁=6  T=7
+π = S, a₁, J, b₁, b₂, c₁, M, d₁, T
+```
+
+The split's children $b_1, b_2$ sit **together in layer 3**, before everything downstream ($c_1, M, \dots$); the merge $M$ takes $\max(L(b_1), L(c_1)) + 1 = 5$, so **both** its incoming branches — even the longer one through $c_1$ — are complete before it is filled. That "join after all its branches" placement is exactly what a reconvergent structure needs.
+
+**Why the guarantee needs the subdivision.** The sibling property ("no successor of a vertex precedes any of its siblings") holds **because every real edge carries at least one interior point**: the first vertex on each of a split's outgoing edges is then an interior point whose **sole** predecessor is the split, so a split's children are **pairwise incomparable** — none is a descendant of another — and they all land in layer $L(\text{split})+1$. On a raw graph the property can be impossible for *any* ordering: with `p→v`, `p→w`, **and** `v→w`, the vertex `w` is both a *sibling* of `v` and a *successor* of `v`, so "successors after all siblings" would demand `w` before `w`. Subdivision removes exactly this case.
+
+A vertex with **many parents** (a merge) has **no siblings** under subdivision — each of its parents is an interior point whose only child is the merge — so the sibling group machinery of §4.1a only ever engages at splits. The layering holds identically on $A$ (point mode) and on the line graph $L(A)$ (segment mode); the same order serves both.
+
 ### 4.1 Forward Pass: The Upstream Cost Table `D`
 
 We sweep the source points in **topological order** (sources first, sinks last). Let $\text{reach}(v) = B_{\text{pred}}(v) \cup \{v\}$ be the target points an upstream neighbour can hand off from (either staying on $v$, or moving from an immediate predecessor of $v$). Then:
@@ -192,6 +222,43 @@ but s is ONE point:   s=σ → 0+10 = 10     s=σ' → 10+0 = 10     true minimu
 ```
 
 The `0` is a phantom — $s$ at $\sigma$ for $a$ and $\sigma'$ for $b$ *simultaneously*, which is no matching at all. The real total is read off the **consistent** matching $M$ extracted in §5 (its resolution of this same example is worked there).
+
+### 4.1a V3 Coupling in the Forward Pass — Forbid-and-Rebuild
+
+The forward sum (§4.1) couples **merges** (V2) but is *optimistic at splits*: each child of a split is filled **independently**, so two children can link back to **different** cells of the split — precisely a (V3) break, invisible to the forward table itself (§4.1's phantom). Swept in layer order (§4.0) — a split's children complete and grouped before any of their successors — one extra step couples splits **inside the forward pass**.
+
+**The `forbidden` flag.** Each cell carries a boolean **`forbidden`**: when set, **no back-pointer may link *to* this cell** — every place the recurrence reads a neighbour cell (a predecessor's advance/stall source, a same-row coverage source) skips it. The flag is on the **cell** $(a, v)$, never on the vertex $a$: only that one landing of the split is barred, its other cells stay available.
+
+**The step, per split $a$** (children $a_1, a_2, \dots$, all in layer $L(a)+1$):
+
+1. **Build** each child's row with the normal recurrence (§4.1), skipping forbidden cells.
+2. **Forbid non-shared exits.** As each child $a_i$ completes — **including the first** — collect the split cells it links to, $\text{links}(a_i) = \{(a, v) : (a,v) \in \text{bp}_D[a_i][\cdot]\}$, and mark **forbidden** every cell of $a$ **not** in it. After $a_1$ the allowed exits are exactly $a_1$'s; each later child narrows them. Net effect:
+   $$\text{allowed exits of } a \;=\; \bigcap_i \text{links}(a_i).$$
+3. **Rebuild affected rows — whole rows.** A newly-forbidden cell is dead for **all** children, past and future. Every earlier child whose row linked to it is **rebuilt from scratch**: re-run its full recurrence, skipping all forbidden cells, so each of its cells re-links to the best surviving exit (or goes to $\infty$ if none remains in its reach). It must be the *whole row*, not the one cell, because of the within-row 1:N coverage dependency $D[a_i][v_1] \to D[a_i][v_2]$ (§4.3): re-deriving the cell that advanced from the forbidden exit shifts every coverage cell that fed off it.
+4. **Iterate to the fixed point.** A rebuilt row may re-link to a *different* exit; if some sibling does not share that one, it too is forbidden and the affected rows rebuild again. Repeat until no new cell is forbidden.
+
+**Termination and cost.** The forbidden set only **grows**, and is bounded by the split's candidate set — so there are at most $|\text{cand}(a)|$ rounds, each rebuilding at most all children once: $O(|\text{cand}(a)| \cdot \sum_i \text{row}(a_i))$ worst-case for the split, and every cell is forbidden at most once overall. In practice the intersection stabilises in one or two rounds.
+
+**Worked trace** — split $a$ with children $a_1, a_2$, candidates $\text{cand}(a) = \{v_1, v_2, v_3\}$:
+
+| round | event | forbidden | allowed exits |
+|---|---|---|---|
+| 1 | build $a_1$: links to $\{v_1, v_2\}$ → forbid $v_3$ | $\{v_3\}$ | $\{v_1, v_2\}$ |
+| 1 | build $a_2$: links to $\{v_1\}$ only → forbid $v_2$ | $\{v_2, v_3\}$ | $\{v_1\}$ |
+| 2 | $a_1$ had linked $v_2$ → **rebuild $a_1$'s whole row** skipping $\{v_2, v_3\}$; it re-links via $v_1$ | $\{v_2, v_3\}$ | $\{v_1\}$ |
+| 2 | rebuild introduced no exit outside $\{v_1\}$ → **fixed point** | | **$\{v_1\}$** |
+
+Both children now leave from $v_1$ — every surviving exit is shared, which **is** (V3) at this split.
+
+**Feasibility.** If the intersection empties — no cell of the split is usable by every child within the candidate gate — there is **no** (V3)-valid exit at this radius: raise the same feasibility error as Part 1.3 (*increase `match_radius_m`*), never return a silently-broken table.
+
+**Multiple exits are fine — not a bug.** A split may keep **several** surviving exit options; the step never forces one. Its invariant is only that **every survivor works for all children**. The single exit is chosen later, by the traceback (§5), which commits the split to one surviving cell and routes every child through it — always feasible, because every kept option already works for all of them. (The traceback never commits a vertex to a forbidden cell.)
+
+**It forbids a *cell*, never a *parent*** — so the step is **identical in point and segment mode**, and indifferent to how many parents a child has. In point mode a split's children have the split as sole predecessor (§4.0); in segment mode an outgoing segment of a merge+split **bipartite cluster** in $L(A)$ has several parent segments — it simply skips all forbidden cells across all of them and re-links through whatever survives. Same step, no special case.
+
+**Invariant to check:** for every split and every surviving (non-forbidden) exit cell, **every** child of the split links to it — and the survivor set is non-empty. (Not the independent per-sink decode of `check_forward_v3`: that would wrongly flag two *different but individually valid* surviving options as a violation.)
+
+**Implementation:** `forward_v3(A, B, α, β)` — the §4.0 layer sweep with this coupling; plain `forward` stays the uncoupled §4.1 sweep (bit-identical to `forward_v3` on a split-free source). The invariant is `check_split_exits(A)` (empty ⇒ consistent); the extraction seed and coverage gap-fill skip forbidden cells.
 
 ### 4.2 Backward Pass: The Downstream Cost Table `B`
 
@@ -337,7 +404,7 @@ $$C(M) = \sum_{(a,v) \in M} E(a, v)$$
 |---|---|---|
 | **Meaning** | two roads **join** into one | one road **forks** into two |
 | **Enforced rule** | **(V2)** all roads arrive at one target point | **(V3)** all exits leave one target point |
-| **Coupled by** | **forward** sum over predecessors (in $D$) | **backward** sum over successors (in $B$) |
+| **Coupled by** | **forward** sum over predecessors (in $D$) | **backward** sum over successors (in $B$), *or* **forward** forbid-and-rebuild (§4.1a) |
 | **Traceback logic** | read stored $D$ back-pointers (descend into all) | filter options via $B$ lookahead (inherit into all) |
 | **If done independently** | roads enter at different points | exits leave at different points |
 
@@ -360,7 +427,7 @@ The one thing Tree-DTW requires is that the source really is a **tree**. A sourc
 
 ## 8. Segment-to-Segment Matching — the Segment-State DP (`emission="segment"`)
 
-> Implemented in `network_matching/tree_dtw.py` (`_segment_anchors`). `emission="point"` (§2–§7) is unchanged and stays the default.
+> Implemented in `network_matching/tree_dtw.py`: the six parts of §9 run **unchanged** on the directed line graphs $L(G_A)$, $L(G_B)$ (`line_digraph`). `emission="point"` (§2–§7) is unchanged and stays the default.
 
 ### 8.1 Why a segment *state*, not a segment *cost*
 
@@ -383,9 +450,9 @@ Both local digraphs already carry the segments we need. A **source micro-segment
 
 $\operatorname{mid}(\cdot)$ is the segment midpoint; $\operatorname{bear}(\cdot)$ the compass bearing $(\deg\cdot\operatorname{atan2}(\Delta x, \Delta y)+360)\bmod 360$ ($0°=$ north); $\operatorname{circ}(\theta,\phi)=\min(|\theta-\phi|, 360-|\theta-\phi|)\in[0,180]$; $\lambda=$ `bearing_weight`. Because the substitution is exact, the forward table $D$ (§4.1), the backward table $B$ (§4.2), and the joint $D+B-E$ traceback (§5) carry over unchanged **in form** — only the index sets (arcs, not vertices) and $E$ differ. $L(G_A)$ is a directed acyclic graph whenever $G_A$ is ($s \to s' \to \cdots \to s$ would trace a directed cycle in $G_A$), so the topological sweeps of §4.3 still apply.
 
-### 8.3 Emission paid by every state; stitches are free
+### 8.3 Emission paid by every state
 
-Every hosted state $(s, e)$ pays $E(s, e)$ — **including on the N:1 stall (§8.5)** — so the §8.1 bypass is closed: a stall costs $\beta\cdot E$ for each additional source arc, never zero. **Junction-snap stitches** (the sub-half-metre connectors that stitch coincident endpoints into a junction) are pure connectivity, not segments: a stitch arc **hosts no state** and is **free** to pass through. This holds on both sides — a source stitch carries no $(s, e)$ state; a target stitch is a zero-cost pass-through inside the coverage move. (Without this rule the DP parks source arcs on free stitches and the §8.1 collapse reappears — the graph-DTW lesson, `weighted_emission.md` §10.)
+Every hosted state $(s, e)$ pays $E(s, e)$ — **including on the N:1 stall (§8.5)** — so the §8.1 bypass is closed: a stall costs $\beta\cdot E$ for each additional source arc, never zero. In the current representation a **junction is a single vertex** (Part 1), so the line graph connects real segments directly — there are no stitch connectors, hence no free pass-through a state could park on (the free-connector collapse of `weighted_emission.md` §10 cannot occur).
 
 ### 8.4 Junctions — how segment-states couple at a merge and a split
 
@@ -425,25 +492,175 @@ A per-point `M`/$\varphi$ may still be offered as a clearly-labelled interop con
 
 ### 8.7 Validation — V1–V4 on the line-graph (independent of the point validator)
 
-Segment mode is validated by the four rules of §3 read **on the arc line-graph**, against $M_{\mathrm{seg}}$ — never by converting to a point matching and running the point validator (`check_tree_rules`). That conversion is the §8.1 collapse; it would test a derived object rather than the matching, and its over-assigned coverage produces phantom V1 crosses even when the segment matching is monotone and correct.
+Segment mode is validated by the four rules of §3 read **on the arc line-graph**, against $M_{\mathrm{seg}}$ — never by converting to a point matching and validating that. That conversion is the §8.1 collapse; it would test a derived object rather than the matching, and its over-assigned coverage produces phantom V1 crosses even when the segment matching is monotone and correct.
 
-`check_segment_rules($M_{\mathrm{seg}}$)` uses the $L(G_A)$ adjacency (predecessor/successor **arcs**) and the target-arc adjacency ($B_{\text{pred}}$/$B_{\text{succ}}$ on arcs), each rule restricted to matched neighbours:
+`check_rules(M_seg, L(G_A), L(G_B))` (Part 6 — the **same function** as point mode, on different graphs) uses the $L(G_A)$ adjacency (predecessor/successor **arcs**) and the target-arc adjacency ($B_{\text{pred}}$/$B_{\text{succ}}$ on arcs), each rule restricted to matched neighbours:
 
 * **(V1) no cross** — for $(s,e)\in M_{\mathrm{seg}}$, no predecessor arc of $s$ is matched to a successor arc of $e$.
 * **(V2) merge** — $s$ either continues a run ($e$ has a matched target-arc-predecessor also on $s$) or **every** matched predecessor arc of $s$ lands on $e$ or a target-arc-predecessor of $e$.
 * **(V3) split** — symmetrically, over successors and target-arc-successors.
 * **(V4) coverage** — every source arc appears in $M_{\mathrm{seg}}$.
 
-This is exactly the per-cell check the table validator already applies (`scripts/validate_tables.py`, §8.9), now applied to the final arc matching. It is a **separate** function from `check_tree_rules`; the two never substitute for each other.
+This is exactly the per-cell check the table validator already applies (Part 6, `validate_tables`), now applied to the final arc matching. Point and segment validation are the same function on different graphs; **neither substitutes for the other**.
 
 ### 8.8 What is unchanged
 
-(V1)–(V4) (§3) — now read on $L(G_A)$ (§8.7) — the coverage weights $\alpha$ and $\beta$ (§4.1), the tree-only requirement and `NotATree` (§7), and the exactness/efficiency guarantees (§7) hold verbatim: the segment-state DP is the same algorithm on $L(G_A)$, whose junction cones stay independent (§2) exactly when $G_A$ is a tree. Complexity is the same order — $|L(G_A)| = |{\it arcs}(G_A)| \approx |G_A|$ states against $\approx |G_B|$ target arcs, one forward and one backward sweep plus the per-row coverage relaxation. `emission="point"` remains the default and byte-for-byte the §2–§7 algorithm, validated by `check_tree_rules` on its point $M$.
+(V1)–(V4) (§3) — now read on $L(G_A)$ (§8.7) — the coverage weights $\alpha$ and $\beta$ (§4.1), the tree-only requirement and `NotATree` (§7), and the exactness/efficiency guarantees (§7) hold verbatim: the segment-state DP is the same algorithm on $L(G_A)$, whose junction cones stay independent (§2) exactly when $G_A$ is a tree. Complexity is the same order — $|L(G_A)| = |{\it arcs}(G_A)| \approx |G_A|$ states against $\approx |G_B|$ target arcs, one forward and one backward sweep plus the per-row coverage relaxation. `emission="point"` remains the default and byte-for-byte the §2–§7 algorithm, validated by `check_rules` on its point $M$.
 
 ### 8.9 Implementation notes
 
-* **One filler serves both modes.** `_forward_table` fills $D$ and $B$ for point mode (indices = vertices) and segment mode (indices = arcs); segment mode passes the *arc* line-graph adjacency, the *target-arc* adjacency, the arc emission, and a `ridable` mask so junction stitches can pass through but never host. No separate segment filler was needed. `_segment_tables` exposes the arc tables (with back-pointers) so both the matcher and the table validator (§8.7) run on the same structure.
-* **The A-side line-graph contracts junction stitches.** A real source segment's neighbours are the real segments reachable through one junction stitch, so a merge/split at a junction becomes several real predecessors/successors directly — the coupling of §8.4 falls out of the ordinary predecessor/successor sums with no special case.
-* **One arc-$E$ serves both sweeps.** $E(s, e)$ = middle-to-middle + $\operatorname{circ}$ is invariant under reversing both graphs (every bearing rotates $180°$, $\operatorname{circ}$ unchanged), so $D$ and $B$ share the single arc emission matrix, exactly as point mode shares $\lVert a-v\rVert$.
-* **Segment mode's output and validation are native to $L(G_A)$.** The matcher returns $M_{\mathrm{seg}}$ (the arc relation, §8.6) and `segment_pairs`; `routes` are grouped from $M_{\mathrm{seg}}$; validation is `check_segment_rules` on $L(G_A)$ (§8.7). Any per-point `M`/$\varphi$ is a clearly-derived interop convenience and is never validated in place of $M_{\mathrm{seg}}$.
-* **The extraction is shared with point mode via the back-pointers, each on its own index set.** Both modes store `bp_D`/`bp_B` (§4.1/§4.2) and run the one §5 back-pointer walk — point mode over **vertices** (yielding the point $M$), segment mode over **arcs** (yielding $M_{\mathrm{seg}}$). Following the stored pointers is what makes each junction consistent by construction: a split's arms leave the one committed cell (V3) and a merge's arms meet on one (V2), because those cells were fixed when the pointers were written. Segment coverage is read from the forward COVER chain only, so runs partition (§8.6).
+* **Segment mode is not separate code.** It is the six parts of §9 run on `line_digraph(A)`, `line_digraph(B)` — `nx.line_graph` gives exactly the directed arc adjacency ($(a,b) \to (c,d)$ iff $b = c$); midpoint and bearing are attached to each L-node from the original endpoint coordinates (it copies no attributes itself).
+* **One emission serves both modes and both sweeps.** $E$ = position distance + $\lambda\cdot\operatorname{circ}(\text{bearing})$ whenever both nodes carry a `bearing` (Part 2); it is invariant under reversing both graphs (every bearing rotates $180°$, $\operatorname{circ}$ unchanged), so $D$ and $B$ share it.
+* **A junction is a vertex — there are no stitches.** A merge/split becomes several predecessors/successors of one L-node directly; the §8.4 couplings fall out of the ordinary sums with no special case, and there is no free connector to park on (§8.3).
+* **Output and validation are native to $L(G_A)$.** The matching is $M_{\mathrm{seg}}$ on arcs (§8.6); validation is `check_rules` on $L(G_A)$/$L(G_B)$ (§8.7). Any per-point $M$/$\varphi$ is a clearly-derived interop convenience and is never validated in place of $M_{\mathrm{seg}}$.
+* **The extraction is shared with point mode.** Both modes store `bp_D`/`bp_B` (§4.1/§4.2) and run the one §5 back-pointer walk — point mode over **vertices**, segment mode over **arcs**. Following the stored pointers is what makes each junction consistent by construction; coverage is read from the forward COVER chain only, so runs partition (§8.6).
+
+---
+
+## 9. Implementation — networkx (`network_matching/tree_dtw.py`)
+
+The matcher is implemented on plain **`networkx.DiGraph`** objects, in six independently-verifiable parts: representation + candidates (Part 1), emission (Part 2), forward `D` (Part 3), backward `B` (Part 4), extraction (Part 5), validation (Part 6). **Segment mode is not separate code** — the same six parts run on the directed line graphs `L(A) = line_digraph(A)`, `L(B) = line_digraph(B)` (§8). The matching is the relation of §3: `M ⊆ V(A) × V(B)` (point) or `M ⊆ E(A) × E(B) = V(L(A)) × V(L(B))` (segment); the DP minimises the **decision cost** `Σ w(a,v)·E(a,v)` with `w = 1` on a 1:1 advance, `α` on a 1:N coverage step, `β` on an N:1 stall (§4.1), while the **reported** drift stays the raw `Σ E` of the chosen matching (§5.4).
+
+### Part 1 — Representation & candidate gating
+
+#### 1.1 Input graphs
+
+* **A** (source tree) and **B** (target network) are `networkx.DiGraph`; node ids are any hashable value.
+* Every node carries float coordinates in attributes **`x`, `y`**. Edges are the directed **segments**; a node's coordinates are its geometry (segments are straight between endpoints).
+* **A must be a tree**: its underlying *undirected* graph is acyclic (`nx.is_forest(A.to_undirected())`). A directed reconvergence (a diamond) has an undirected cycle and is rejected — `NotATree` — because it breaks the junction independence of §2. B has no such restriction (it may cycle).
+* A **junction is a vertex**: `out_degree > 1` is a split, `in_degree > 1` is a merge, both at once is a merge+split. Nothing is "coincident"; there are no stitches.
+
+#### 1.2 Candidates — radius-gated, stored on the node
+
+For an A-vertex `a`, a **candidate** is a B-vertex `v` it may match to, gated by distance:
+
+* Parameter **`r = match_radius_m`** (default **20 m**); `cand(a) = { v ∈ V(B) : ‖a − v‖ ≤ r }`, found with a KD-tree over B's vertex coordinates.
+* **Non-empty guarantee.** If fewer than `k_min` (default 1) B-vertices lie within `r`, the `k_min` nearest are included anyway, so no row is ever empty for a purely-geometric reason.
+
+Each A-vertex stores its **own candidate table** as a node attribute — this *is* that vertex's row of the DP tables, filled progressively by the later parts:
+
+```python
+A.nodes[a]["cand"] = {
+    v: {"E": ‖a − v‖,            # emission (Part 2)
+        "D": +inf, "bpD": [],    # forward cost + back-pointers (Part 3)
+        "B": +inf, "bpB": [],    # backward cost + back-pointers (Part 4)
+        "forbidden": False}      # §4.1a: when set, no back-pointer may target this cell
+    for v in cand(a)
+}
+```
+
+`prepare(A, B, r)` validates the inputs, builds the KD-tree, and fills `E`; `D`/`bpD`/`B`/`bpB` are placeholders until Parts 3–4.
+
+#### 1.3 Feasibility rule
+
+Radius gating can make the *coupled* DP infeasible even when every row is individually non-empty: the warping is a chain, and `D[a][v]` needs a predecessor candidate in its reach `{v} ∪ Bpred(v)`. If `r` is smaller than the true A↔B drift somewhere along a path, that chain breaks and every cell of some vertex becomes `∞`. So:
+
+* `r` should be **≥ the largest expected A↔B drift** (synthetic tests: < 2 m; NVDB↔OSM: 10–20 m).
+* After the DP, if any A-vertex has **no finite** `D+B` entry, **raise** `ValueError("vertex … unreachable within r=…; increase match_radius_m")` — never return a broken match.
+* The per-vertex check is **not sufficient at a merge/split**, whose arms are only coupled during the traceback: a vertex can have a finite `D+B` at its arg-min yet the coupled optimum still runs through an infeasible cell, recorded as a **severed back-pointer** (a `None` cell reference). The extraction (Part 5) guards this — a `None` while following `bpD`/`bpB` raises the same feasibility `ValueError` rather than dereferencing the missing cell.
+
+### Part 2 — Emission `E` and the node-attribute contract
+
+Both modes run the **same** DP on a graph whose nodes carry a **position** and — in segment mode — a **bearing**:
+
+| mode | graph | a node is… | node attributes |
+|---|---|---|---|
+| **point** | `A`, `B` | a vertex | `x, y` (position, meters) |
+| **segment** | `L(A)`, `L(B)` | a segment `(u, v)` | `x, y` = **segment midpoint**, `bearing` = **compass bearing** |
+
+One emission formula serves both, using whatever the nodes carry:
+
+```
+E(a, v) = ‖pos(a) − pos(v)‖  +  λ · circ(bearing(a), bearing(v))     ← 2nd term only if both carry `bearing`
+```
+
+`bearing` = `(deg·atan2(Δx, Δy) + 360) mod 360` (0° = north); `circ(θ, φ) = min(|θ − φ|, 360 − |θ − φ|)`; `λ = bearing_weight`. Gating (Part 1.2) uses `pos` — midpoint-to-midpoint in segment mode. `E` is symmetric under reversing both graphs, so the forward and backward passes share it.
+
+### Part 3 — Forward table `D` (upstream cost) — on the node
+
+`D[a][v]` = minimum cost of matching the **upstream cone** of `a` (a and its ancestors) with `a` pinned at candidate `v`; `bpD[a][v]` records the cells it was computed from. Both live in `A.nodes[a]["cand"][v]`. A is swept in **topological order** (sources first; the layered order of §4.0 when the V3 coupling of §4.1a runs). For each predecessor `p ∈ pred(a)`, its two ways into `v` (both read from `p`'s gated candidate table):
+
+```
+step_p  = min_{x ∈ Bpred(v) ∩ cand(p)} D[p][x]      # p advances one B-arc into v
+stall_p = D[p][v]   (∞ if v ∉ cand(p))              # p already sits on v
+```
+
+`D[a][v]` is the cheapest of a full-cost advance (D), a **β**-discounted stall (V), and an **α**-discounted coverage step (H) — the recurrence of §4.1:
+
+```
+D[a][v] = min {
+  (D)  E(a,v) + Σ_{p∈pred(a)} step_p / outdeg(p)                                                   full E
+  (V)  β·E(a,v) + min_{q∈pred(a)} [ stall_q/outdeg(q) + Σ_{p≠q} min(stall_p, step_p)/outdeg(p) ]    β·E
+  (H)  α·E(a,v) + min_{v'∈ Bpred(v) ∩ cand(a)} D[a][v']                                             α·E
+}
+```
+
+* **Source** (`pred(a)=∅`): empty sum → `D[a][v] = E(a,v)` (free entry). **Merge**: the predecessor **sum** is finite only if every predecessor can reach `v` — (V2) folded into the cost; `1/outdeg(p)` is the split factor (§4.1).
+* All predecessor / B-neighbour look-ups are **intersected with the gated candidate sets**: a candidate pruned by `r` has `D = ∞`, so it can't be a `step`, `stall`, or coverage source; a chain the gate has severed leaves every cell `∞` and trips the feasibility rule (Part 1.3).
+
+**Back-pointer `bpD[a][v]`** records exactly the cells that produced the winning line (§4.1's list): `[]` for a source; `[(p, x_p), …]` — one chosen cell per predecessor — for an advance/stall; `[(a, v')]` — same source, one B-arc back — for a coverage step.
+
+**Line (H) is a within-row fixed point, iterated to convergence.** Unlike (D)/(V), which read only *predecessor* rows (already final under the topological sweep of A), (H) reads **other cells of the same row** — `D[a][v]` depends on `D[a][v']` for `v' ∈ Bpred(v) ∩ cand(a)`. B carries no order of its own, so the row cannot be filled in one arbitrary pass; it is **relaxed until it stops changing**:
+
+```
+repeat over cand(a) until no cell changes:
+    for each B-arc v' → v with v', v ∈ cand(a):
+        if D[a][v'] + α·E(a,v) < D[a][v]:
+            D[a][v]  = D[a][v'] + α·E(a,v)        # lower the cost …
+            bpD[a][v] = [(a, v')]                  # … and repoint the back-pointer in the SAME step
+```
+
+The cost and its back-pointer are updated **together** — `bpD[a][v]` always names the cell that produced the current `D[a][v]`, so the chain never desyncs from the value. Because the coverage weight `α·E ≥ 0`, the relaxation is a monotone descent bounded below, converging to the **unique least fixed point** — the same result whether B is acyclic or **cyclic** (a naive single pass would leave cells un-relaxed on a cycle; convergence does not). No order on `V(B)` is assumed; only B's arcs and cell costs drive it, with `border` (Part 4b) settling exact-cost ties deterministically.
+
+### Part 4 — Backward table `B` (downstream cost) — on the node
+
+`B[a][v]` mirrors Part 3 over the **downstream cone** (a and its descendants): the identical three-way `min` — same **α**/**β**, same emission `E` — with A and B **reversed**: `pred → succ`, `Bpred → Bsucc`, `outdeg → indeg`, swept in reverse topological order. Concretely `step_p = min_{x ∈ Bsucc(v) ∩ cand(p)} B[p][x]`, `stall_p = B[p][v]`, over `p ∈ succ(a)`. Stored in `A.nodes[a]["cand"][v]` as `B`, `bpB`. This is the split coupling (V3) exactly as `D` is the merge coupling (V2) (§4.2, §6).
+
+#### 4b Deterministic argmin — a fixed B-vertex order
+
+Every `argmin` in Parts 3–4 (the advance step's choice of predecessor cell, and the (H) relaxation's choice of coverage predecessor) is broken among **equal-cost** options by iteration order — which is arbitrary and, worse, can be broken **differently** by the forward and backward passes (they scan `Bpred` vs `Bsucc`). That makes the tables non-reproducible and lets `bpD`/`bpB` diverge on a tie.
+
+`_b_order(B)` fixes one total order on B's vertices, `border = {v: rank}` (sorted by id, independent of insertion order), and both passes use it to break ties: among cells of equal cost the **smallest-`border` one wins**, and the (H) relaxation likewise keeps, on an exact-cost tie, the coverage predecessor of smallest `border`. This changes only *which* of two **exactly-equal** cells is stored — never a strictly-cheaper choice — so `D`/`B` **costs and optimality are unchanged**; only the tie is resolved, **identically in both passes**. Result: the tables are **deterministic** (invariant to B's dict order). *(It does not, by itself, make reciprocity hold under weighting — those failures are strict cost preferences, not ties, Part 6b/§4.2. The extraction seed is a separate order-dependent site, Part 5.)*
+
+### Part 5 — Extraction → `M`
+
+The joint traceback (§5), reading only the stored back-pointers.
+
+1. **Seed.** Pick any still-uncommitted A-vertex `r` and its `v* = argmin_{v ∈ cand(r)} ( D[r][v] + B[r][v] − E(r,v) )` (feasibility rule Part 1.3 if none is finite). Commit `r → v*`. This is the **only** arg-min in the whole extraction.
+2. **Flood via back-pointers.** From a committed `(c, v)` walk the coverage run, then commit each predecessor in `bpD[c][·]` and each successor in `bpB[c][·]`, repeating until the queue drains. Following predecessors (up), successors (down), and siblings (down from a shared parent) reaches the seed's **entire weakly-connected component** — a single connected tree needs exactly **one** seed. The flood never crosses into a disconnected part (no back-pointer spans the gap). **Coverage is read from the forward COVER chain only** (never both chains — that over-assigns) — but a 1:N run can be recorded on the *backward* chain instead, which the forward-only read then **drops**, leaving an uncovered target cell between two committed neighbours.
+3. **Re-seed only if needed.** If any A-vertex is still uncommitted, go to step 1 — this happens **only** when A is a forest (≥ 2 disconnected trees).
+4. **Coverage gap-fill.** Once every vertex is committed, close the dropped-run gaps **from the committed pivots, not the cover chains**: for each source edge `p → c`, walk the B-path between `committed[p]` and `committed[c]` and assign each still-uncovered cell to the downstream vertex it is a candidate of. This partitions correctly — only real gaps *between committed pivots* are filled, never the phantom coverage the cover chains also hold — and adds nothing to an already-covered matching. *Known residual:* complex **split/merge** coverage gaps (not simple linear ones) are not yet closed by this pass.
+
+Output is the relation on the graph, **never converted to another index space**: point mode `M ⊆ V(A) × V(B)`; segment mode the same walk on `L(A)` gives `M_seg ⊆ E(A) × E(B)`. Optional convenience outputs (grouping by a `road_id` edge attribute for road-level routes) are caller-side, clearly derived, never validated in place of `M`.
+
+### Part 6 — Validation — V1–V4 on the graph (never a point conversion)
+
+One checker, `check_rules(M, src, tgt)`, run on the **same graph the match lives on**: `src, tgt = A, B` for point mode; `L(A), L(B)` for segment mode. It tests exactly the four rules of §3, each **restricted to neighbours present in `M`** — so an unmatched target branch (allowed by V4) does not false-fire. `validate_tables(A, which)` additionally replays every finite cell's back-pointer chain and checks it is a legal warping in isolation.
+
+#### 6b Cross-table agreement — reciprocity on `M`
+
+`validate_tables` checks each `D`/`B` cell **in isolation**; it never checks that the two independently-computed tables **agree**. `check_reciprocity` does — on the committed matching only: whenever the **forward** table threads a source edge `p → c`, the **backward** table must thread the same edge, at the same committed cells.
+
+For a committed vertex `c` (pivot `committed[c]`), let `head(c)` / `tail(c)` be its forward / backward **advance anchors** — `committed[c]` walked along its own COVER chain (a `bpD` / `bpB` list that is a single same-source pair `[(c, ·)]`) to the run's start / end. The real advance pointers live there: a vertex connects to its **predecessors at its run-start** `head(c)` and to its **successors at its run-end** `tail(c)`. The invariant, over every source edge `p → c`:
+
+```
+(p, tail(p)) ∈ bpD[c][head(c)]   ⟺   (c, head(c)) ∈ bpB[p][tail(p)]
+```
+
+This is the structural twin of the numeric agreement `g(a) = min_v ( D[a][v] + B[a][v] − E(a,v) )` being **constant** across a component (Part 5 seeds one representative precisely because it is): both certify the two passes found the *one* optimum. `check_reciprocity` returns the offending edges — empty ⇒ agree.
+
+**Only on `M`, never table-wide.** Off the optimum the reciprocity is *false*: `D[a][v]` and `B[a][v]` optimise **differently-pinned** subproblems (best way *into* `a@v` vs best way *out of* `a@v`), so a table-wide check would flag correct tables. **Coverage is excluded**: same-source COVER pairs are read from the forward chain only (Part 5) and have no backward mirror, so the `head`/`tail` walk consumes them rather than testing them. A failure is a genuine forward/backward disagreement on the optimum — a bug in one pass, **not** something to repair by forcing the tables to agree (§4.2).
+
+#### 6c Table reachability — sources ↔ sinks by back-pointers
+
+A third, **per-table structural** test: each table's back-pointers must reconstruct the tree's own **source ↔ sink reachability**. For **every finite cell of every sink**, walk `bpD` **branching at every predecessor entry**; the terminal (empty-`bp`) cells' vertices must equal exactly the sink's `ancestor_sources`. Mirror for `B` from every source cell via `bpB` (terminals = `descendant_sinks`). Branching is the point: a **merge** makes `bpD` fork so one sink cell must reach **all** its upstream sources; a **split** makes `bpB` fork likewise. A COVER step (same-source pair) stays on its vertex; an ADVANCE moves on. A cell is invalid if the walk hits a `None` reference (severed) or its reached set ≠ the required set; `∞` cells are skipped. `check_reachability(A, which)` returns the invalid cells — empirically **0** over a 22 500-case α,β × point/segment sweep, certifying that extraction-level failures live **downstream of the tables**.
+
+#### 6d Per-table coupling — forward vs V3, backward vs V2
+
+The two passes enforce **complementary** rules: the **forward** table couples merges (V2) but is *optimistic at splits* (§4.2) — read on its own it **can violate V3**; the **backward** table couples splits (V3) and can violate **V2**. This is the **non-vacuous** test of that fact: `check_forward_v3(A, B)` reconstructs the **forward-only** matching (seed each sink at its arg-min `D`, follow `bpD`, union over sinks) and returns its V3 violations; `check_backward_v2` mirrors it (sources, `bpB`, V2).
+
+On clean inputs at **α=β=1** both are empty. Under weighting (α<1/β<1) they fire — and this is **not a bug**: it is *why the second pass exists* and why the Part 5 traceback must couple both. It also explains the Part 6b reciprocity failures under weighting: where the forward table cuts the V3 corner and the backward cuts the V2 corner, the two disagree. (Over a 16 425-case α,β sweep: forward violates V3 on 4 317, backward violates V2 on 3 038; ~2 220 coincide with a reciprocity failure.) These checks are diagnostics of the two-pass complementarity, **not** invariants to enforce on a single table. *(The forward V3 coupling of §4.1a exists precisely to close the forward table's half of this gap during the build.)*
+
+### Segment mode = the same six parts on the line-graph
+
+`line_digraph(G)` = `nx.line_graph(G)` with each L-node `(u, v)` given the segment **midpoint** as `x, y` and the segment **bearing** (`nx.line_graph` on a `DiGraph` yields exactly the directed arc adjacency but copies no attributes). A merge+split vertex becomes a bipartite cluster in `L` (an undirected cycle) — harmless: one shared pin, not a reconvergence (§8.4). Candidates are gated by **midpoint** distance ≤ `r`; `E` is the segment emission (Part 2). Everything else — `D`, `B`, extraction, V1–V4 — is byte-for-byte the point-mode code with `L(A)`, `L(B)` in place of `A`, `B`.

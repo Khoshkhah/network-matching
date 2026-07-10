@@ -1,655 +1,785 @@
-"""Tree-DTW -- a **self-contained** exact matcher of a directed source *tree* to a directed network.
+"""Tree-DTW -- exact matcher of a directed source tree to a directed network, on networkx
+(spec: ``docs/tree_dtw_matching.md``; the implementation is documented there as Parts 1-6).
 
-Independent implementation of ``docs/tree_dtw_matching.md``: it does not call, import, or depend on
-the DAG matcher. It builds the two local digraphs with the shared geometry builder
-(:func:`build_local_digraph`) and then does everything itself -- topological order, the emission
-matrix, the forward table ``D`` and backward table ``B``, the joint ``D+B-E`` traceback, coverage-run
-recovery, and the V1-V4 validator.
+Both the source tree ``A`` and the target network ``B`` are plain ``networkx.DiGraph`` objects:
+a **vertex** carries float coordinates ``x``/``y``; an **edge** is a directed segment; a **junction**
+is just a vertex (split = out-degree > 1, merge = in-degree > 1). No road ids, no coincident vertices,
+no stitches.
 
-Output is the **matching relation ``M``** (docs §3), a set of ``(a_point, b_point)`` pairs -- *not* a
-single-valued ``phi``. A source point that covers a 1:N run of target points contributes several pairs
-to ``M`` (its run, recovered from the horizontal ``(H)`` coverage chain); point-to-point cells are
-singletons. The source ``GA`` must be a directed tree (branches + merges, no undirected loop);
-:class:`NotATree` is raised otherwise (docs §7).
+Parts (each independently verifiable): representation + radius-gated candidates (Part 1), emission
+(Part 2), forward ``D`` (Part 3), backward ``B`` (Part 4), extraction (Part 5), validation (Part 6).
+Segment mode = the same parts run on the directed line graphs ``L(A)``, ``L(B)``.
 """
-
 from __future__ import annotations
 
-import heapq
-from collections import deque
-from typing import Any, Dict, List, Sequence, Set, Tuple
+import math
+from typing import Any, Dict, Hashable, List
 
+import networkx as nx
 import numpy as np
-from shapely.geometry import LineString
 
-from .graph_dtw import LocalBGraph, build_local_digraph
+try:                                                            # optional: fast candidate gating
+    from scipy.spatial import cKDTree as _KDTree
+except Exception:                                               # pragma: no cover - fallback is exact
+    _KDTree = None
 
-__all__ = ["match_tree_to_bgraph", "check_tree_rules", "NotATree"]
-
-
-class NotATree(Exception):
-    """Raised when the source ``GA`` is not a directed tree (it has an undirected loop /
-    reconvergence). Tree-DTW is exact only on a tree (docs §7)."""
+INF = float("inf")
 
 
-# ---------------------------------------------------------------------------------------
-# Source-tree structure
-# ---------------------------------------------------------------------------------------
-def _topological_order(ga: LocalBGraph) -> List[int]:
-    """Kahn topological order of the source points (sources first); raises on a directed cycle."""
-    V = ga.n_vertices
-    indeg = [len(ga.pred_arcs[v]) for v in range(V)]
-    q = deque(v for v in range(V) if indeg[v] == 0)
-    order: List[int] = []
-    while q:
-        u = q.popleft()
-        order.append(u)
-        for w in ga.succ_arcs[u]:
-            indeg[w] -= 1
-            if indeg[w] == 0:
-                q.append(w)
-    if len(order) != V:
-        raise ValueError("source GA has a directed cycle -- not a DAG")
-    return order
-
-
-def _is_tree(ga: LocalBGraph) -> bool:
-    """True iff the source's *undirected* skeleton is a forest (no loop / reconvergence).
-    A connected component with ``V`` vertices is a tree iff it has exactly ``V-1`` undirected edges."""
-    V = ga.n_vertices
-    edges = sum(len(ga.succ_arcs[v]) for v in range(V))          # each directed arc = one undirected edge
-    # count weakly-connected components via union-find
-    parent = list(range(V))
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for u in range(V):
-        for w in ga.succ_arcs[u]:
-            ru, rw = find(u), find(w)
-            if ru != rw:
-                parent[ru] = rw
-    ncomp = len({find(v) for v in range(V)})
-    return edges == V - ncomp                                    # forest: |E| = |V| - #components
+class NotATree(ValueError):
+    """Raised when the source graph ``A`` is not a tree (its undirected graph has a cycle)."""
 
 
 # ---------------------------------------------------------------------------------------
-# Emission and the two cost tables (docs §4.1 / §4.2)
+# helpers
 # ---------------------------------------------------------------------------------------
-def _emission(ga: LocalBGraph, gb: LocalBGraph) -> np.ndarray:
-    """Point-to-point emission ``E(a, v) = dist(a, v)``, an ``(NA, NB)`` matrix (docs §1, point mode)."""
-    return np.hypot(gb.vx[None, :] - ga.vx[:, None], gb.vy[None, :] - ga.vy[:, None])
+def _xy(G: nx.DiGraph, n: Hashable) -> tuple[float, float]:
+    d = G.nodes[n]
+    return float(d["x"]), float(d["y"])
 
 
-def _forward_table(pred_arcs, succ_arcs, outdeg, gb_succ, gb_pred, order, emit, alpha,
-                   beta=1.0, ridable=None):
-    """Fill one directional cost table **and its back-pointers** (docs §4.1). Forward:
-    ``pred_arcs``/``succ_arcs`` = GA's predecessor/successor lists, ``outdeg`` the split factor
-    (``1/outdeg``), ``gb_succ``/``gb_pred`` the target's forward/backward adjacency. Backward ``B``
-    uses the reversed arguments. The same filler drives point mode (indices = vertices) and segment
-    mode (indices = arcs, docs §8).
+def _emit(ax: float, ay: float, abear, bx: float, by: float, bbear, lam: float) -> float:
+    """Unified emission (docs §2): ``‖pos_a − pos_v‖`` plus, when *both* nodes carry a ``bearing`` and
+    ``lam`` (= bearing_weight) is set, ``lam·circ(bearing_a, bearing_v)`` with circular difference in
+    ``[0, 180]``. Point-mode nodes carry no bearing, so this is a pure distance there."""
+    e = math.hypot(ax - bx, ay - by)
+    if abear is not None and bbear is not None and lam:
+        diff = abs(float(abear) - float(bbear)) % 360.0
+        e += float(lam) * min(diff, 360.0 - diff)
+    return e
 
-    Each cell is the cheapest of: the full-cost **advance** (every predecessor steps into ``v``); the
-    **N:1 stall** (≥1 predecessor already on ``v``, forced by ``min_q``), charged ``β·E`` once; and the
-    **1:N coverage** (H) horizontal move, charged ``α·E``. ``α = β = 1`` is bit-for-bit the plain
-    point-to-point recurrence. ``ridable`` (segment mode) is an ``(NB,)`` bool mask of hostable target
-    states; a non-ridable state (a junction stitch) can't rest a match but is a free pass-through in
-    the horizontal move. Default ``None`` = all hostable.
 
-    Returns ``(D, bp)``: the ``(NA, NB)`` cost table, and ``bp[a][v]`` = **the list of cells this
-    value was computed from** (docs §4.1) -- ``[]`` (ENTER/source), ``[(a, v')]`` (a same-source
-    COVER step), or ``[(p, x_p), ...]`` over predecessors (ADVANCE, each ``x_p ∈ reach(v)``).
+def _validate(A: nx.DiGraph, B: nx.DiGraph) -> None:
+    """Both are DiGraphs, every node has ``x``/``y``, and ``A`` is a tree (a polytree: a DAG whose
+    undirected graph is a forest -- no directed cycle, no reconvergence)."""
+    for name, G in (("A", A), ("B", B)):
+        if not isinstance(G, nx.DiGraph):
+            raise TypeError(f"{name} must be a networkx.DiGraph, got {type(G).__name__}")
+        for n in G.nodes:
+            if "x" not in G.nodes[n] or "y" not in G.nodes[n]:
+                raise ValueError(f"{name} node {n!r} is missing 'x'/'y' coordinates")
+    if A.number_of_nodes() and not nx.is_directed_acyclic_graph(A):
+        raise NotATree("source A has a directed cycle -- not a tree")
+    if not nx.is_forest(A.to_undirected()):
+        raise NotATree("source A has an undirected cycle (a reconvergence/diamond) -- not a tree")
+
+
+# ---------------------------------------------------------------------------------------
+# Part 1 -- radius-gated candidates, stored on the A node
+# ---------------------------------------------------------------------------------------
+def prepare(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, k_min: int = 1,
+            bearing_weight: float = 1.0) -> nx.DiGraph:
+    """Validate ``A``, ``B`` and populate each A-vertex's radius-gated candidate table (docs §1-§2).
+
+    For every A-vertex ``a`` writes::
+
+        A.nodes[a]["cand"] = {
+            v: {"E": E(a, v), "D": inf, "bpD": [], "B": inf, "bpB": [],
+                "forbidden": False}
+            for every B-vertex v whose position lies within r of a
+        }
+
+    Candidates are **gated by position** (``x, y``) within ``r`` (§1.2); the emission ``E`` is the
+    unified §2 cost — plain distance for point-mode nodes, distance + ``bearing_weight·circ(bearing)``
+    for segment-mode (line-graph) nodes that carry a ``bearing``. If fewer than ``k_min`` B-vertices lie
+    within ``r``, the ``k_min`` nearest (by position) are included anyway (§1.3). Only ``E`` is filled;
+    ``D``/``bpD``/``B``/``bpB`` are placeholders for Parts 3-4. Works unchanged on ``A, B`` (point) or
+    ``line_digraph(A), line_digraph(B)`` (segment). Returns ``A`` (mutated in place).
     """
-    NA, NB = len(pred_arcs), emit.shape[1]
-    D = np.full((NA, NB), np.inf)
-    bp: List[List[List[Tuple[int, int]]]] = [[[] for _ in range(NB)] for _ in range(NA)]
+    _validate(A, B)
+    b_nodes: List[Hashable] = list(B.nodes)
+    if not b_nodes:
+        raise ValueError("target B has no vertices")
+    b_xy = np.asarray([_xy(B, v) for v in b_nodes], dtype=float)
+    b_bear = [B.nodes[v].get("bearing") for v in b_nodes]
+    kd = _KDTree(b_xy) if _KDTree is not None else None
+
+    for a in A.nodes:
+        ax, ay = _xy(A, a)
+        abear = A.nodes[a].get("bearing")
+        if kd is not None:
+            idx = list(kd.query_ball_point((ax, ay), r))
+        else:                                                   # exact numpy fallback
+            d2 = (b_xy[:, 0] - ax) ** 2 + (b_xy[:, 1] - ay) ** 2
+            idx = list(np.nonzero(d2 <= r * r)[0])
+        if len(idx) < k_min:                                    # feasibility fallback: k_min nearest
+            d2 = (b_xy[:, 0] - ax) ** 2 + (b_xy[:, 1] - ay) ** 2
+            idx = list(np.argsort(d2)[:k_min])
+        cand: Dict[Hashable, Dict[str, Any]] = {}
+        for i in idx:
+            v = b_nodes[i]
+            e = _emit(ax, ay, abear, float(b_xy[i, 0]), float(b_xy[i, 1]), b_bear[i], bearing_weight)
+            cand[v] = {"E": float(e), "D": INF, "bpD": [], "B": INF, "bpB": [],
+                       "forbidden": False}                  # §4.1a: a forbidden cell takes no pointer
+        A.nodes[a]["cand"] = cand
+    return A
+
+
+# ---------------------------------------------------------------------------------------
+# Part 2 -- the directed line graph (segment mode): a node per segment, carrying midpoint + bearing
+# ---------------------------------------------------------------------------------------
+def line_digraph(G: nx.DiGraph) -> nx.DiGraph:
+    """The directed line graph ``L(G) = nx.line_graph(G)`` with each L-node ``(u, v)`` given the
+    segment's **midpoint** as its ``x, y`` and its compass **bearing** (docs §2, §7). `nx.line_graph`
+    gives exactly the arc adjacency (``(a,b) → (c,d)`` iff ``b == c``) but copies no attributes, so we
+    attach them from ``G``'s endpoint coordinates. The result is an ordinary ``DiGraph`` that
+    :func:`prepare` and the later DP treat identically to a point-mode graph."""
+    L = nx.line_graph(G)
+    for (u, v) in list(L.nodes):
+        xu, yu = _xy(G, u)
+        xv, yv = _xy(G, v)
+        L.nodes[(u, v)]["x"] = 0.5 * (xu + xv)
+        L.nodes[(u, v)]["y"] = 0.5 * (yu + yv)
+        L.nodes[(u, v)]["bearing"] = (math.degrees(math.atan2(xv - xu, yv - yu)) + 360.0) % 360.0
+    return L
+
+
+# ---------------------------------------------------------------------------------------
+# small builders + demo (verification of Part 1)
+# ---------------------------------------------------------------------------------------
+def digraph(nodes: Dict[Hashable, tuple[float, float]], edges: List[tuple]) -> nx.DiGraph:
+    """Convenience builder for tests: ``nodes`` maps id -> (x, y); ``edges`` is a list of (u, v)."""
+    G = nx.DiGraph()
+    for n, (x, y) in nodes.items():
+        G.add_node(n, x=float(x), y=float(y))
+    G.add_edges_from(edges)
+    return G
+
+
+# ---------------------------------------------------------------------------------------
+# Part 3 -- forward table D (upstream cost), stored on the node
+# ---------------------------------------------------------------------------------------
+def _b_order(B: nx.DiGraph) -> Dict[Hashable, int]:
+    """A fixed total order on B's vertices (sorted by id). Used to break argmin ties **identically** in
+    the forward and backward passes, so equal-cost choices don't diverge between them (docs §4b)."""
+    return {v: i for i, v in enumerate(sorted(B.nodes, key=str))}
+
+
+def layer_order(A: nx.DiGraph) -> tuple[List[Hashable], Dict[Hashable, int]]:
+    """Longest-path layering of a DAG ``A`` -- a vertex ordering ``π`` in which every split's
+    children share one layer and *all* their successors sit in strictly higher layers, so no
+    successor of a vertex ever precedes any of that vertex's siblings.
+
+    Each vertex is given a depth ``L(v)`` = the longest path (in edges) from any source to ``v``:
+
+    1. sweep ``A`` in **topological order** (so a vertex is reached only after every ancestor);
+    2. a **source** (``in_degree == 0``) gets ``L = 0``;
+    3. every other vertex gets ``L(v) = max(L(p) for p in predecessors(v)) + 1``;
+    4. **sort** the vertices by ``L`` ascending (ties broken by ``str(id)`` for determinism).
+
+    Returns ``(order, L)``: the sorted vertex list and the depth map.
+
+    **The property holds on a *subdivided* DAG** -- one with at least one interior point per real
+    edge -- because there a split's children each have the split as their **sole** predecessor, so
+    they are pairwise incomparable (no sibling is a descendant of another). On a raw DAG where a
+    sibling is also a descendant of another sibling the property is impossible for *any* ordering;
+    ``L`` then merely places the descendant sibling in a later layer. ``A`` must be acyclic
+    (``nx.topological_sort`` raises otherwise).
+    """
+    L: Dict[Hashable, int] = {}
+    for v in nx.topological_sort(A):                        # ancestors before descendants
+        preds = list(A.predecessors(v))
+        L[v] = 0 if not preds else max(L[p] for p in preds) + 1
+    order = sorted(A.nodes, key=lambda v: (L[v], str(v)))   # layer asc; id breaks ties deterministically
+    return order, L
+
+
+def _pass(A: nx.DiGraph, B: nx.DiGraph, order, pred, succ, bpred, bsucc,
+          key: str, bpkey: str, alpha: float, beta: float, border: Dict[Hashable, int]) -> None:
+    """One min-sum sweep filling ``cand[v][key]`` / ``cand[v][bpkey]`` for every A-vertex, in ``order``.
+    Parameterised so the *same* body serves the forward pass (``pred=A.predecessors``,
+    ``bpred=B.predecessors``, ``outdeg`` = A out-degree) and the backward pass (all reversed, Part 4)."""
+    deg = {n: max(1, len(list(succ(n)))) for n in A.nodes}      # the 1/outdeg split factor (Part 3)
     for a in order:
-        ei = emit[a]
-        preds = pred_arcs[a]
-        # per-predecessor step value + its argmin cell (x ∈ Bpred(v)); stall = D[p][v] (x = v).
-        step_val: Dict[int, np.ndarray] = {}
-        step_arg: Dict[int, np.ndarray] = {}
+        _fill_row(A, a, pred, bpred, bsucc, key, bpkey, alpha, beta, border, deg)
+
+
+def _fill_row(A: nx.DiGraph, a: Hashable, pred, bpred, bsucc,
+              key: str, bpkey: str, alpha: float, beta: float,
+              border: Dict[Hashable, int], deg: Dict[Hashable, int]) -> None:
+    """Fill — or **rebuild** (docs §4.1a) — ONE vertex's row: the Part 3 three-way min — (D) advance,
+    (V) β-stall, (H) α-coverage — reading only the already-final neighbour rows and the row itself.
+    ``border`` breaks argmin ties by a fixed B-vertex order, identically in both passes (Part 4b).
+    A cell whose ``forbidden`` flag is set (§4.1a) is skipped everywhere a neighbour cell is *linked to*
+    — as an advance source, a stall source, or a same-row coverage source — so no back-pointer is ever
+    created to it; the cell's own value is still computed. With no flags set (plain :func:`forward` /
+    :func:`backward`) the behaviour is byte-for-byte the unconstrained recurrence."""
+    cand = A.nodes[a]["cand"]
+    preds = list(pred(a))
+    base: Dict[Hashable, float] = {}
+    base_bp: Dict[Hashable, list] = {}
+    for v, c in cand.items():
+        Ev = c["E"]
+        if not preds:                                       # source: free entry
+            base[v], base_bp[v] = Ev, []
+            continue
+        step = {}                                           # step_p, its arg-cell, stall_p per pred
         for p in preds:
-            Dp = D[p]
-            sv = np.full(NB, np.inf)
-            sa = np.full(NB, -1, int)
-            for v in range(NB):
-                bx, bval = -1, np.inf
-                for x in gb_pred[v]:                             # x ∈ Bpred(v)  (one arc before v)
-                    if Dp[x] < bval:
-                        bval, bx = Dp[x], x
-                sv[v], sa[v] = bval, bx
-            step_val[p], step_arg[p] = sv, sa
-        # base value + advance/stall back-pointer, per cell v
-        base = np.full(NB, np.inf)
-        for v in range(NB):
-            if not preds:
-                base[v] = ei[v]                                  # ENTER: source, free entry
-                bp[a][v] = []
+            pc = A.nodes[p]["cand"]
+            sp, spx = INF, None
+            for x in bpred(v):                              # advance: one B-arc into v
+                if x in pc and not pc[x].get("forbidden"):
+                    val = pc[x][key]                        # tie -> smaller B-order cell (both passes)
+                    if val < sp or (val == sp < INF and border[x] < border[spx]):
+                        sp, spx = val, x
+            stall = pc[v][key] if (v in pc and not pc[v].get("forbidden")) else INF   # stall: p already on v
+            step[p] = (sp, spx, stall)
+        # (D) every predecessor advances into v  (full E)
+        adv = Ev + sum(step[p][0] / deg[p] for p in preds)
+        adv_bp = [(p, step[p][1]) for p in preds]
+        # (V) at least one predecessor stalls on v  (β E, force-one-stall)
+        vbest, vbest_bp = INF, None
+        for q in preds:
+            sq, _sqx, stq = step[q]
+            if stq == INF:
                 continue
-            # (advance) full E + Σ step/outdeg ;   (stall) β E + Σ best/outdeg + force one q onto v
-            val_adv, ok_adv, par_adv = ei[v], True, []
-            best_sum, ok_stall, par_best, min_gap, q_star = 0.0, True, [], np.inf, None
+            tot, bp_q, ok = stq / deg[q], [(q, v)], True
             for p in preds:
-                inv = 1.0 / outdeg[p]
-                sv, xs, st = step_val[p][v], int(step_arg[p][v]), D[p][v]
-                if np.isfinite(sv):
-                    val_adv += sv * inv
-                    par_adv.append((p, xs))
-                else:
-                    ok_adv = False
-                if st <= sv:                                     # best of stall/step for this branch
-                    bval, bx = st, v
-                else:
-                    bval, bx = sv, xs
-                if np.isfinite(bval):
-                    best_sum += bval * inv
-                    par_best.append((p, bx))
-                    gap = (st - bval) * inv                      # cost to FORCE this branch to stall
-                    if gap < min_gap:
-                        min_gap, q_star = gap, p
-                else:
-                    ok_stall = False
-            val_adv = val_adv if ok_adv else np.inf
-            val_stall = (beta * ei[v] + best_sum + min_gap) if (ok_stall and q_star is not None) else np.inf
-            if val_stall < val_adv:
-                base[v] = val_stall
-                bp[a][v] = [(q_star, v)] + [(p, bx) for (p, bx) in par_best if p != q_star]
-            else:
-                base[v] = val_adv
-                bp[a][v] = par_adv
-        if ridable is not None:
-            base = np.where(ridable, base, np.inf)               # a stitch cannot HOST a state (§8.3)
-        # (H) horizontal coverage: Dijkstra over the target arcs, edge (u->v) costs α·E(a,v).
-        # A cell lowered here gets a COVER back-pointer [(a, u)] (same source a, from u).
-        dist = base.copy()
-        heap = [(float(dist[v]), v) for v in range(NB) if np.isfinite(dist[v])]
-        heapq.heapify(heap)
-        while heap:
-            c, u = heapq.heappop(heap)
-            if c > dist[u]:
+                if p == q:
+                    continue
+                sp, spx, stp = step[p]
+                m = min(stp, sp)
+                if m == INF:
+                    ok = False
+                    break
+                tot += m / deg[p]
+                bp_q.append((p, v) if stp <= sp else (p, spx))
+            if ok and beta * Ev + tot < vbest:
+                vbest, vbest_bp = beta * Ev + tot, bp_q
+        if adv <= vbest:
+            base[v], base_bp[v] = adv, adv_bp
+        else:
+            base[v], base_bp[v] = vbest, vbest_bp
+
+    # (H) 1:N coverage: within-row fixed point, iterated to convergence (docs Part 3). D[a][v] reads
+    # other cells of the SAME row (D[a][v'], v'∈Bpred(v)), so relax until a full sweep changes
+    # nothing -- lowering the cost and repointing its back-pointer *together*, so bp never desyncs
+    # from D. α·E ≥ 0 ⇒ a monotone descent to the unique least fixed point (correct even when B is
+    # cyclic, where a single pass would leave cells un-relaxed). Equal-cost coverage ties keep the
+    # smaller-`border` predecessor, matching the advance step's tie-break (Part 4b). A forbidden cell
+    # (§4.1a) may not be a coverage SOURCE -- no pointer [(a, v)] may be created to it.
+    D = dict(base)
+    bp = dict(base_bp)
+    changed = True
+    while changed:
+        changed = False
+        for v in cand:
+            dv = D[v]
+            if dv == INF or cand[v].get("forbidden"):
                 continue
-            for v in gb_succ[u]:
-                cand = dist[u] + alpha * ei[v]
-                if cand < dist[v]:
-                    dist[v] = cand
-                    bp[a][v] = [(a, u)]                          # COVER
-                    heapq.heappush(heap, (cand, v))
-        D[a] = dist
-    return D, bp
+            for w in bsucc(v):                              # v -> w a B-arc; a extends its run onto w
+                if w not in cand:
+                    continue
+                nw = dv + alpha * cand[w]["E"]
+                cur, prev = D[w], bp[w]
+                is_cover = len(prev) == 1 and prev[0][0] == a   # w's current value came from coverage
+                if nw < cur or (nw == cur < INF and is_cover and border[v] < border[prev[0][1]]):
+                    D[w], bp[w] = nw, [(a, v)]
+                    changed = True
+    for v in cand:
+        cand[v][key], cand[v][bpkey] = D[v], bp[v]
 
 
-def _bpath(gb: LocalBGraph, s: int, t: int) -> List[int]:
-    """Shortest target path ``[s, ..., t]`` along GB's forward arcs (BFS), or ``None`` if none."""
-    if s == t:
-        return [s]
-    prev: Dict[int, int] = {s: -1}
-    q = deque([s])
-    while q:
-        u = q.popleft()
-        if u == t:
-            break
-        for w in gb.succ_arcs[u]:
-            if w not in prev:
-                prev[w] = u
-                q.append(w)
-    if t not in prev:
-        return None
-    path = [t]
-    while path[-1] != s:
-        path.append(prev[path[-1]])
-    return path[::-1]
+def forward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
+    """Fill the forward table ``D`` and back-pointers ``bpD`` on every A-vertex's candidate table
+    (docs §3). Requires :func:`prepare` to have run. Returns ``A`` (mutated in place)."""
+    order = list(nx.topological_sort(A))
+    _pass(A, B, order, A.predecessors, A.successors, B.predecessors, B.successors,
+          "D", "bpD", alpha, beta, _b_order(B))
+    return A
 
 
-def _reachable(gb: LocalBGraph, v: int, cache: Dict[int, Set[int]]) -> Set[int]:
-    """Target points forward-reachable from ``v`` (including ``v``), memoized."""
-    s = cache.get(v)
-    if s is None:
-        s = {v}
-        stack = [v]
-        while stack:
-            u = stack.pop()
-            for w in gb.succ_arcs[u]:
-                if w not in s:
-                    s.add(w)
-                    stack.append(w)
-        cache[v] = s
-    return s
+def backward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
+    """Fill the backward table ``B`` and back-pointers ``bpB`` (docs §4) — the identical three-way
+    ``min`` with A and B **reversed**: sum over **successors**, ``step`` from a B-**successor**, split
+    factor = **in**-degree, swept in **reverse** topological order. Same ``α``/``β``, same emission.
+    Requires :func:`prepare`. Returns ``A`` (mutated in place)."""
+    order = list(reversed(list(nx.topological_sort(A))))
+    _pass(A, B, order, A.successors, A.predecessors, B.successors, B.predecessors,
+          "B", "bpB", alpha, beta, _b_order(B))
+    return A
 
 
-def _extract(n_nodes, D, B, emit, bp_D, bp_B, hostable=None, nodes=None):
-    """The backward phase (docs §5): **seed once, then follow the stored back-pointer lists**.
+def forward_v3(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
+    """Fill the forward table ``D``/``bpD`` **with the split (V3) coupling** (docs §4.1a), sweeping A in
+    the §4.0 longest-path layer order: a split's children are all built — grouped, one layer — before
+    anything downstream reads their rows. As each child is built (**including the first**), every cell
+    of the split it does *not* link to is marked ``forbidden`` — dead as a pointer target for ALL
+    siblings, past and future, in any pass; already-built siblings that leaned on a newly-forbidden exit
+    get a **whole-row rebuild** under the current flags, iterating to a fixed point. At the fixed point
+    every surviving (non-forbidden) exit cell of every split is linked by ALL its children —
+    :func:`check_split_exits` verifies exactly this. Multiple surviving exits are legitimate (the single
+    one is chosen at extraction, which never commits a vertex to a forbidden cell).
 
-    Generic over point mode (nodes = source vertices, cells = B-vertices) and segment mode (nodes =
-    source arcs, cells = B-arcs). ``bp_D``/``bp_B`` are the lists from :func:`_forward_table`; ``nodes``
-    is the set of seedable source nodes (default all; segment mode passes only the real arcs, so stitch
-    arcs -- which host nothing -- are never seeded).
+    Plain :func:`forward` remains the uncoupled §4.1 sweep; this pass owns the ``forbidden`` flags and
+    resets them first. Requires :func:`prepare`. Raises ``ValueError`` if a split is left with no
+    surviving exit (no V3-valid warping within ``match_radius_m``) or if A is not subdivided (a split's
+    children spanning layers — add an interior point on every real edge, docs §4.0)."""
+    order, L = layer_order(A)
+    border = _b_order(B)
+    deg = {n: max(1, len(list(A.successors(n)))) for n in A.nodes}
+    for a in A.nodes:                                           # this pass owns the flags
+        for c in A.nodes[a]["cand"].values():
+            c["forbidden"] = False
+    for s in A.nodes:                                           # §4.0 guard: a split's children share one layer
+        kids = list(A.successors(s))
+        if len(kids) > 1 and len({L[k] for k in kids}) > 1:
+            raise ValueError(f"source not subdivided: split {s!r} has children in layers "
+                             f"{sorted({L[k] for k in kids})} -- add an interior point on every real edge (docs §4.0)")
 
-    Step 1 -- the ONLY argmin -- seeds one representative per weakly-connected source component at its
-    joint optimum ``argmin_v D[r][v]+B[r][v]-E(r,v)`` (restricted to hostable cells). Step 2 floods
-    outward, **reading** each node's lists: the same-node COVER pairs give its 1:N run; the ADVANCE
-    pairs at the run's head/tail ARE its predecessors/successors (V2/V3). Every node is committed once
-    (a tree). Returns ``(committed, M)``: node -> anchor cell, and the full matching set of pairs.
-    """
-    tot = D + B - emit
-    if hostable is not None:
-        tot = np.where(np.asarray(hostable)[None, :], tot, np.inf)
-    committed: Dict[int, int] = {}
-    M: Set[Tuple[int, int]] = set()
-    queue: deque = deque()
+    def refill(c):
+        _fill_row(A, c, A.predecessors, B.predecessors, B.successors, "D", "bpD", alpha, beta, border, deg)
 
-    def commit(x, w):
-        if x not in committed:
-            committed[x] = int(w)
-            queue.append(x)
+    built: set = set()
+    for a in order:
+        refill(a)
+        built.add(a)
+        _couple(A, a, built, refill)
+    return A
 
-    for r in (range(n_nodes) if nodes is None else nodes):
+
+def _links(A: nx.DiGraph, c: Hashable, p: Hashable) -> set:
+    """The cells of ``p`` that ``c``'s finite forward cells link to — the advance/stall pairs ``(p, x)``
+    in ``bpD`` (severed ``None`` references and same-source COVER pairs excluded)."""
+    return {x for cell in A.nodes[c]["cand"].values() if cell["D"] < INF
+            for (q, x) in cell["bpD"] if q == p and x is not None}
+
+
+def _couple(A: nx.DiGraph, trigger: Hashable, built: set, refill) -> None:
+    """The §4.1a forbid-and-rebuild step, run right after ``trigger``'s row is built. For each split
+    parent ``p`` of ``trigger``: mark forbidden every non-forbidden exit cell of ``p`` that ``trigger``
+    does not link to; rebuild (whole row) every already-built sibling that linked a newly-forbidden
+    exit; re-examine rebuilt rows. The forbidden set grows monotonically, so this reaches a fixed point
+    in at most ``|cand(p)|`` rounds; at the fixed point every surviving exit is linked by all built
+    children. Raises the feasibility ``ValueError`` if a split's exits empty out."""
+    work = [trigger]
+    while work:
+        c = work.pop()
+        for p in A.predecessors(c):
+            if len(list(A.successors(p))) < 2:                  # V3 only bites at a split
+                continue
+            pc = A.nodes[p]["cand"]
+            linked = _links(A, c, p)
+            newly = [v for v, cell in pc.items() if not cell["forbidden"] and v not in linked]
+            if not newly:
+                continue
+            for v in newly:
+                pc[v]["forbidden"] = True
+            if all(cell["forbidden"] for cell in pc.values()):
+                raise ValueError(f"split {p!r}: no surviving V3 exit within r -- increase match_radius_m")
+            newset = set(newly)
+            for sib in A.successors(p):
+                if sib == c or sib not in built:                # later siblings build under the flags
+                    continue
+                if _links(A, sib, p) & newset:                  # sib leaned on a now-dead exit
+                    refill(sib)                                 # whole-row rebuild (docs §4.1a step 3)
+                    work.append(sib)                            # its links changed -> re-examine
+
+
+# ---------------------------------------------------------------------------------------
+# Part 5 -- extraction: seed once per component, then follow the back-pointers (docs §5)
+# ---------------------------------------------------------------------------------------
+def _is_cover(bp, c) -> bool:
+    """A back-pointer list is a 1:N COVER step iff it is a single pair whose source is ``c`` itself."""
+    return len(bp) == 1 and bp[0][0] == c
+
+
+def extract(A: nx.DiGraph, B: nx.DiGraph):
+    """Extract the matching relation ``M`` (docs §5). Seed any uncommitted vertex at its joint arg-min
+    ``D+B−E`` (feasibility rule §1.3 if none is finite), then flood the stored back-pointers — commit
+    each predecessor in the forward anchor's ``bpD`` and each successor in the backward anchor's
+    ``bpB`` — until every vertex in the component is committed; re-seed for a disconnected forest. Each
+    vertex's **coverage run is read from the FORWARD cover chain only**, so runs partition (no overlap,
+    no gap-fill). Returns ``(M, committed)`` — ``M ⊆ V(A)×V(B)`` and ``committed`` = each vertex's pivot
+    cell. Works identically on ``A, B`` (point) or ``line_digraph`` graphs (segment)."""
+    from collections import deque
+    # A severed back-pointer (a cell reference of None) means the coupled optimum runs through an
+    # infeasible cell -- the per-vertex feasibility check (§1.3) is not enough at a merge/split, whose
+    # arms are only coupled here. Raise the feasibility error rather than dereference the missing cell.
+    _unreach = "coupled matching infeasible within r (a merge/split branch is unreachable) -- increase match_radius_m"
+    committed: Dict[Hashable, Hashable] = {}
+    M: set = set()
+    q: deque = deque()
+
+    def commit(c, v):
+        if v is None:
+            raise ValueError(_unreach)
+        if c not in committed:
+            committed[c] = v
+            q.append(c)
+
+    for r in A.nodes:
         if r in committed:
-            continue                                            # already filled by an earlier component
-        vr = int(np.argmin(tot[r]))                             # Step 1: the one seed argmin
-        if not np.isfinite(tot[r][vr]):
-            raise ValueError(f"tree-DTW extraction: no finite matching for source node {r}")
-        commit(r, vr)
-        while queue:                                            # Step 2: follow the lists (both ways)
-            c = queue.popleft()
+            continue
+        cand = A.nodes[r]["cand"]
+        v_star, best = None, INF
+        for v, c in cand.items():
+            if c.get("forbidden"):
+                continue                                        # §4.1a: never commit to a forbidden cell
+            tot = c["D"] + c["B"] - c["E"]
+            if tot < best:
+                best, v_star = tot, v
+        if v_star is None or math.isinf(best):
+            raise ValueError(f"vertex {r!r} has no finite matching within r -- increase match_radius_m")
+        commit(r, v_star)
+        while q:
+            c = q.popleft()
+            cc = A.nodes[c]["cand"]
             v = committed[c]
-            run = {v}
-            head = v
-            while len(bp_D[c][head]) == 1 and bp_D[c][head][0][0] == c:   # same-c COVER pair
-                head = bp_D[c][head][0][1]
-                run.add(head)
-            tail = v
-            while len(bp_B[c][tail]) == 1 and bp_B[c][tail][0][0] == c:
-                tail = bp_B[c][tail][0][1]
-                run.add(tail)
+            run, head = [v], v                              # coverage run = forward COVER chain only
+            while _is_cover(cc[head]["bpD"], c):
+                head = cc[head]["bpD"][0][1]
+                if head is None:
+                    raise ValueError(_unreach)
+                run.append(head)
             for w in run:
                 M.add((c, w))
-            for (p, x) in bp_D[c][head]:                        # predecessors (V2)
+            for (p, x) in cc[head]["bpD"]:                  # predecessors (advance at the forward anchor)
                 commit(p, x)
-            for (s, w) in bp_B[c][tail]:                        # successors (V3)
+            tail = v                                        # successors: past c's own backward cover
+            while _is_cover(cc[tail]["bpB"], c):
+                tail = cc[tail]["bpB"][0][1]
+                if tail is None:
+                    raise ValueError(_unreach)
+            for (s, w) in cc[tail]["bpB"]:
                 commit(s, w)
-    return committed, M
+
+    # Coverage gap-fill (§8.6). A 1:N run recorded on the *backward* cover chain is missed by the
+    # forward-only read above, leaving an uncovered target cell between two committed neighbours. Fill
+    # it from the committed pivots, not the cover chains: for each source edge, cover the B-path between
+    # the two pivots, assigning each still-uncovered cell to the downstream vertex it is a candidate of.
+    covered = {w for (_a, w) in M}
+    for pa, ch in A.edges:
+        xa, yb = committed[pa], committed[ch]
+        if xa == yb or not nx.has_path(B, xa, yb):
+            continue
+        for cell in nx.shortest_path(B, xa, yb)[1:]:            # strictly after the predecessor, up to ch
+            if (cell not in covered and cell in A.nodes[ch]["cand"]
+                    and not A.nodes[ch]["cand"][cell].get("forbidden")):
+                M.add((ch, cell)); covered.add(cell)
+    return M, committed
 
 
 # ---------------------------------------------------------------------------------------
-# Segment-state DP (docs §8) -- true segment-to-segment: a state is an (A-arc, B-arc) pair
+# Table validation -- V1/V2/V3 per cell, by following the REAL stored back-pointers (docs §6)
 # ---------------------------------------------------------------------------------------
-def _enumerate_arcs(g: LocalBGraph):
-    """All directed arcs of ``g`` as ``(tail[], head[])`` index arrays, per-vertex arc adjacency
-    (``arcs_from``/``arcs_to``), and a ``ridable`` mask. An arc is a **segment** (ridable) iff both
-    ends lie on the *same* B-edge; an inter-edge junction **stitch** (different edges) is non-ridable
-    -- free connectivity, never a hosted state (docs §8.3)."""
-    au: List[int] = []
-    aw: List[int] = []
-    arcs_from: List[List[int]] = [[] for _ in range(g.n_vertices)]
-    arcs_to: List[List[int]] = [[] for _ in range(g.n_vertices)]
-    for u in range(g.n_vertices):
-        for w in g.succ_arcs[u]:
-            k = len(au)
-            au.append(u)
-            aw.append(w)
-            arcs_from[u].append(k)
-            arcs_to[w].append(k)
-    au_a = np.asarray(au, int)
-    aw_a = np.asarray(aw, int)
-    ridable = (g.vert_edge[au_a] == g.vert_edge[aw_a]) if len(au) else np.zeros(0, bool)
-    return au_a, aw_a, arcs_from, arcs_to, ridable
-
-
-def _arc_geom(g: LocalBGraph, au: np.ndarray, aw: np.ndarray):
-    """Per-arc midpoint ``(mx, my)`` and compass bearing ``(deg·atan2(Δx, Δy) + 360) mod 360``."""
-    ux, uy, hx, hy = g.vx[au], g.vy[au], g.vx[aw], g.vy[aw]
-    mx, my = 0.5 * (ux + hx), 0.5 * (uy + hy)
-    bear = (np.degrees(np.arctan2(hx - ux, hy - uy)) + 360.0) % 360.0
-    return mx, my, bear
-
-
-def _segment_tables(ga: LocalBGraph, gb: LocalBGraph, bearing_weight: float, alpha: float, beta: float):
-    """Build the segment-mode (A-arc, B-arc) forward ``D`` / backward ``B`` tables and their
-    back-pointers over the **arc line-graph** (docs §8), with junction stitches contracted on both
-    sides. Returns a dict of everything the extraction (:func:`_segment_anchors`) and the table
-    validator need: ``real_a``, arc-endpoint arrays ``Au``/``Aw``/``Bu``/``Bw``, the ``ridable``
-    masks, the real-arc line-graph adjacency ``pred_list``/``succ_list`` and ``order``, the target-arc
-    adjacency ``barc_pred``/``barc_succ``, the arc emission ``emit``, the tables ``D``/``B`` with
-    ``bp_D``/``bp_B``, and per-arc geometry."""
-    Au, Aw, A_from, A_to, A_rid = _enumerate_arcs(ga)
-    Bu, Bw, B_from, B_to, B_rid = _enumerate_arcs(gb)
-    NAA, NBA = len(Au), len(Bu)
-    real_a = [k for k in range(NAA) if A_rid[k]]
-    if not real_a or NBA == 0 or not B_rid.any():
-        raise ValueError("segment mode needs at least one source and one target segment "
-                         "(all arcs were junction stitches)")
-    amx, amy, abear = _arc_geom(ga, Au, Aw)
-    bmx, bmy, bbear = _arc_geom(gb, Bu, Bw)
-
-    # --- effective real-arc line-graph: contract one-hop junction stitches so a real segment's
-    #     neighbours are real segments (a merge/split at a junction becomes several real neighbours).
-    def real_preds(k: int) -> List[int]:
-        t = int(Au[k])
-        preds = [j for j in A_to[t] if A_rid[j]]                     # same-edge chain into t
-        for st in A_to[t]:
-            if not A_rid[st]:                                        # ... or through a stitch INTO t
-                preds += [j for j in A_to[int(Au[st])] if A_rid[j]]
-        return list(dict.fromkeys(preds))
-
-    def real_succs(k: int) -> List[int]:
-        h = int(Aw[k])
-        succs = [j for j in A_from[h] if A_rid[j]]                   # same-edge chain out of h
-        for st in A_from[h]:
-            if not A_rid[st]:                                        # ... or through a stitch OUT of h
-                succs += [j for j in A_from[int(Aw[st])] if A_rid[j]]
-        return list(dict.fromkeys(succs))
-
-    a_pred = {k: real_preds(k) for k in real_a}
-    a_succ = {k: real_succs(k) for k in real_a}
-    pred_list = [a_pred.get(k, []) for k in range(NAA)]
-    succ_list = [a_succ.get(k, []) for k in range(NAA)]
-    outdeg = np.ones(NAA, float)
-    indeg = np.ones(NAA, float)
-    for k in real_a:
-        outdeg[k] = max(1, len(a_succ[k]))
-        indeg[k] = max(1, len(a_pred[k]))
-
-    # topological order of the real-arc line-graph (a DAG whenever GA is)
-    remaining = {k: len(a_pred[k]) for k in real_a}
-    q = deque(k for k in real_a if remaining[k] == 0)
-    order: List[int] = []
-    while q:
-        k = q.popleft()
-        order.append(k)
-        for j in a_succ[k]:
-            remaining[j] -= 1
-            if remaining[j] == 0:
-                q.append(j)
-    if len(order) != len(real_a):
-        raise ValueError("source arc line-graph has a directed cycle -- not a DAG")
-
-    # target-arc adjacency, REAL arcs only (junction stitches contracted, like the A-side): a real
-    # B-arc hands off to the real B-arc one step away, crossing a junction stitch transparently. This
-    # is what keeps the DP off stitches entirely -- an A-arc can never rest on a stitch, so the split's
-    # arms leave the real B-junction (not a stitch mid-way onto one branch).
-    def _barc_pred(e: int) -> List[int]:                            # real arcs ending at tail(e)
-        u = int(Bu[e])
-        preds = [j for j in B_to[u] if B_rid[j]]
-        for st in B_to[u]:
-            if not B_rid[st]:                                       # ... or through a stitch INTO u
-                preds += [j for j in B_to[int(Bu[st])] if B_rid[j]]
-        return list(dict.fromkeys(preds))
-
-    def _barc_succ(e: int) -> List[int]:                           # real arcs starting at head(e)
-        w = int(Bw[e])
-        succs = [j for j in B_from[w] if B_rid[j]]
-        for st in B_from[w]:
-            if not B_rid[st]:                                       # ... or through a stitch OUT of w
-                succs += [j for j in B_from[int(Bw[st])] if B_rid[j]]
-        return list(dict.fromkeys(succs))
-
-    barc_pred = [_barc_pred(e) for e in range(NBA)]
-    barc_succ = [_barc_succ(e) for e in range(NBA)]
-
-    # arc emission E(α, e); stitch target arcs are free pass-through (0), never hosted (B_rid mask).
-    emit = np.hypot(bmx[None, :] - amx[:, None], bmy[None, :] - amy[:, None])
-    if bearing_weight:
-        bd = np.abs(abear[:, None] - bbear[None, :])
-        emit = emit + float(bearing_weight) * np.minimum(bd, 360.0 - bd)
-    emit[:, ~B_rid] = 0.0
-
-    # §4.1 forward D (predecessor sum) and §4.2 backward B (successor sum), on the arc line-graph,
-    # each with its back-pointer lists.
-    D, bp_D = _forward_table(pred_list, succ_list, outdeg, barc_succ, barc_pred, order, emit, alpha,
-                             beta=beta, ridable=B_rid)
-    B, bp_B = _forward_table(succ_list, pred_list, indeg, barc_pred, barc_succ, order[::-1], emit, alpha,
-                             beta=beta, ridable=B_rid)
-    return dict(real_a=real_a, Au=Au, Aw=Aw, Bu=Bu, Bw=Bw, A_rid=A_rid, B_rid=B_rid,
-                pred_list=pred_list, succ_list=succ_list, order=order,
-                barc_pred=barc_pred, barc_succ=barc_succ, emit=emit, NAA=NAA, NBA=NBA,
-                D=D, bp_D=bp_D, B=B, bp_B=bp_B,
-                amx=amx, amy=amy, abear=abear, bmx=bmx, bmy=bmy, bbear=bbear)
-
-
-def _segment_anchors(ga: LocalBGraph, gb: LocalBGraph, bearing_weight: float,
-                     alpha: float, beta: float):
-    """True segment-to-segment matcher (docs §8): DP states are ``(A-arc, B-arc)`` pairs. Builds the
-    arc tables (:func:`_segment_tables`), runs the §5 back-pointer extraction on the arc line-graph,
-    and maps the arc matching to per-vertex outputs. Returns ``(anchor, M, segment_pairs, D, B)``."""
-    T = _segment_tables(ga, gb, bearing_weight, alpha, beta)
-    real_a, Au, Aw, Bu, Bw, B_rid = T["real_a"], T["Au"], T["Aw"], T["Bu"], T["Bw"], T["B_rid"]
-    NAA, emit, D, bp_D, B, bp_B = T["NAA"], T["emit"], T["D"], T["bp_D"], T["B"], T["bp_B"]
-    amx, amy, abear = T["amx"], T["amy"], T["abear"]
-    bmx, bmy, bbear = T["bmx"], T["bmy"], T["bbear"]
-
-    # §5 extraction over the arc line-graph: seed one real arc per component, then FOLLOW the stored
-    # lists (no per-arc guess, no gap-fill). committed_arc: each real A-arc -> its B-arc anchor.
-    committed_arc, _ = _extract(NAA, D, B, emit, bp_D, bp_B, hostable=B_rid, nodes=real_a)
-
-    def _arc_run(k: int) -> List[int]:
-        """The ordered B-arcs source segment ``k`` rides -- its anchor plus the 1:N coverage run,
-        read straight off the same-``k`` COVER chains (docs §5). Usually just ``[anchor]``."""
-        e0 = committed_arc[k]
-        left, x = [e0], e0
-        while len(bp_D[k][x]) == 1 and bp_D[k][x][0][0] == k:       # coverage back to the run's start
-            x = bp_D[k][x][0][1]
-            left.append(x)
-        left.reverse()
-        right, x = [], e0
-        while len(bp_B[k][x]) == 1 and bp_B[k][x][0][0] == k:       # coverage on to the run's end
-            x = bp_B[k][x][0][1]
-            right.append(x)
-        return left + right
-    runs = {k: _arc_run(k) for k in real_a}
-
-    # per-A-vertex φ from the RUN endpoints (a segment's tail lands on its run's first B-tail, its head
-    # on the run's last B-head). Consecutive arcs share a vertex on the same B-vertex (back-pointer
-    # coupling), so φ is a consistent monotone walk.
-    anchor: Dict[int, int] = {}
-    for k in real_a:
-        anchor.setdefault(int(Au[k]), int(Bu[runs[k][0]]))
-    for k in real_a:
-        h = int(Aw[k])
-        if h not in anchor:
-            anchor[h] = int(Bw[runs[k][-1]])
-    for a in range(ga.n_vertices):                                  # isolated 1-point edges (rare)
-        anchor.setdefault(a, int(np.argmin(_emission(ga, gb)[a])))
-
-    # per-vertex matching M: each source point at its anchor, plus each segment's B-run assigned to its
-    # HEAD vertex (the downstream point, docs §4.1 convention) -- a 1:N arc coverage becomes the head's
-    # run, so M is gap-free with no gap-fill.
-    M: Set[Tuple[int, int]] = {(a, anchor[a]) for a in range(ga.n_vertices)}
-    for k in real_a:
-        h = int(Aw[k])
-        for e in runs[k]:
-            M.add((h, int(Bw[e])))
-
-    # segment_pairs (viz): each source segment (t→h) middle-to-middle to the B-arc it actually rode,
-    # plus both arcs' endpoints so a plot can draw the matched A-segment and B-segment themselves.
-    segment_pairs = []
-    for k in real_a:
-        e = committed_arc[k]
-        t, h, u, w = int(Au[k]), int(Aw[k]), int(Bu[e]), int(Bw[e])
-        segment_pairs.append(dict(
-            a_mid=(float(amx[k]), float(amy[k])),
-            b_mid=(float(bmx[e]), float(bmy[e])),
-            a_p0=(float(ga.vx[t]), float(ga.vy[t])), a_p1=(float(ga.vx[h]), float(ga.vy[h])),
-            b_p0=(float(gb.vx[u]), float(gb.vy[u])), b_p1=(float(gb.vx[w]), float(gb.vy[w])),
-            a_bear=float(abear[k]), b_bear=float(bbear[e]),
-            cost=float(emit[k][e])))
-    return anchor, M, segment_pairs, D, B
-
-
-# ---------------------------------------------------------------------------------------
-# V1-V4 validator (docs §3) -- self-contained, no dependency on the DAG matcher
-# ---------------------------------------------------------------------------------------
-def check_tree_rules(M: Set[Tuple[int, int]], ga: LocalBGraph, gb: LocalBGraph) -> Dict[str, Any]:
-    """Check the matching relation ``M`` against the four valid-warping rules (docs §3), using only
-    immediate neighbours. Returns ``{ok, v1_cross, v2_predecessor, v3_successor, v4_uncovered}``."""
-    Mset = set(M)
-
-    def hasm(a, v):
-        return (a, v) in Mset
-
-    v1: List[Tuple[int, int]] = []
-    v2: List[Tuple[int, int]] = []
-    v3: List[Tuple[int, int]] = []
-    for (a, v) in Mset:
-        # (V1) no cross: no DAG-predecessor of a sits on a B-successor of v
-        for am in ga.pred_arcs[a]:
-            for vp in gb.succ_arcs[v]:
-                if hasm(am, vp):
-                    v1.append((a, v))
-                    break
-            else:
-                continue
-            break
-        # (V2) predecessor rule: continues a run at a, OR every predecessor feeds it
-        cont_pred = any(hasm(a, vm) for vm in gb.pred_arcs[v])
-        if not cont_pred:
-            for am in ga.pred_arcs[a]:
-                if not (hasm(am, v) or any(hasm(am, vm) for vm in gb.pred_arcs[v])):
-                    v2.append((a, v))
-                    break
-        # (V3) successor rule: continues a run at a, OR every successor carries it on
-        cont_succ = any(hasm(a, vp) for vp in gb.succ_arcs[v])
-        if not cont_succ:
-            for ap in ga.succ_arcs[a]:
-                if not (hasm(ap, v) or any(hasm(ap, vp) for vp in gb.succ_arcs[v])):
-                    v3.append((a, v))
-                    break
-    matched = {a for (a, _v) in Mset}
-    v4 = [a for a in range(ga.n_vertices) if a not in matched]
-    ok = not (v1 or v2 or v3 or v4)
-    return {"ok": ok, "v1_cross": v1, "v2_predecessor": v2, "v3_successor": v3, "v4_uncovered": v4}
-
-
-# ---------------------------------------------------------------------------------------
-# The matcher
-# ---------------------------------------------------------------------------------------
-def _as_linestrings(edges: Sequence[Tuple[Any, Any]]) -> List[Tuple[Any, LineString]]:
-    return [(eid, g if isinstance(g, LineString) else LineString(g)) for eid, g in edges]
-
-
-def match_tree_to_bgraph(
-    a_edges: Sequence[Tuple[Any, Any]],
-    b_edges: Sequence[Tuple[Any, Any]],
-    *,
-    snap_tolerance_m: float = 0.5,
-    step_meters: float = 2.0,
-    emission: str = "point",
-    bearing_weight: float = 0.0,
-    horizontal_weight: float = 1.0,
-    vertical_weight: float = 1.0,
-    validate: bool = False,
-) -> Dict[str, Any]:
-    """Match the source **tree** ``a_edges`` onto the local directed graph of ``b_edges`` and return
-    the matching relation ``M`` (docs/tree_dtw_matching.md).
-
-    ``a_edges`` / ``b_edges``: ``[(id, LineString)]`` (or ``(id, [(x, y), ...])``) in meters.
-    ``emission``: ``"point"`` (default, docs §2–§7) is a **point-state** DP -- a state is one source
-    point matched to one target point, scored ``E(a, v) = dist(a, v)``. ``"segment"`` (docs §8) is the
-    true **segment-to-segment** matcher -- a state is an ``(A-arc, B-arc)`` pair, scored middle-to-
-    middle ``+ bearing_weight·Δbearing`` on *every* move -- which resolves nearest-vs-corresponding (a
-    split's arms under a lateral shift). ``"point"`` is bit-for-bit the former result; both modes
-    return the same ``M``/``routes`` shape. The **call-time hyperparameters** (docs §4.1, §8): λ =
-    ``bearing_weight`` (heading term, ``"segment"`` mode only, ~1-5); α = ``horizontal_weight`` ≤ 1
-    discounts **1:N** coverage (one source point spanning a run of target points); β =
-    ``vertical_weight`` ≤ 1 discounts **N:1** coverage (many source points stacking on one target
-    point). ``α = β = 1`` (defaults) is the plain point-to-point pricing, bit-for-bit unchanged. Both
-    weights apply in both emission modes. ``validate=True`` runs :func:`check_tree_rules`.
-
-    Returns ``{M, a_match, routes, emission, GA, GB, D, B, order, anchor}`` where ``M`` is a set of
-    ``(a, v)`` pairs and ``a_match`` maps each source point to the sorted list of target points it
-    covers. ``"segment"`` mode also returns ``segment_pairs`` -- the matched ``(A-arc, B-arc)`` records
-    (``a_mid``/``b_mid`` midpoints, ``a_bear``/``b_bear`` bearings, ``cost``), the middle-to-middle
-    pairs the DP actually scored, for the correspondence view. ``D``/``B`` are vertex cost tables in
-    point mode and arc cost tables in segment mode. Raises :class:`NotATree` if the source has an
-    undirected loop (docs §7).
-    """
-    a_edges = _as_linestrings(a_edges)
-    b_edges = _as_linestrings(b_edges)
-    a_pts = [(float(x), float(y)) for _id, g in a_edges for (x, y) in g.coords]
-    b_pts = [(float(x), float(y)) for _id, g in b_edges for (x, y) in g.coords]
-
-    ga = build_local_digraph(a_edges, b_pts, snap_tolerance_m, step_meters)
-    gb = build_local_digraph(b_edges, a_pts, snap_tolerance_m, step_meters)
-    order = _topological_order(ga)
-    if not _is_tree(ga):
-        raise NotATree("source GA has an undirected loop (a reconvergence/diamond); "
-                       "Tree-DTW is exact only on a directed tree (docs §7)")
-
-    NA = ga.n_vertices
-    alpha = float(horizontal_weight)
-    beta = float(vertical_weight)
-
-    # Pin each source point to a B-vertex anchor φ and read off the matching M (docs §4–§5). Point
-    # mode: a vertex-state DP + the §5 back-pointer extraction. Segment mode (§8): the same, over the
-    # arc line-graph, plus the (A-arc, B-arc) middle-to-middle pairs for the correspondence view.
-    segment_pairs = None
-    if emission == "point":
-        emit = _emission(ga, gb)
-        outdeg_f = np.array([max(1, len(ga.succ_arcs[a])) for a in range(NA)], float)
-        indeg_b = np.array([max(1, len(ga.pred_arcs[a])) for a in range(NA)], float)
-        # §4.1 forward D (predecessor sum, 1/outdeg) and §4.2 backward B (successor sum, 1/indeg),
-        # each with its back-pointer lists; §5 extraction follows them (seed once, then flood).
-        D, bp_D = _forward_table(ga.pred_arcs, ga.succ_arcs, outdeg_f,
-                                 gb.succ_arcs, gb.pred_arcs, order, emit, alpha, beta=beta)
-        B, bp_B = _forward_table(ga.succ_arcs, ga.pred_arcs, indeg_b,
-                                 gb.pred_arcs, gb.succ_arcs, order[::-1], emit, alpha, beta=beta)
-        anchor, M = _extract(NA, D, B, emit, bp_D, bp_B)
-    elif emission == "segment":
-        anchor, M, segment_pairs, D, B = _segment_anchors(ga, gb, float(bearing_weight), alpha, beta)
-    else:
-        raise ValueError(f"unknown emission {emission!r}; use 'point' or 'segment'")
-
-    # a_match = M grouped per source point (the anchor plus any 1:N coverage run it covers).
-    grouped: Dict[int, Set[int]] = {a: set() for a in range(NA)}
-    for (a, w) in M:
-        grouped[a].add(w)
-    a_match: Dict[int, List[int]] = {a: sorted(grouped[a]) for a in range(NA)}
-
-    a_match_out, routes = _matches_and_routes(ga, gb, anchor, a_match, order)
-    out: Dict[str, Any] = dict(M=M, a_match=a_match_out, routes=routes, emission=emission,
-                               GA=ga, GB=gb, D=D, B=B, order=order, anchor=anchor)
-    if segment_pairs is not None:
-        out["segment_pairs"] = segment_pairs
-    if validate:
-        out["rules"] = check_tree_rules(M, ga, gb)
+def _reconstruct(A: nx.DiGraph, a: Hashable, v: Hashable, bpkey: str) -> set:
+    """The partial matching a cell stands for -- follow its stored back-pointer list to the ends."""
+    out: set = set()
+    stack = [(a, v)]
+    while stack:
+        x, w = stack.pop()
+        if (x, w) in out:
+            continue
+        out.add((x, w))
+        for (x2, w2) in A.nodes[x]["cand"][w][bpkey]:
+            stack.append((x2, w2))
     return out
 
 
-def _matches_and_routes(ga, gb, anchor, a_match, order):
-    """Per-point match records (anchor + covered run) and per-A-edge B-edge routes.
+def check_rules(M: set, src: nx.DiGraph, tgt: nx.DiGraph):
+    """V1, V2, V3 on a matching ``M`` over graphs ``src``/``tgt``, each rule restricted to neighbours
+    present in ``M`` (docs §6). Returns ``(v1, v2, v3)`` lists of offending pairs."""
+    has = M.__contains__
+    inM = {a for (a, _v) in M}
+    v1, v2, v3 = [], [], []
+    for (a, v) in M:
+        if any((am in inM) and has((am, vp)) for am in src.predecessors(a) for vp in tgt.successors(v)):
+            v1.append((a, v))
+        if not any(has((a, vm)) for vm in tgt.predecessors(v)):
+            for am in src.predecessors(a):
+                if am in inM and not (has((am, v)) or any(has((am, vm)) for vm in tgt.predecessors(v))):
+                    v2.append((a, v)); break
+        if not any(has((a, vp)) for vp in tgt.successors(v)):
+            for ap in src.successors(a):
+                if ap in inM and not (has((ap, v)) or any(has((ap, vp)) for vp in tgt.successors(v))):
+                    v3.append((a, v)); break
+    return v1, v2, v3
 
-    The route is the ordered B-edges each A-edge's anchors run through, with a leading/trailing
-    **single-vertex junction touch** trimmed (an A-edge's boundary vertex grazing the neighbour's
-    B-edge at the junction) when a real edge remains -- the same boundary handling as the DAG matcher.
-    """
-    recs = []
-    seq: Dict[Any, List[List[Any]]] = {}                        # aeid -> [[beid, count], ...] in order
-    for a in order:
-        va = anchor[a]
-        ax, ay = float(ga.vx[a]), float(ga.vy[a])
-        bx, by = float(gb.vx[va]), float(gb.vy[va])
-        rec = dict(a=a, ax=ax, ay=ay, anchor=int(va), bx=bx, by=by,
-                   drift=float(np.hypot(bx - ax, by - ay)), run=list(a_match[a]))
-        recs.append(rec)
-        ae, be = ga.vert_edge[a], gb.vert_edge[va]
-        aeid = ga.edge_ids[ae] if 0 <= ae < len(ga.edge_ids) else None
-        beid = gb.edge_ids[be] if 0 <= be < len(gb.edge_ids) else None
-        if aeid is None or beid is None:
+
+def validate_tables(A: nx.DiGraph, B: nx.DiGraph, which: str = "D"):
+    """Validate every finite cell of the ``which`` table (``"D"`` forward or ``"B"`` backward) against
+    V1/V2/V3, by reconstructing each cell's partial matching from its **real** back-pointers and
+    checking it (docs §6). For the backward table the source/target roles reverse. Returns
+    ``(n_cells, bad)`` where ``bad`` is a list of ``(a, v, v1, v2, v3)``."""
+    bpkey = "bpD" if which == "D" else "bpB"
+    src, tgt = (A, B) if which == "D" else (A.reverse(copy=False), B.reverse(copy=False))
+    n, bad = 0, []
+    for a in A.nodes:
+        for v, c in A.nodes[a]["cand"].items():
+            if math.isinf(c[which]):
+                continue
+            n += 1
+            v1, v2, v3 = check_rules(_reconstruct(A, a, v, bpkey), src, tgt)
+            if v1 or v2 or v3:
+                bad.append((a, v, v1, v2, v3))
+    return n, bad
+
+
+def _advance_anchor(A: nx.DiGraph, c: Hashable, v: Hashable, bpkey: str) -> Hashable:
+    """Walk ``c``'s own COVER chain from cell ``v`` to where its ADVANCE pointers live (the run's
+    start for ``bpD``, its end for ``bpB``). A COVER step is a single same-source pair ``[(c, ·)]``."""
+    x = v
+    while _is_cover(A.nodes[c]["cand"][x][bpkey], c):
+        x = A.nodes[c]["cand"][x][bpkey][0][1]
+    return x
+
+
+def check_reciprocity(A: nx.DiGraph, committed: Dict[Hashable, Hashable]):
+    """Cross-table agreement on the committed matching (docs §6b): every source edge the FORWARD table
+    threads must be threaded identically by the BACKWARD table. Each committed vertex ``c`` connects to
+    its predecessors at its run-START ``head(c)`` (``bpD`` advance anchor) and to its successors at its
+    run-END ``tail(c)`` (``bpB`` advance anchor) -- the pivot ``committed[c]`` walked along ``c``'s own
+    COVER chain. The invariant, over every source edge ``p → c``::
+
+        (p, tail(p)) ∈ bpD[c][head(c)]   ⟺   (c, head(c)) ∈ bpB[p][tail(p)]
+
+    i.e. ``p`` feeds ``c`` from ``p``'s run-end, and ``c`` continues ``p`` back at ``c``'s run-start --
+    reciprocally, at the same cells. (No coverage ⇒ every anchor equals the pivot.) Same-source COVER
+    pairs are consumed by the anchor walk, not tested (they have no backward mirror). Returns a list of
+    offending ``(p, c, reason)`` edges -- empty iff the two tables agree on the optimum. NOT valid off
+    ``M``: table-wide reciprocity is false (see docs §6b)."""
+    head = {c: _advance_anchor(A, c, v, "bpD") for c, v in committed.items()}   # run start (fwd advance)
+    tail = {c: _advance_anchor(A, c, v, "bpB") for c, v in committed.items()}   # run end   (bwd advance)
+    bad = []
+    for c in committed:
+        for (p, x) in A.nodes[c]["cand"][head[c]]["bpD"]:       # forward: c fed by predecessor p
+            if p == c or p not in committed:                    # COVER guard / p outside this component
+                continue
+            if x != tail[p]:
+                bad.append((p, c, f"bpD[{c}][{head[c]}] pins {p}@{x}, but {p}'s run-end anchor is @{tail[p]}"))
+            if (c, head[c]) not in A.nodes[p]["cand"][tail[p]]["bpB"]:
+                bad.append((p, c, f"forward {p}->{c} unmirrored: ({c},{head[c]}) not in bpB[{p}][{tail[p]}]"))
+        for (s, w) in A.nodes[c]["cand"][tail[c]]["bpB"]:       # backward: c continues into successor s
+            if s == c or s not in committed:
+                continue
+            if w != head[s]:
+                bad.append((c, s, f"bpB[{c}][{tail[c]}] pins {s}@{w}, but {s}'s run-start anchor is @{head[s]}"))
+            if (c, tail[c]) not in A.nodes[s]["cand"][head[s]]["bpD"]:
+                bad.append((c, s, f"backward {c}->{s} unmirrored: ({c},{tail[c]}) not in bpD[{s}][{head[s]}]"))
+    return bad
+
+
+def _reach(A: nx.DiGraph, start, bpkey: str):
+    """Walk ``bpkey`` back-pointers cell -> cell from ``start``, branching at every entry. Return
+    ``(terminals, hit_none)``: ``terminals`` = the vertex component of every terminal cell reached (an
+    empty back-pointer list -- a source for ``bpD``, a sink for ``bpB``); ``hit_none`` flags a severed
+    path (a ``None`` cell reference). Cover pointers (same vertex) and advances (a new vertex) are both
+    just cell -> cell moves; a vertex is tallied only where the walk terminates (docs §6c)."""
+    reached, seen, hit_none = set(), set(), False
+    stack = [start]
+    while stack:
+        a, v = stack.pop()
+        if (a, v) in seen:
             continue
-        run = seq.setdefault(aeid, [])
-        if run and run[-1][0] == beid:
-            run[-1][1] += 1
-        else:
-            run.append([beid, 1])
-    routes: Dict[Any, List[Any]] = {}
-    for aeid, run in seq.items():
-        r = run[:]
-        if len(r) > 1 and r[0][1] <= 1:                         # leading junction touch
-            r = r[1:]
-        if len(r) > 1 and r[-1][1] <= 1:                        # trailing junction touch
-            r = r[:-1]
-        routes[aeid] = [b for b, _c in r]
-    return recs, routes
+        seen.add((a, v))
+        bp = A.nodes[a]["cand"][v][bpkey]
+        if not bp:
+            reached.add(a)                                  # terminal cell: a is a source (D) / sink (B)
+            continue
+        for (a2, v2) in bp:
+            if v2 is None:
+                hit_none = True                             # severed path
+            else:
+                stack.append((a2, v2))
+    return reached, hit_none
+
+
+def check_reachability(A: nx.DiGraph, which: str = "D"):
+    """Per-table reachability (docs §6c): a table's back-pointers must reconstruct the tree's own
+    source <-> sink reachability. ``which="D"`` -- from every finite cell of every SINK, walking ``bpD``
+    (upstream, branching at each predecessor) must reach **exactly** that sink's ancestor sources.
+    ``which="B"`` -- from every finite cell of every SOURCE, walking ``bpB`` (downstream) must reach
+    exactly that source's descendant sinks. Returns invalid cells as ``(vertex, cell, reason)`` (empty ⇒
+    the table is sound). ``∞``-cost cells are infeasible by construction and are skipped. Works on ``A``
+    (point) or ``line_digraph(A)`` (segment)."""
+    key = "D" if which == "D" else "B"
+    bpkey = "bpD" if which == "D" else "bpB"
+    sources = {n for n in A.nodes if A.in_degree(n) == 0}
+    sinks = {n for n in A.nodes if A.out_degree(n) == 0}
+    if which == "D":
+        ends = sinks
+        expected = {t: (nx.ancestors(A, t) | {t}) & sources for t in sinks}
+    else:
+        ends = sources
+        expected = {s: (nx.descendants(A, s) | {s}) & sinks for s in sources}
+    bad = []
+    for a in ends:
+        want = expected[a]
+        for v, c in A.nodes[a]["cand"].items():
+            if math.isinf(c[key]):                          # infeasible cell -- expected not to reach
+                continue
+            reached, hit_none = _reach(A, (a, v), bpkey)
+            if hit_none:
+                bad.append((a, v, "severed: back-pointer to a None cell"))
+            elif reached != want:
+                bad.append((a, v, f"reached {sorted(map(str, reached))} != required {sorted(map(str, want))}"))
+    return bad
+
+
+def _one_sided(A: nx.DiGraph, ends, key: str, bpkey: str) -> set:
+    """The matching implied by ONE table on its own: seed each end (sinks for the forward table, sources
+    for the backward) at its arg-min cell and follow that table's back-pointers, unioning the walks
+    (docs §6d)."""
+    M: set = set()
+    for e in ends:
+        cand = A.nodes[e]["cand"]
+        finite = [v for v in cand if math.isfinite(cand[v][key])]
+        if not finite:
+            continue
+        vstar = min(finite, key=lambda v: cand[v][key])
+        stack, seen = [(e, vstar)], set()
+        while stack:
+            a, v = stack.pop()
+            if (a, v) in seen:
+                continue
+            seen.add((a, v)); M.add((a, v))
+            for (a2, v2) in A.nodes[a]["cand"][v][bpkey]:
+                if v2 is not None:
+                    stack.append((a2, v2))
+    return M
+
+
+def check_forward_v3(A: nx.DiGraph, B: nx.DiGraph):
+    """Read the FORWARD table on its own (seed each sink at its arg-min ``D``, follow ``bpD``) and test
+    **V3** (the split rule). The forward pass couples **merges** (V2) but is *optimistic at splits*, so
+    its own matching **can violate V3 — by design** (main §4.2); this surfaces exactly where. Returns the
+    V3-violating ``(a, v)`` pairs (empty ⇒ the forward table is also split-consistent on this input).
+    Mirror of :func:`check_backward_v2`."""
+    sinks = [n for n in A.nodes if A.out_degree(n) == 0]
+    return check_rules(_one_sided(A, sinks, "D", "bpD"), A, B)[2]
+
+
+def check_backward_v2(A: nx.DiGraph, B: nx.DiGraph):
+    """Read the BACKWARD table on its own (seed each source at its arg-min ``B``, follow ``bpB``) and test
+    **V2** (the merge rule) — the mirror of :func:`check_forward_v3`. Backward couples **splits** (V3),
+    is optimistic at merges. Returns the V2-violating pairs."""
+    sources = [n for n in A.nodes if A.in_degree(n) == 0]
+    return check_rules(_one_sided(A, sources, "B", "bpB"), A, B)[1]
+
+
+def check_split_exits(A: nx.DiGraph):
+    """The §4.1a invariant, after :func:`forward_v3`: for every split, (i) at least one exit cell
+    survives (non-``forbidden``), (ii) **every** child links to **every** surviving exit, and (iii) no
+    child links to a forbidden cell. Returns the violations ``[(split, exit_or_None, child, why)]`` —
+    empty ⇒ the forward table's split structure is (V3)-consistent. *(Deliberately NOT*
+    :func:`check_forward_v3`: *its independent per-sink decode wrongly flags two different-but-valid
+    surviving options; multiple surviving exits are legitimate, docs §4.1a.)*"""
+    bad = []
+    for s in A.nodes:
+        children = list(A.successors(s))
+        if len(children) < 2:
+            continue
+        pc = A.nodes[s]["cand"]
+        survivors = {v for v, cell in pc.items() if not cell.get("forbidden")}
+        if not survivors:
+            bad.append((s, None, None, "no surviving exit"))
+            continue
+        for ch in children:
+            linked = _links(A, ch, s)
+            for v in survivors - linked:
+                bad.append((s, v, ch, "surviving exit not linked by child"))
+            for v in linked - survivors:
+                bad.append((s, v, ch, "child links a forbidden cell"))
+    return bad
+
+
+if __name__ == "__main__":
+    def dump(A: nx.DiGraph, title: str) -> None:
+        print(f"\n=== {title} ===")
+        for a in A.nodes:
+            ax, ay = _xy(A, a)
+            cand = A.nodes[a]["cand"]
+            cells = ", ".join(f"{v}(E={c['E']:.2f})" for v, c in
+                              sorted(cand.items(), key=lambda kv: kv[1]["E"]))
+            print(f"  A[{a}] ({ax:.0f},{ay:.0f}) -> {len(cand)} cand: {cells}")
+
+    # CHAIN 0->1->2, target chain 0.5 m north; r=20 so the far end just falls out of gate
+    A = digraph({0: (0, 0), 1: (10, 0), 2: (20, 0)}, [(0, 1), (1, 2)])
+    B = digraph({"b0": (0, .5), "b1": (10, .5), "b2": (20, .5)}, [("b0", "b1"), ("b1", "b2")])
+    dump(prepare(A, B, r=20.0), "chain  (r=20)")
+
+    # SPLIT 0->1, 1->2, 1->3
+    A = digraph({0: (0, 0), 1: (10, 0), 2: (20, 6), 3: (20, -6)}, [(0, 1), (1, 2), (1, 3)])
+    B = digraph({"s": (0, .5), "j": (10, .5), "u": (20, 6.5), "d": (20, -5.5)},
+                [("s", "j"), ("j", "u"), ("j", "d")])
+    dump(prepare(A, B, r=20.0), "split  (r=20)")
+
+    # MERGE 0->2, 1->2, 2->3
+    A = digraph({0: (0, 6), 1: (0, -6), 2: (10, 0), 3: (20, 0)}, [(0, 2), (1, 2), (2, 3)])
+    B = digraph({"a": (0, 6.5), "b": (0, -5.5), "m": (10, .5), "o": (20, .5)},
+                [("a", "m"), ("b", "m"), ("m", "o")])
+    dump(prepare(A, B, r=20.0), "merge  (r=20)")
+
+    # PART 3-4: forward D + backward B + table validation (point mode)
+    print("\n########## Parts 3-4 -- forward D & backward B + validation (point mode) ##########")
+    cases = {
+        "chain": (digraph({0: (0, 0), 1: (10, 0), 2: (20, 0)}, [(0, 1), (1, 2)]),
+                  digraph({"b0": (0, .5), "b1": (10, .5), "b2": (20, .5)}, [("b0", "b1"), ("b1", "b2")])),
+        "split": (digraph({0: (0, 0), 1: (10, 0), 2: (20, 6), 3: (20, -6)}, [(0, 1), (1, 2), (1, 3)]),
+                  digraph({"s": (0, .5), "j": (10, .5), "u": (20, 6.5), "d": (20, -5.5)},
+                          [("s", "j"), ("j", "u"), ("j", "d")])),
+        "merge": (digraph({0: (0, 6), 1: (0, -6), 2: (10, 0), 3: (20, 0)}, [(0, 2), (1, 2), (2, 3)]),
+                  digraph({"a": (0, 6.5), "b": (0, -5.5), "m": (10, .5), "o": (20, .5)},
+                          [("a", "m"), ("b", "m"), ("m", "o")])),
+    }
+    for name, (GA, GB) in cases.items():
+        prepare(GA, GB, r=20.0)
+        forward(GA, GB, alpha=1.0, beta=1.0)
+        backward(GA, GB, alpha=1.0, beta=1.0)
+        nD, badD = validate_tables(GA, GB, "D")
+        nB, badB = validate_tables(GA, GB, "B")
+        print(f"\n{name}:  D {nD} cells -> {'VALID' if not badD else badD};  "
+              f"B {nB} cells -> {'VALID' if not badB else badB}")
+        for a in GA.nodes:
+            row = GA.nodes[a]["cand"]
+            bd = min(row.items(), key=lambda kv: kv[1]["D"])
+            bb = min(row.items(), key=lambda kv: kv[1]["B"])
+            seed = min(row.items(), key=lambda kv: kv[1]["D"] + kv[1]["B"] - kv[1]["E"])
+            print(f"   A[{a}]  minD@{bd[0]}={bd[1]['D']:.2f}  minB@{bb[0]}={bb[1]['B']:.2f}  "
+                  f"seed(D+B-E)@{seed[0]}={seed[1]['D']+seed[1]['B']-seed[1]['E']:.2f}")
+
+    # PART 5: extraction -> M, validated as a FINAL matching (point mode), incl. a coverage case
+    print("\n########## Part 5 -- extraction -> M + final V1-V4 validation (point mode) ##########")
+    cov = (digraph({0: (0, 0), 1: (20, 0)}, [(0, 1)]),                     # A: ONE coarse segment
+           digraph({"b0": (0, .5), "b1": (10, .5), "b2": (20, .5)},        # B: TWO fine segments
+                   [("b0", "b1"), ("b1", "b2")]))
+    for name, (GA, GB) in {**cases, "coverage(1:2)": cov}.items():
+        prepare(GA, GB, r=25.0)
+        forward(GA, GB)
+        backward(GA, GB)
+        M, committed = extract(GA, GB)
+        v1, v2, v3 = check_rules(M, GA, GB)
+        v4 = [a for a in GA.nodes if not any(x == a for (x, _w) in M)]     # every source vertex covered?
+        recip = check_reciprocity(GA, committed)                          # §6b cross-table agreement
+        ok = not (v1 or v2 or v3 or v4)
+        am = {a: sorted((str(w) for (x, w) in M if x == a)) for a in GA.nodes}
+        print(f"\n{name}: |M|={len(M)}  valid(V1-V4)={ok}  reciprocity={'AGREE' if not recip else recip}"
+              + ("" if ok else f"   V1={v1} V2={v2} V3={v3} V4={v4}"))
+        for a in GA.nodes:
+            print(f"   A[{a}] -> {am[a]}   (pivot {committed.get(a)})")
+
+    # SEGMENT MODE (Part 2): build the directed line graphs, then the SAME prepare on them.
+    A = digraph({0: (0, 0), 1: (10, 0), 2: (20, 6), 3: (20, -6)}, [(0, 1), (1, 2), (1, 3)])
+    B = digraph({"s": (0, .5), "j": (10, .5), "u": (20, 6.5), "d": (20, -5.5)},
+                [("s", "j"), ("j", "u"), ("j", "d")])
+    LA, LB = line_digraph(A), line_digraph(B)
+    print("\n=== split, SEGMENT mode: L(A) nodes (segment -> midpoint, bearing) ===")
+    for s in LA.nodes:
+        x, y = _xy(LA, s)
+        print(f"  seg {s} -> mid=({x:.1f},{y:.1f}) bearing={LA.nodes[s]['bearing']:.1f}°")
+    prepare(LA, LB, r=20.0, bearing_weight=1.0)
+    print("segment candidate tables  (E = midpoint-dist + 1.0·circ(bearing)):")
+    for s in LA.nodes:
+        cand = LA.nodes[s]["cand"]
+        cells = ", ".join(f"{e}(E={c['E']:.2f})"
+                          for e, c in sorted(cand.items(), key=lambda kv: kv[1]["E"]))
+        print(f"  seg {s} -> {cells}")
+
+    # tree guard: a diamond (reconvergence) must be rejected
+    try:
+        prepare(digraph({0: (0, 0), 1: (1, 1), 2: (1, -1), 3: (2, 0)},
+                        [(0, 1), (0, 2), (1, 3), (2, 3)]), B, r=20.0)
+        print("\nERROR: diamond was NOT rejected")
+    except NotATree as e:
+        print(f"\ndiamond correctly rejected: {e}")

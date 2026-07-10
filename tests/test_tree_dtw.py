@@ -1,231 +1,301 @@
-"""
-Tests for Tree-DTW (network_matching/tree_dtw.py) -- the standalone tree matcher.
+"""Tests for tree-DTW (`tree_dtw`): §6b cross-table agreement (`check_reciprocity`)
+and §6c per-table source<->sink reachability (`check_reachability`)."""
+import math
 
-Exercised on the hand-built synthetic source trees (chain, y_split, merge) from
-network_matching/dag_synthetic.py; reconvergent DAGs (diamond) must be rejected. Small edge lists
-in a plain meter CRS -- no DuckDB, no real data, and no call into the DAG matcher.
-"""
-
-import os
-import sys
-
-import numpy as np
+import networkx as nx
 import pytest
-from shapely.geometry import LineString
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from network_matching.tree_dtw import (  # noqa: E402
-    NotATree, check_tree_rules, match_tree_to_bgraph)
-from network_matching.dag_playground import perturb_dag  # noqa: E402
-from network_matching.dag_synthetic import get_dag  # noqa: E402
-
-TREES = ["chain", "y_split", "merge"]
-RECONVERGENT = ["diamond", "double_diamond"]
-_KW = dict(snap_tolerance_m=0.5, step_meters=2.0)
+from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, forward_v3, backward,
+                                       extract, check_reciprocity, check_reachability, check_forward_v3,
+                                       check_backward_v2, check_rules, check_split_exits, layer_order,
+                                       _advance_anchor)
 
 
-def _run(name, **kw):
-    sc = get_dag(name)
-    return match_tree_to_bgraph(sc["a_edges"], sc["b_edges"], **{**_KW, **kw})
+def make(name):
+    """Fresh (A, B) DiGraphs per call -- prepare/forward/backward mutate them in place."""
+    if name == "chain":
+        return (digraph({0: (0, 0), 1: (10, 0), 2: (20, 0)}, [(0, 1), (1, 2)]),
+                digraph({"b0": (0, .5), "b1": (10, .5), "b2": (20, .5)}, [("b0", "b1"), ("b1", "b2")]))
+    if name == "split":
+        return (digraph({0: (0, 0), 1: (10, 0), 2: (20, 6), 3: (20, -6)}, [(0, 1), (1, 2), (1, 3)]),
+                digraph({"s": (0, .5), "j": (10, .5), "u": (20, 6.5), "d": (20, -5.5)},
+                        [("s", "j"), ("j", "u"), ("j", "d")]))
+    if name == "merge":
+        return (digraph({0: (0, 6), 1: (0, -6), 2: (10, 0), 3: (20, 0)}, [(0, 2), (1, 2), (2, 3)]),
+                digraph({"a": (0, 6.5), "b": (0, -5.5), "m": (10, .5), "o": (20, .5)},
+                        [("a", "m"), ("b", "m"), ("m", "o")]))
+    raise KeyError(name)
 
 
-# --- 1. the matching relation M is a valid warping (V1-V4) by construction ---------------
-@pytest.mark.parametrize("name", TREES)
-@pytest.mark.parametrize("alpha", [1.0, 0.5, 0.3])
-def test_matching_is_v1_v4_clean(name, alpha):
-    res = _run(name, horizontal_weight=alpha, validate=True)
-    r = res["rules"]
-    assert r["ok"], (f"{name} alpha={alpha}: v1={r['v1_cross']} v2={r['v2_predecessor']} "
-                     f"v3={r['v3_successor']} v4={r['v4_uncovered']}")
+def _match(A, B, r=20.0, alpha=1.0, beta=1.0):
+    prepare(A, B, r=r)
+    forward(A, B, alpha=alpha, beta=beta)
+    backward(A, B, alpha=alpha, beta=beta)
+    return extract(A, B)
 
 
-# --- 2. the expected per-A-edge B-edge routes -------------------------------------------
-@pytest.mark.parametrize("name,expect", [
-    ("chain", {"A1": ["B1"], "A2": ["B2"]}),
-    ("y_split", {"A_main": ["B_main"], "A_left": ["B_left"], "A_right": ["B_right"]}),
-    ("merge", {"A_top": ["B_top"], "A_bot": ["B_bot"], "A_out": ["B_out"]}),
-])
-def test_routes_expected(name, expect):
-    assert _run(name)["routes"] == expect
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5)])
+def test_reciprocity_holds_point(name, alpha, beta):
+    """On the extracted matching the two tables agree (docs §6b) -- for every scenario and weighting."""
+    A, B = make(name)
+    M, committed = _match(A, B, alpha=alpha, beta=beta)
+    assert check_reciprocity(A, committed) == [], f"{name} a={alpha} b={beta}: tables disagree"
+    # sanity: the matching itself is a legal warping
+    v1, v2, v3 = check_rules(M, A, B)
+    assert not (v1 or v2 or v3)
 
 
-# --- 3. a reconvergent source (undirected loop) is rejected -- Tree-DTW is tree-only -----
-@pytest.mark.parametrize("name", RECONVERGENT)
-def test_rejects_reconvergence(name):
-    sc = get_dag(name)
-    with pytest.raises(NotATree):
-        match_tree_to_bgraph(sc["a_edges"], sc["b_edges"], **_KW)
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("bw", [0.0, 1.0, 3.0])
+def test_reciprocity_holds_segment(name, bw):
+    """Same agreement in segment mode -- the identical check on the line-graph tables."""
+    A, B = make(name)
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0, bearing_weight=bw)
+    forward(LA, LB); backward(LA, LB)
+    M, committed = extract(LA, LB)
+    assert check_reciprocity(LA, committed) == [], f"{name} bw={bw}: segment tables disagree"
 
 
-# --- 4. M is a relation; every source point is covered (V4); drifts finite --------------
-@pytest.mark.parametrize("name", TREES)
-def test_M_is_a_covering_relation(name):
-    res = _run(name)
-    ga = res["GA"]
-    matched = {a for a, _v in res["M"]}
-    assert matched == set(range(ga.n_vertices))                 # (V4) every point matched
-    assert all(m["run"] and m["drift"] >= 0 for m in res["a_match"])
-    # M agrees with the per-point runs
-    assert res["M"] == {(m["a"], w) for m in res["a_match"] for w in m["run"]}
+def test_reciprocity_has_teeth():
+    """Severing one backward advance pointer at a split must be CAUGHT (negative control)."""
+    A, B = make("split")
+    M, committed = _match(A, B)
+    assert check_reciprocity(A, committed) == []
+    t1 = _advance_anchor(A, 1, committed[1], "bpB")       # vertex 1 is the split; it feeds successors 2, 3
+    A.nodes[1]["cand"][t1]["bpB"] = [(s, w) for (s, w) in A.nodes[1]["cand"][t1]["bpB"] if s != 2]
+    bad = check_reciprocity(A, committed)
+    assert bad and any(edge[:2] == (1, 2) for edge in bad), bad
 
 
-# --- 5. coverage weight: alpha=1 is the default; a 1:N run appears only under alpha<1 ----
-@pytest.mark.parametrize("name", TREES)
-def test_horizontal_weight_one_is_default(name):
-    assert _run(name)["M"] == _run(name, horizontal_weight=1.0)["M"]
+def test_reciprocity_on_coverage_run():
+    """A genuine 1:N COVER run: predecessors connect at the run START, successors at the run END --
+    a fabricated chain (coverage never fires on tiny clean geometry) exercises the anchor walk."""
+    A = nx.DiGraph(); A.add_edge(0, 1)
+    A.nodes[0]["cand"] = {                                  # source 0 covers the run b0 -> b1 -> b2
+        "b0": {"E": 0, "D": 0, "bpD": [],           "B": 2, "bpB": [(0, "b1")]},
+        "b1": {"E": 0, "D": 1, "bpD": [(0, "b0")],  "B": 1, "bpB": [(0, "b2")]},
+        "b2": {"E": 0, "D": 2, "bpD": [(0, "b1")],  "B": 0, "bpB": [(1, "c9")]},   # run end feeds succ 1
+    }
+    A.nodes[1]["cand"] = {"c9": {"E": 0, "D": 9, "bpD": [(0, "b2")], "B": 0, "bpB": []}}
+    committed = {0: "b0", 1: "c9"}                          # 0 pinned at the run START
+    assert _advance_anchor(A, 0, "b0", "bpD") == "b0"       # fwd anchor = run start
+    assert _advance_anchor(A, 0, "b0", "bpB") == "b2"       # bwd anchor = run end
+    assert check_reciprocity(A, committed) == []            # 0->1 threaded at the run-end b2, reciprocally
+    A.nodes[0]["cand"]["b2"]["bpB"] = []                    # sever 0's continuation into 1
+    assert check_reciprocity(A, committed)                  # ... and it is caught
 
 
-def test_check_tree_rules_flags_a_hole():
-    # a hand-built INVALID matching: a covers v0 and v2 but skips the arc-connected v1 in between.
-    res = _run("chain")
-    ga, gb = res["GA"], res["GB"]
-    # find a B 3-chain v0->v1->v2 and an A-point, then omit the middle -> a hole
-    v0 = next(v for v in range(gb.n_vertices) if gb.succ_arcs[v]
-              and gb.succ_arcs[gb.succ_arcs[v][0]])
-    v1 = gb.succ_arcs[v0][0]
-    v2 = gb.succ_arcs[v1][0]
-    a = 0
-    bad = {(a, v0), (a, v2)}                                    # hole at v1
-    rules = check_tree_rules(bad, ga, gb)
-    assert not rules["ok"]                                      # V2/V3 (or V4) must fire
+# ---------------------------------------------------------------------------------------------------
+# §6c per-table reachability: each table's back-pointers reconstruct the tree's source<->sink structure
+# ---------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
+def test_reachability_holds_point(name, alpha, beta):
+    """Every finite sink cell's bpD reaches exactly its ancestor sources, and every finite source cell's
+    bpB reaches exactly its descendant sinks -- for every scenario and weighting (docs §6c)."""
+    A, B = make(name)
+    prepare(A, B, r=20.0); forward(A, B, alpha=alpha, beta=beta); backward(A, B, alpha=alpha, beta=beta)
+    assert check_reachability(A, "D") == [], f"{name} a={alpha} b={beta}: forward reachability broken"
+    assert check_reachability(A, "B") == [], f"{name} a={alpha} b={beta}: backward reachability broken"
 
 
-# --- 6. accepts raw coordinate lists as well as LineStrings -----------------------------
-def test_accepts_coord_lists():
-    a_edges = [("A1", [(0, 0), (15, 0)]), ("A2", [(15, 0), (30, 0)])]
-    b_edges = [("B1", LineString([(0, 0.4), (15, 0.4)])),
-               ("B2", LineString([(15, 0.4), (30, 0.4)]))]
-    res = match_tree_to_bgraph(a_edges, b_edges, validate=True, **_KW)
-    assert res["rules"]["ok"]
-    assert res["routes"] == {"A1": ["B1"], "A2": ["B2"]}
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("bw", [0.0, 3.0])
+def test_reachability_holds_segment(name, bw):
+    """Same reachability soundness on the line-graph tables (segment mode)."""
+    A, B = make(name)
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0, bearing_weight=bw); forward(LA, LB); backward(LA, LB)
+    assert check_reachability(LA, "D") == [] and check_reachability(LA, "B") == []
 
 
-# --- 7. segment-to-segment matching (docs §8) -------------------------------------------
-def test_emission_point_is_default_and_unchanged():
-    # emission="point" is the default and bit-for-bit today's result on every tree.
-    for name in TREES:
-        r_def = _run(name)
-        r_pt = _run(name, emission="point")
-        assert r_def["M"] == r_pt["M"]
-        assert r_def["routes"] == r_pt["routes"]
-        assert "segment_pairs" not in r_pt                      # arc records are segment-mode only
+def test_reachability_has_teeth():
+    """A severed back-pointer (a None cell reference) on a finite endpoint cell must be caught, both
+    directions -- a sink whose bpD can no longer reach its sources / a source whose bpB can't reach its
+    sinks."""
+    A, B = make("merge")                                    # sources 0,1 ; sink 3 ; merge at 2
+    prepare(A, B, r=20.0); forward(A, B); backward(A, B)
+    assert check_reachability(A, "D") == [] and check_reachability(A, "B") == []
+
+    for v, c in A.nodes[3]["cand"].items():                # forward: break a finite sink cell's bpD
+        if not math.isinf(c["D"]) and c["bpD"]:
+            c["bpD"] = [(c["bpD"][0][0], None)]; break
+    assert check_reachability(A, "D"), "severed forward path not caught"
+
+    A2, B2 = make("merge")
+    prepare(A2, B2, r=20.0); forward(A2, B2); backward(A2, B2)
+    for v, c in A2.nodes[0]["cand"].items():               # backward: break a finite source cell's bpB
+        if not math.isinf(c["B"]) and c["bpB"]:
+            c["bpB"] = [(c["bpB"][0][0], None)]; break
+    assert check_reachability(A2, "B"), "severed backward path not caught"
 
 
-# --- 7a. VALIDATION: the segment-state matching relation is a valid warping (V1-V4) ------
-@pytest.mark.parametrize("name", TREES)
-@pytest.mark.parametrize("alpha", [1.0, 0.5, 0.3])
-@pytest.mark.parametrize("lam", [0.0, 3.0])
-def test_segment_matching_is_v1_v4_clean(name, alpha, lam):
-    # the arc-state DP must produce a V1-V4-clean M at every coverage weight / bearing weight.
-    res = _run(name, emission="segment", bearing_weight=lam, horizontal_weight=alpha, validate=True)
-    r = res["rules"]
-    assert r["ok"], (f"{name} alpha={alpha} lam={lam}: v1={r['v1_cross']} v2={r['v2_predecessor']} "
-                     f"v3={r['v3_successor']} v4={r['v4_uncovered']}")
-
-
-@pytest.mark.parametrize("name", TREES)
-def test_segment_M_covers_every_point_and_agrees_with_runs(name):
-    # (V4) every source point matched, and M is exactly the union of the per-point coverage runs.
-    res = _run(name, emission="segment", bearing_weight=3.0)
-    ga = res["GA"]
-    assert {a for a, _v in res["M"]} == set(range(ga.n_vertices))
-    assert res["M"] == {(m["a"], w) for m in res["a_match"] for w in m["run"]}
-
-
-@pytest.mark.parametrize("name", TREES)
-def test_segment_pairs_are_two_real_segments(name):
-    # §8.1/§8.3: every scored state is a pair of real segments, so a heading is always defined
-    # (nothing degenerates to a bearingless point). One record per source segment.
-    res = _run(name, emission="segment", bearing_weight=3.0)
-    pairs = res["segment_pairs"]
-    assert pairs, "segment mode must expose the matched (A-arc, B-arc) pairs"
-    for p in pairs:
-        assert set(p) == {"a_mid", "b_mid", "a_bear", "b_bear", "cost"}
-        assert 0.0 <= p["a_bear"] < 360.0 and 0.0 <= p["b_bear"] < 360.0
-        assert p["cost"] >= 0.0
-
-
-def _narrow_fork(halfwidth, dy=0.0):
-    # a stem that forks into two arms only `halfwidth` apart at the far end, optionally shifted +dy.
-    return [("stem", [(-10, dy), (0, dy)]),
-            ("up", [(0, dy), (20, halfwidth + dy)]),
-            ("dn", [(0, dy), (20, -halfwidth + dy)])]
-
-
-def test_segment_bearing_fixes_narrow_fork_under_shift():
-    # a lateral shift larger than the fork's half-width makes the `dn` arm's far end sit nearer the
-    # target's `up` arm, so point mode collapses onto the wrong (nearer) arm; the segment-to-segment
-    # matcher keeps each arm on the same-heading target arm. (Trees can't reconverge, so this narrow
-    # fork -- not a diamond -- is the tree analog of the DAG diamond test.) Both stay V1-V4 clean.
-    b_edges = _narrow_fork(1.0)
-    a_edges = _narrow_fork(1.0, dy=1.5)
-    want = {"stem": ["stem"], "up": ["up"], "dn": ["dn"]}
-    r_pt = match_tree_to_bgraph(a_edges, b_edges, emission="point", validate=True, **_KW)
-    r_seg = match_tree_to_bgraph(a_edges, b_edges, emission="segment", bearing_weight=3.0,
-                                 validate=True, **_KW)
-    assert r_pt["routes"] != want, "expected point mode to mis-route the shifted narrow fork"
-    assert r_seg["routes"] == want, f"segment should fix it, got {dict(r_seg['routes'])}"
-    assert r_pt["rules"]["ok"] and r_seg["rules"]["ok"]         # both are valid warpings
-    assert set(r_pt) <= set(r_seg)                              # segment output is a superset
-
-
-def test_segment_unknown_emission_raises():
-    sc = get_dag("chain")
+def test_extract_raises_feasibility_not_keyerror():
+    """A merge whose branches can't co-reach within r must raise the feasibility ValueError -- not crash
+    with KeyError on a None back-pointer (the coupled-infeasibility guard in extract)."""
+    A = digraph({0: (26.65, 8.0), 1: (17.66, 17.2), 2: (6.86, 10.31)}, [(0, 1), (2, 1)])   # merge at 1
+    B = digraph({"b0": (19.95, 17.41), "b1": (1.14, 15.82), "b2": (12.09, 1.99),
+                 "b3": (3.67, -1.07), "b4": (5.08, 4.52), "b5": (9.15, -1.29)},
+                [("b0", "b1"), ("b0", "b3"), ("b1", "b2"), ("b1", "b3"), ("b3", "b4"), ("b3", "b5"), ("b4", "b5")])
+    prepare(A, B, r=5.0); forward(A, B); backward(A, B)
     with pytest.raises(ValueError):
-        match_tree_to_bgraph(sc["a_edges"], sc["b_edges"], emission="bogus", **_KW)
+        extract(A, B)
 
 
-# --- 8. coverage weights: alpha (1:N) and beta (N:1), docs §4.1 --------------------------
-@pytest.mark.parametrize("emission", ["point", "segment"])
-def test_vertical_weight_one_is_default(emission):
-    # beta = 1 (default) leaves the matching bit-for-bit unchanged, in both emission modes.
-    for name in TREES:
-        base = _run(name, emission=emission)
-        b1 = _run(name, emission=emission, vertical_weight=1.0)
-        assert base["M"] == b1["M"]
-        assert base["routes"] == b1["routes"]
+def test_coverage_gap_fill_backward_run():
+    """A 1:N run recorded on the BACKWARD cover chain must be materialised (§8.6 gap-fill), not dropped:
+    a chain 0->1->2 at alpha=0.5 where node 2 covers b3->b5 -- b3 is recorded backward. extract() now
+    fills the gap (2, b3) instead of leaving a V2/V3 hole."""
+    import random
+    A = digraph({0: (1.34, 12.48), 1: (16.92, 1.96), 2: (0.9, 18.8)}, [(0, 1), (1, 2)])
+    r = random.Random(127 + 90001)
+    Bn = {f"b{i}": (round(r.uniform(-3, 33), 2), round(r.uniform(-3, 23), 2)) for i in range(7)}
+    B = digraph(Bn, [("b0", "b1"), ("b1", "b2"), ("b1", "b3"), ("b3", "b5"), ("b4", "b6")])
+    prepare(A, B, r=40.0); forward(A, B, alpha=0.5, beta=1.0); backward(A, B, alpha=0.5, beta=1.0)
+    M, _ = extract(A, B)
+    v1, v2, v3 = check_rules(M, A, B)
+    assert not (v1 or v2 or v3), f"dropped-coverage gap not filled: V2={v2} V3={v3}"
+    assert (2, "b3") in M                                  # the previously-dropped cell is now covered
 
 
-@pytest.mark.parametrize("emission", ["point", "segment"])
-@pytest.mark.parametrize("name", TREES)
-@pytest.mark.parametrize("beta", [1.0, 0.5, 0.2])
-def test_beta_matching_is_v1_v4_clean(emission, name, beta):
-    # the N:1 coverage weight must keep M a valid warping across (0, 1] in both modes.
-    res = _run(name, emission=emission, vertical_weight=beta, validate=True)
-    r = res["rules"]
-    assert r["ok"], (f"{name} {emission} beta={beta}: v1={r['v1_cross']} v2={r['v2_predecessor']} "
-                     f"v3={r['v3_successor']} v4={r['v4_uncovered']}")
+def test_argmin_tie_break_deterministic():
+    """§4b: advance-argmin ties are broken by a fixed B-vertex order -- the smaller-border cell wins,
+    and the forward/backward tables are invariant to B's dict/insertion order."""
+    A = digraph({0: (0, 0), 1: (0, 0), 2: (5, 0)}, [(0, 2), (1, 2)])          # merge at 2, preds coincident
+    B = digraph({"b0": (0, 0), "b1": (0, 0), "m": (5, 0)}, [("b0", "m"), ("b1", "m")])   # b0,b1 tie as pred cells
+    prepare(A, B, r=10.0); forward(A, B); backward(A, B)
+    assert all(x == "b0" for (_p, x) in A.nodes[2]["cand"]["m"]["bpD"])       # smaller-border cell (b0) wins
+
+    A2 = digraph({0: (0, 0), 1: (0, 0), 2: (5, 0)}, [(0, 2), (1, 2)])
+    B2 = digraph({"m": (5, 0), "b1": (0, 0), "b0": (0, 0)}, [("b0", "m"), ("b1", "m")])   # reversed insertion
+    prepare(A2, B2, r=10.0); forward(A2, B2); backward(A2, B2)
+    for a in A.nodes:
+        for v in A.nodes[a]["cand"]:
+            assert A.nodes[a]["cand"][v]["bpD"] == A2.nodes[a]["cand"][v]["bpD"]
+            assert A.nodes[a]["cand"][v]["bpB"] == A2.nodes[a]["cand"][v]["bpB"]
 
 
-def _max_b_stack(res):
-    # the most source points pinned to a single target vertex (the depth of an N:1 stack).
-    from collections import Counter
-    return max(Counter(m["anchor"] for m in res["a_match"]).values())
+def test_forward_v3_backward_v2_coupling():
+    """§6d: the forward table couples merges (V2), not splits -- read alone it CAN violate V3 (and the
+    backward table mirror-violates V2). Clean α=β=1 inputs don't; a weighted split does."""
+    A = digraph({0: (0, 0), 1: (10, 0), 2: (20, 0)}, [(0, 1), (1, 2)])                # chain, no split/merge
+    B = digraph({"b0": (0, .5), "b1": (10, .5), "b2": (20, .5)}, [("b0", "b1"), ("b1", "b2")])
+    prepare(A, B, r=20.0); forward(A, B); backward(A, B)
+    assert check_forward_v3(A, B) == [] and check_backward_v2(A, B) == []
+
+    A2 = digraph({0: (6.73, 18.65), 1: (28.37, 0.46), 2: (25.41, 14.29)}, [(1, 0), (1, 2)])   # split at 1
+    B2 = digraph({"b0": (10.71, 2.92), "b1": (30.12, 17.11), "b2": (-1.67, 12.48)}, [("b1", "b2")])
+    prepare(A2, B2, r=40.0); forward(A2, B2, alpha=0.2, beta=0.2); backward(A2, B2, alpha=0.2, beta=0.2)
+    assert check_forward_v3(A2, B2)                        # split vertex 1 lands on two cells -> V3 violation
 
 
-@pytest.mark.parametrize("bearing_weight", [0.0, 1.0, 3.0, 5.0])
-@pytest.mark.parametrize("rotate", [0, 15, 25, 35])
-def test_segment_stays_valid_under_perturbation(bearing_weight, rotate):
-    # regression: segment mode pins A-VERTICES (not arcs), so a split's arms always leave the one
-    # committed B-vertex -- even when a strong bearing pull + rotation would tempt one arm onto a
-    # non-adjacent B-edge. Previously the per-arc pin produced a V1-V4-INVALID warping here.
-    a_edges = [("stem", [(0, 0), (10, 0)]), ("up", [(10, 0), (20, 6)]), ("down", [(10, 0), (20, -6)])]
-    b_edges = [("stem", [(0, 0.5), (10, 0.5)]), ("up", [(10, 0.5), (20, 6.5)]),
-               ("down", [(10, 0.5), (20, -5.5)])]
-    A = perturb_dag(a_edges, shift=5, rotate=rotate, noise=0.1, seed=10)
-    res = match_tree_to_bgraph(A, b_edges, emission="segment", bearing_weight=bearing_weight,
-                               snap_tolerance_m=0.5, step_meters=1.5, validate=True)
-    r = res["rules"]
-    assert r["ok"], (f"rot={rotate} bw={bearing_weight}: v1={r['v1_cross']} v2={r['v2_predecessor']} "
-                     f"v3={r['v3_successor']} v4={r['v4_uncovered']}")
+# ---------------------------------------------------------------------------------------------------
+# §4.0 longest-path layer order + §4.1a forward V3 coupling (forbid-and-rebuild) -- check_split_exits
+# ---------------------------------------------------------------------------------------------------
+def _weighted_split():
+    """The §6d case where the PLAIN forward table violates V3 at α=β=0.2 (split at vertex 1)."""
+    A = digraph({0: (6.73, 18.65), 1: (28.37, 0.46), 2: (25.41, 14.29)}, [(1, 0), (1, 2)])
+    B = digraph({"b0": (10.71, 2.92), "b1": (30.12, 17.11), "b2": (-1.67, 12.48)}, [("b1", "b2")])
+    return A, B
 
 
-def test_beta_induces_n_to_1_coverage():
-    # a source sampled finer than the target: beta < 1 makes several source points share one target
-    # point (an N:1 stack), which beta = 1 (full per-point pricing) avoids.
-    a_edges = [("A", [(x, 0.0) for x in np.linspace(0, 20, 21)])]   # dense source
-    b_edges = [("B", [(0, 0.3), (20, 0.3)])]                        # coarse target
-    hi = match_tree_to_bgraph(a_edges, b_edges, vertical_weight=1.0, validate=True, **_KW)
-    lo = match_tree_to_bgraph(a_edges, b_edges, vertical_weight=0.1, validate=True, **_KW)
-    assert hi["rules"]["ok"] and lo["rules"]["ok"]                  # both valid warpings
-    assert _max_b_stack(lo) > _max_b_stack(hi)                      # low beta stacks more (N:1)
+def test_layer_order_longest_path_layering():
+    """§4.0: L(v) = longest source->v depth; the order is topological; a split's children share one
+    layer ahead of all their successors; a merge lands after ALL its branches (the doc's example)."""
+    A = nx.DiGraph()
+    A.add_edges_from([("S", "a1"), ("a1", "J"), ("J", "b1"), ("J", "b2"), ("b2", "c1"),
+                      ("b1", "M"), ("c1", "M"), ("M", "d1"), ("d1", "T")])
+    order, L = layer_order(A)
+    assert L == {"S": 0, "a1": 1, "J": 2, "b1": 3, "b2": 3, "c1": 4, "M": 5, "d1": 6, "T": 7}
+    pos = {v: i for i, v in enumerate(order)}
+    assert all(pos[u] < pos[v] for u, v in A.edges)             # a valid topological order
+    assert L["b1"] == L["b2"]                                   # the split's children share a layer
+    assert max(pos["b1"], pos["b2"]) < min(pos["c1"], pos["M"])  # ... ahead of every successor
+
+
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
+def test_split_exits_invariant_point(name, alpha, beta):
+    """§4.1a: after forward_v3, every surviving split exit is linked by ALL children and the survivor
+    set is non-empty -- for every scenario and weighting."""
+    A, B = make(name)
+    prepare(A, B, r=20.0)
+    forward_v3(A, B, alpha=alpha, beta=beta)
+    assert check_split_exits(A) == [], f"{name} a={alpha} b={beta}"
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.2, 0.2)])
+def test_split_exits_invariant_segment(alpha, beta):
+    """The identical algorithm on the line-graph (segment mode) satisfies the same invariant."""
+    A, B = make("split")
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0)
+    forward_v3(LA, LB, alpha=alpha, beta=beta)
+    assert check_split_exits(LA) == []
+
+
+def test_split_exits_has_teeth_and_forward_v3_closes():
+    """Negative control + the point of §4.1a: the PLAIN forward table violates the invariant (nothing
+    forbidden, children link only their own winners), and forward_v3 closes it -- here leaving TWO
+    surviving exits, both linked by both children (multiple options are legitimate, docs §4.1a)."""
+    A, B = _weighted_split()
+    prepare(A, B, r=40.0); forward(A, B, alpha=0.2, beta=0.2)
+    assert check_split_exits(A), "plain forward should violate the §4.1a invariant here"
+
+    A2, B2 = _weighted_split()
+    prepare(A2, B2, r=40.0); forward_v3(A2, B2, alpha=0.2, beta=0.2)
+    assert check_split_exits(A2) == []
+    surv = {v for v, c in A2.nodes[1]["cand"].items() if not c["forbidden"]}
+    assert surv == {"b0", "b1"}                                 # multi-exit fixed point, all shared
+
+
+def test_forward_v3_equals_forward_without_splits():
+    """With no split in A, forward_v3 forbids nothing and its table is bit-identical to forward's
+    (same recurrence, different-but-equivalent topological order)."""
+    for name in ["chain", "merge"]:
+        A, B = make(name);   prepare(A, B, r=20.0);   forward(A, B)
+        A2, B2 = make(name); prepare(A2, B2, r=20.0); forward_v3(A2, B2)
+        for a in A.nodes:
+            for v in A.nodes[a]["cand"]:
+                assert A.nodes[a]["cand"][v]["D"] == A2.nodes[a]["cand"][v]["D"]
+                assert A.nodes[a]["cand"][v]["bpD"] == A2.nodes[a]["cand"][v]["bpD"]
+                assert not A2.nodes[a]["cand"][v]["forbidden"]
+
+
+def test_forward_v3_raises_when_no_shared_exit():
+    """§4.1a feasibility: children forced onto disjoint target chains leave the split with no exit
+    every child can use -> ValueError (increase match_radius_m), never a silently-broken table."""
+    A = digraph({"J": (0, 0), "b1": (5, 1), "b2": (5, -1)}, [("J", "b1"), ("J", "b2")])
+    B = digraph({"p0": (0, 1), "p1": (5, 1), "q0": (0, -1), "q1": (5, -1)},
+                [("p0", "p1"), ("q0", "q1")])
+    prepare(A, B, r=1.5)
+    with pytest.raises(ValueError, match="no surviving V3 exit"):
+        forward_v3(A, B)
+
+
+def test_forward_v3_requires_subdivision():
+    """§4.0: a split whose children span layers (one child is also fed by a deeper branch) has no
+    grouped sibling order -- rejected with the add-an-interior-point message."""
+    A = digraph({"s": (0, 0), "c1": (1, 1), "c2": (5, -1),
+                 "q0": (1, -3), "q1": (2, -3), "q2": (3, -3), "q3": (4, -3)},
+                [("s", "c1"), ("s", "c2"), ("q0", "q1"), ("q1", "q2"), ("q2", "q3"), ("q3", "c2")])
+    B = digraph({"x": (0, 0)}, [])
+    prepare(A, B, r=100.0)
+    with pytest.raises(ValueError, match="not subdivided"):
+        forward_v3(A, B)
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
+def test_forward_v3_pipeline_extracts_valid_matching(alpha, beta):
+    """forward_v3 composes with the unchanged backward + extract: the committed matching is a legal
+    warping and the split commits to a surviving (non-forbidden) cell."""
+    A, B = make("split")
+    prepare(A, B, r=20.0)
+    forward_v3(A, B, alpha=alpha, beta=beta)
+    backward(A, B, alpha=alpha, beta=beta)
+    M, committed = extract(A, B)
+    v1, v2, v3 = check_rules(M, A, B)
+    assert not (v1 or v2 or v3)
+    assert not A.nodes[1]["cand"][committed[1]]["forbidden"]    # split pinned on a surviving exit
