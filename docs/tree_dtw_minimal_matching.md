@@ -306,6 +306,15 @@ first-wins, so `M` depends only on (anchor, rules) — not on exploration order.
 
 ---
 
+## Junction-join extraction — moved to its own spec
+
+The forward-only exact extraction (recursive table join over the split hierarchy; every table a
+sink-type table; the split coupling enforced by the join itself) is fully specified in
+**`docs/junction_join_extraction.md`** — algorithm, cost identities, worked example with real
+numbers, the open merge-bookkeeping item, and the verification plan.
+
+---
+
 ## Appendices — moved into the algorithm spec
 
 Two pieces designed here have been promoted into `docs/tree_dtw_matching.md` as part of the core
