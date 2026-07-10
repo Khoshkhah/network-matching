@@ -1,11 +1,11 @@
-"""Tests for tree-DTW (`tree_dtw`): §6b cross-table agreement (`check_reciprocity`)
+"""Tests for DAG-DTW (`dag_dtw`): §6b cross-table agreement (`check_reciprocity`)
 and §6c per-table source<->sink reachability (`check_reachability`)."""
 import math
 
 import networkx as nx
 import pytest
 
-from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward, match_tree, NotATree,
+from network_matching.dag_dtw import (digraph, line_digraph, prepare, forward, backward, match_dag, NotADAG,
                                        extract, extract_join, extract_cell, extract_two_table,
                                        check_reciprocity, check_reachability, check_forward_v3,
                                        check_backward_v2, check_rules, check_split_exits,
@@ -440,7 +440,7 @@ def test_extract_raises_when_infeasible_forward_only():
 
 
 # ---------------------------------------------------------------------------------------------------
-# The junction-join extraction (docs/tree_dtw_matching.md §10) + cross-validation of both engines
+# The junction-join extraction (docs/dag_dtw_matching.md §10) + cross-validation of both engines
 # ---------------------------------------------------------------------------------------------------
 IN_DOMAIN = [(1.0, 1.0), (0.5, 1.0), (0.3, 1.5), (1.0, 2.0)]
 
@@ -526,7 +526,7 @@ def test_extract_join_segment_mode(alpha, beta):
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 2.0)])
 def test_extract_join_exact_on_merge_shape(alpha, beta):
     """The consumed-once merge arithmetic: on the canonical U->x->m<-z<-V shape the join equals the
-    brute-force optimum over all sink-label combinations (docs/tree_dtw_matching.md §10 §5)."""
+    brute-force optimum over all sink-label combinations (docs/dag_dtw_matching.md §10 §5)."""
     import itertools
     A, B = _merge_shape()
     prepare(A, B, r=40.0)
@@ -577,7 +577,7 @@ def test_extractions_cross_validate(alpha, beta):
             if cj > cb + 1e-6:
                 # the join is exact over the STORED-HISTORY family (vertex resolution); branching
                 # can only beat it through intra-vertex run alternatives -- so a divergence must
-                # involve coverage (docs/tree_dtw_matching.md §10, cell-resolution scope)
+                # involve coverage (docs/dag_dtw_matching.md §10, cell-resolution scope)
                 runs = any(len({v for a2, v in M if a2 == a}) > 1
                            for M in (Mj, Mb) for a in {x for x, _ in M})
                 assert runs, (f"seed {seed}: join ({cj:.3f}) > branching ({cb:.3f}) "
@@ -585,7 +585,7 @@ def test_extractions_cross_validate(alpha, beta):
 
 
 # ---------------------------------------------------------------------------------------------------
-# The cell-level join (docs/tree_dtw_matching.md §10.2) + the three-way cross-validation
+# The cell-level join (docs/dag_dtw_matching.md §10.2) + the three-way cross-validation
 # ---------------------------------------------------------------------------------------------------
 def _full_space_brute(A, B, alpha, beta, run_cap=3, cap=200_000):
     """Ground truth over the FULL space: every (entry, run) combination per vertex, judged by
@@ -751,21 +751,21 @@ def test_extract_cell_segment_equals_full_space_brute(alpha, beta):
 
 
 @pytest.mark.parametrize("engine", ["cell", "branch", "join", "all"])
-def test_match_tree_pipeline_wrapper(engine):
+def test_match_dag_pipeline_wrapper(engine):
     """The one-call pipeline entry: prepare -> forward -> extraction, every engine, both modes."""
     A, B = make("split")
-    M, com = match_tree(A, B, r=20.0, engine=engine)
+    M, com = match_dag(A, B, r=20.0, engine=engine)
     assert not any(check_rules(M, A, B))
     assert set(com) == set(A.nodes)
 
     A2, B2 = make("split")
-    M_seg, com_seg = match_tree(A2, B2, r=20.0, mode="segment", engine=engine, bearing_weight=2.0)
+    M_seg, com_seg = match_dag(A2, B2, r=20.0, mode="segment", engine=engine, bearing_weight=2.0)
     assert all(isinstance(a, tuple) and isinstance(v, tuple) for a, v in M_seg)   # arcs = edge tuples
     assert len(com_seg) == A2.number_of_edges()
 
 
 # ---------------------------------------------------------------------------------------------------
-# DAG sources (allow_dag): the cell engine is exact on subdivided reconvergent DAGs (spec §8.6)
+# DAG sources (accepted by default): the cell engine is exact on subdivided reconvergent DAGs (§10.4)
 # ---------------------------------------------------------------------------------------------------
 def _diamond_case(shift=0.4, jitter=0.0, seed=0):
     """Subdivided diamond: S→s1→J→{x,z}→m→t1→T (J splits, m reconverges) over a congruent
@@ -782,20 +782,17 @@ def _diamond_case(shift=0.4, jitter=0.0, seed=0):
     return digraph(An, Ae), digraph(Bn, [(a + "'", b + "'") for a, b in Ae])
 
 
-def test_allow_dag_gate():
-    """A reconvergent source is rejected by default (NotATree, with the allow_dag hint) and
-    accepted with allow_dag=True; a directed cycle stays rejected either way."""
+def test_dag_source_gate():
+    """A reconvergent (diamond) source is accepted by DEFAULT -- DAG-DTW's source is any subdivided
+    DAG; only a directed cycle is rejected (NotADAG)."""
     A, B = _diamond_case()
-    with pytest.raises(NotATree):
-        prepare(A, B, r=6.0)
-    A2, B2 = _diamond_case()
-    prepare(A2, B2, r=6.0, allow_dag=True)                      # no raise
+    prepare(A, B, r=6.0)                                        # diamond: no raise
     C = nx.DiGraph()
     for n, (x, y) in {0: (0, 0), 1: (1, 0)}.items():
         C.add_node(n, x=x, y=y)
     C.add_edge(0, 1); C.add_edge(1, 0)                          # directed cycle
-    with pytest.raises(NotATree):
-        prepare(C, B2, r=6.0, allow_dag=True)
+    with pytest.raises(NotADAG):
+        prepare(C, B, r=6.0)
 
 
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
@@ -804,7 +801,7 @@ def test_extract_cell_exact_on_dag_diamonds(alpha, beta):
     sources -- the tree property is not needed by the cell engine."""
     for seed in range(6):
         A, B = _diamond_case(jitter=1.2, seed=seed)
-        prepare(A, B, r=4.0, allow_dag=True)
+        prepare(A, B, r=4.0)
         forward(A, B, alpha=alpha, beta=beta)
         M, com = extract_cell(A, B, alpha=alpha, beta=beta, run_cap=1)
         assert not any(check_rules(M, A, B))
@@ -851,7 +848,7 @@ def test_extract_cell_exact_on_random_reconvergent_dags():
         for i in range(3):
             B.add_edge(vs[i], vs[i + 1])
         try:
-            prepare(A, B, r=20.0, allow_dag=True)
+            prepare(A, B, r=20.0)
             forward(A, B, 0.5, 1.0)
         except ValueError:
             continue
@@ -863,17 +860,57 @@ def test_extract_cell_exact_on_random_reconvergent_dags():
     assert ran >= 15, f"only {ran} reconvergent cases exercised -- generator drifted"
 
 
-def test_match_tree_dag_pipeline():
+def test_match_dag_dag_pipeline():
     """The one-call pipeline on a DAG source: point mode (cell default), engine='all', and segment
-    mode (the line graph of a diamond is itself reconvergent -- allow_dag flows through)."""
+    mode (the line graph of a diamond is itself reconvergent -- reconvergent line graphs accepted natively)."""
     A, B = _diamond_case()
-    M, com = match_tree(A, B, r=6.0, allow_dag=True)
+    M, com = match_dag(A, B, r=6.0)
     assert not any(check_rules(M, A, B))
     assert set(com) == set(A.nodes)
     A2, B2 = _diamond_case()
-    M2, _ = match_tree(A2, B2, r=6.0, allow_dag=True, engine="all")
+    M2, _ = match_dag(A2, B2, r=6.0, engine="all")
     assert not any(check_rules(M2, A2, B2))
     A3, B3 = _diamond_case()
-    Ms, cs = match_tree(A3, B3, r=6.0, allow_dag=True, mode="segment", bearing_weight=2.0)
+    Ms, cs = match_dag(A3, B3, r=6.0, mode="segment", bearing_weight=2.0)
     assert all(isinstance(a, tuple) and isinstance(v, tuple) for a, v in Ms)
     assert len(cs) == A3.number_of_edges()
+
+
+def test_match_dag_duckdb_pipeline(tmp_path):
+    """Mode-3 I/O parity: the DuckDBMapMatcher inputs (lon/lat WKT CSVs, utm_srid projection) feed
+    match_dag directly -- conversion to networkx happens inside -- and the outputs are the
+    Mode-1-style (long, summary) DataFrames. Source is a reconvergent DAG (diamond)."""
+    import csv
+    import math
+    from network_matching import DuckDBMapMatcher
+    LON0, LAT0 = 18.06, 59.33
+    mx = 1.0 / (111320 * math.cos(math.radians(LAT0)))
+    my = 1.0 / 111320.0
+
+    def ls(pts):
+        return "LINESTRING (" + ", ".join(f"{LON0 + x * mx:.8f} {LAT0 + y * my:.8f}"
+                                          for x, y in pts) + ")"
+
+    A_rows = [("a_stem", ls([(0, 0), (30, 0)])), ("a_up", ls([(30, 0), (55, 12)])),
+              ("a_dn", ls([(30, 0), (55, -12)])), ("a_up2", ls([(55, 12), (80, 0)])),
+              ("a_dn2", ls([(55, -12), (80, 0)])), ("a_out", ls([(80, 0), (110, 0)]))]
+    B_rows = [("b_stem", ls([(0, 3), (28, 3)])), ("b_up", ls([(28, 3), (55, 15), (80, 3)])),
+              ("b_dn", ls([(28, 3), (55, -9), (80, 3)])), ("b_out", ls([(80, 3), (110, 3)]))]
+    for name, rows in (("a.csv", A_rows), ("b.csv", B_rows)):
+        with open(tmp_path / name, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["edge_id", "geometry"])
+            w.writerows(rows)
+    m = DuckDBMapMatcher.from_wkt_csv(str(tmp_path / "a.csv"), str(tmp_path / "b.csv"),
+                                      id_a="edge_id", id_b="edge_id", utm_srid=3006,
+                                      max_distance=15, id_cast=None)
+    dag_long, dag_summary = m.match_dag(alpha=0.5, beta=1.5, engine="all", step_meters=5.0)
+    assert set(dag_summary.columns) == {"source_id", "dest_ids", "n_dest", "n_pairs",
+                                        "avg_dist_m", "match_type"}
+    assert set(dag_long.columns) == {"source_id", "dest_id", "seq", "n_pairs", "avg_dist_m"}
+    assert set(dag_summary.source_id) == {r[0] for r in A_rows}          # every A-edge matched
+    by = dict(zip(dag_summary.source_id, dag_summary.dest_ids))
+    assert by["a_stem"] == "b_stem" and by["a_out"] == "b_out"
+    assert by["a_up"] == by["a_up2"] == "b_up"                           # different segmentation
+    assert by["a_dn"] == by["a_dn2"] == "b_dn"
+    assert (dag_summary.avg_dist_m < 6.0).all()                          # ~3 m shift + geometry

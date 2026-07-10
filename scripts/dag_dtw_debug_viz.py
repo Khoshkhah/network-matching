@@ -1,4 +1,4 @@
-"""Tree/DAG-DTW debugging visualization (Mode 3) — standalone HTML written to output/.
+"""DAG-DTW debugging visualization (Mode 3) — standalone HTML written to output/.
 
 Runs the full pipeline (prepare -> forward -> all three extraction engines) on a synthetic case and
 renders two linked views:
@@ -15,10 +15,10 @@ Also prints a text diagnostic: per-vertex cell counts, the engine comparison tab
 cross-validation verdict (C(cell) <= both -- an exactness invariant, docs §10.3).
 
 Run:
-    python scripts/tree_dtw_debug_viz.py --case y_split
-    python scripts/tree_dtw_debug_viz.py --case diamond --dag           # reconvergent source
-    python scripts/tree_dtw_debug_viz.py --case dense_chain --alpha .5  # coverage regime
-    python scripts/tree_dtw_debug_viz.py --case wsplit --shift 2        # forbidden cells visible
+    python scripts/dag_dtw_debug_viz.py --case y_split
+    python scripts/dag_dtw_debug_viz.py --case diamond                 # reconvergent source
+    python scripts/dag_dtw_debug_viz.py --case dense_chain --alpha .5  # coverage regime
+    python scripts/dag_dtw_debug_viz.py --case wsplit --shift 2        # forbidden cells visible
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ import networkx as nx
 import numpy as np
 import plotly.graph_objects as go
 
-from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, extract,
+from network_matching.dag_dtw import (digraph, line_digraph, prepare, forward, extract,
                                        extract_join, extract_cell, check_rules, _cost_of,
                                        _cell_reachable, _b_order, INF)
 
@@ -215,13 +215,8 @@ def main():
     ap.add_argument("--r", type=float, default=30.0)
     ap.add_argument("--mode", default="point", choices=["point", "segment"])
     ap.add_argument("--shift", type=float, default=0.0, help="shift the source north by this many meters")
-    ap.add_argument("--dag", action="store_true", help="allow a reconvergent (DAG) source")
-    ap.add_argument("--out", default=None, help="output HTML (default output/tree_dtw_debug_<case>.html)")
+    ap.add_argument("--out", default=None, help="output HTML (default output/dag_dtw_debug_<case>.html)")
     args = ap.parse_args()
-    if args.case == "diamond" and not args.dag:
-        args.dag = True
-        print("(diamond is reconvergent -- enabling --dag)")
-
     (an, ae), (bn, be) = CASES[args.case]
     A0 = digraph({k: (x, y + args.shift) for k, (x, y) in an.items()}, ae)
     B0 = digraph(bn, be)
@@ -229,12 +224,11 @@ def main():
         src, tgt = line_digraph(A0), line_digraph(B0)
     else:
         src, tgt = A0, B0
-    prepare(src, tgt, r=args.r, allow_dag=args.dag)
+    prepare(src, tgt, r=args.r)
     forward(src, tgt, alpha=args.alpha, beta=args.beta)
     seen = _cell_reachable(src, tgt)
 
-    print(f"case={args.case}  mode={args.mode}  alpha={args.alpha} beta={args.beta}  r={args.r}"
-          f"{'  [DAG]' if args.dag else ''}")
+    print(f"case={args.case}  mode={args.mode}  alpha={args.alpha} beta={args.beta}  r={args.r}")
     print(f"{'vertex':>14} {'cand':>5} {'alive':>6} {'forbidden':>10} {'removed':>8} {'D=inf':>6}")
     for a in nx.topological_sort(src):
         cand = src.nodes[a]["cand"]
@@ -265,11 +259,11 @@ def main():
 
     fig1 = correspondence_figure(A0, B0, src, tgt, engines)
     fig2 = cell_table_figure(src, tgt, seen, engines["cell join"][0])
-    out = args.out or os.path.join("output", f"tree_dtw_debug_{args.case}"
+    out = args.out or os.path.join("output", f"dag_dtw_debug_{args.case}"
                                              f"{'_seg' if args.mode == 'segment' else ''}.html")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w") as f:
-        f.write("<html><head><meta charset='utf-8'><title>Tree/DAG-DTW debug — "
+        f.write("<html><head><meta charset='utf-8'><title>DAG-DTW debug — "
                 f"{args.case}</title></head><body>\n")
         f.write(fig1.to_html(full_html=False, include_plotlyjs="inline"))
         f.write(fig2.to_html(full_html=False, include_plotlyjs=False))

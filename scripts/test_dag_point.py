@@ -1,4 +1,4 @@
-"""Thorough POINT-mode test of the tree-DTW matcher (network_matching/tree_dtw.py).
+"""Thorough POINT-mode test of the tree-DTW matcher (network_matching/dag_dtw.py).
 
 Sweeps structure (chain / y-split / merge / deep tree) x density (A vs B sampling) x lateral shift x
 noise x (alpha, beta), runs the full pipeline (prepare -> forward -> extract), and validates
@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import networkx as nx
 
-from network_matching.tree_dtw import prepare, forward, extract, extract_join, extract_cell, check_rules, _cost_of
+from network_matching.dag_dtw import prepare, forward, extract, extract_join, extract_cell, check_rules, _cost_of
 
 
 def densify(waypoints, step):

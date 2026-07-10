@@ -1,8 +1,8 @@
-"""Tree-DTW -- exact matcher of a directed source tree OR subdivided DAG (allow_dag) to a
+"""DAG-DTW -- exact matcher of a directed source DAG (a tree is the loop-free special case) to a
 directed network, on networkx
-(spec: ``docs/tree_dtw_matching.md``; the implementation is documented there as Parts 1-6).
+(spec: ``docs/dag_dtw_matching.md``; the implementation is documented there as Parts 1-6).
 
-Both the source tree ``A`` and the target network ``B`` are plain ``networkx.DiGraph`` objects:
+Both the source DAG ``A`` and the target network ``B`` are plain ``networkx.DiGraph`` objects:
 a **vertex** carries float coordinates ``x``/``y``; an **edge** is a directed segment; a **junction**
 is just a vertex (split = out-degree > 1, merge = in-degree > 1). No road ids, no coincident vertices,
 no stitches.
@@ -27,9 +27,8 @@ except Exception:                                               # pragma: no cov
 INF = float("inf")
 
 
-class NotATree(ValueError):
-    """Raised when the source graph ``A`` has a directed cycle, or a reconvergence (undirected
-    cycle) without ``allow_dag=True``."""
+class NotADAG(ValueError):
+    """Raised when the source graph ``A`` has a directed cycle -- the source must be a DAG."""
 
 
 # ---------------------------------------------------------------------------------------
@@ -51,12 +50,10 @@ def _emit(ax: float, ay: float, abear, bx: float, by: float, bbear, lam: float) 
     return e
 
 
-def _validate(A: nx.DiGraph, B: nx.DiGraph, allow_dag: bool = False) -> None:
-    """Both are DiGraphs, every node has ``x``/``y``, and ``A`` is acyclic. By default ``A`` must be
-    a tree (a polytree: undirected graph a forest -- no reconvergence); with ``allow_dag=True`` any
-    **subdivided DAG** is accepted (diamonds/reconvergences allowed, still no directed cycle) -- on
-    DAG sources only :func:`extract_cell` carries the exactness claim
-    (docs/tree_dtw_matching.md §10.4)."""
+def _validate(A: nx.DiGraph, B: nx.DiGraph) -> None:
+    """Both are DiGraphs, every node has ``x``/``y``, and ``A`` is a **DAG** (directed-acyclic;
+    reconvergences/diamonds are fine -- a tree is the special case). On reconvergent sources only
+    :func:`extract_cell` carries the exactness claim (docs/dag_dtw_matching.md §10.4)."""
     for name, G in (("A", A), ("B", B)):
         if not isinstance(G, nx.DiGraph):
             raise TypeError(f"{name} must be a networkx.DiGraph, got {type(G).__name__}")
@@ -64,17 +61,14 @@ def _validate(A: nx.DiGraph, B: nx.DiGraph, allow_dag: bool = False) -> None:
             if "x" not in G.nodes[n] or "y" not in G.nodes[n]:
                 raise ValueError(f"{name} node {n!r} is missing 'x'/'y' coordinates")
     if A.number_of_nodes() and not nx.is_directed_acyclic_graph(A):
-        raise NotATree("source A has a directed cycle -- not a DAG")
-    if not allow_dag and not nx.is_forest(A.to_undirected()):
-        raise NotATree("source A has an undirected cycle (a reconvergence/diamond) -- not a tree; "
-                       "pass allow_dag=True to accept a subdivided DAG (cell engine)")
+        raise NotADAG("source A has a directed cycle -- not a DAG")
 
 
 # ---------------------------------------------------------------------------------------
 # Part 1 -- radius-gated candidates, stored on the A node
 # ---------------------------------------------------------------------------------------
 def prepare(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, k_min: int = 1,
-            bearing_weight: float = 1.0, allow_dag: bool = False) -> nx.DiGraph:
+            bearing_weight: float = 1.0) -> nx.DiGraph:
     """Validate ``A``, ``B`` and populate each A-vertex's radius-gated candidate table (docs §1-§2).
 
     For every A-vertex ``a`` writes::
@@ -92,7 +86,7 @@ def prepare(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, k_min: int = 1,
     ``D``/``bpD``/``B``/``bpB`` are placeholders for Parts 3-4. Works unchanged on ``A, B`` (point) or
     ``line_digraph(A), line_digraph(B)`` (segment). Returns ``A`` (mutated in place).
     """
-    _validate(A, B, allow_dag=allow_dag)
+    _validate(A, B)
     b_nodes: List[Hashable] = list(B.nodes)
     if not b_nodes:
         raise ValueError("target B has no vertices")
@@ -661,7 +655,7 @@ def extract(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
 
 
 # ---------------------------------------------------------------------------------------
-# The junction-join extraction (docs/tree_dtw_matching.md §10) -- forward-only, EXACT
+# The junction-join extraction (docs/dag_dtw_matching.md §10) -- forward-only, EXACT
 # ---------------------------------------------------------------------------------------
 def _reconstruct_from_sinks(A, sink_labels):
     """``(M, committed)`` from pinned sink labels by the ``bpD`` up-flood (cover chains -> run cells,
@@ -730,7 +724,7 @@ def _jj_induce(A, cells, path):
 
 
 def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0):
-    """**The junction-join extraction** (docs/tree_dtw_matching.md §10) -- forward-only and
+    """**The junction-join extraction** (docs/dag_dtw_matching.md §10) -- forward-only and
     **exact**: the optimal labels for all sinks and splits by a recursive table join over the split
     hierarchy. Every table is a sink-type table (label -> through-cost + pinned labels + recorded
     cells); splits are processed deepest-first; each branch's terminal is found by walking down to
@@ -842,7 +836,7 @@ def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 
 
 # ---------------------------------------------------------------------------------------
-# The cell-level join (docs/tree_dtw_matching.md §10.2) -- full resolution, from scratch
+# The cell-level join (docs/dag_dtw_matching.md §10.2) -- full resolution, from scratch
 # ---------------------------------------------------------------------------------------
 def _cell_reachable(A: nx.DiGraph, B: nx.DiGraph) -> set:
     """§8.2 cell-removal pre-pass: one reverse search from ALL sink cells over the cell-move graph
@@ -902,7 +896,7 @@ def _pend_union(p0: dict, p1: dict):
 
 def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
                  run_cap: int = 8, max_rows: int = 50000):
-    """**The cell-level join** (docs/tree_dtw_matching.md §10.2) -- exact over the FULL
+    """**The cell-level join** (docs/dag_dtw_matching.md §10.2) -- exact over the FULL
     cell-level space, runs included. Built from scratch upstream: only ``prepare``'s ``E`` and the
     ``forbidden``/``D<inf`` filters (pruning) are used -- the stored propagation is never consulted.
     A row is ``(entry, value, pending, cells)``; the E-multiplier ledger is {1 advance/source,
@@ -1032,12 +1026,62 @@ def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 
 
 # ---------------------------------------------------------------------------------------
+# Edge-table -> DiGraph conversion (the Mode-1/2 input system, docs §9)
+# ---------------------------------------------------------------------------------------
+def _densify(coords, step_meters: float):
+    """Points along a polyline at ~``step_meters`` spacing (endpoints kept)."""
+    pts = np.asarray(coords, float)
+    if len(pts) < 2:
+        return [tuple(map(float, p)) for p in pts]
+    seg = np.diff(pts, axis=0)
+    slen = np.hypot(seg[:, 0], seg[:, 1])
+    cum = np.concatenate([[0.0], np.cumsum(slen)])
+    n = max(2, int(round(cum[-1] / max(step_meters, 1e-9))) + 1)
+    out = []
+    for t in np.linspace(0.0, cum[-1], n):
+        i = min(int(np.searchsorted(cum, t, side="right") - 1), len(seg) - 1)
+        i = max(i, 0)
+        f = (t - cum[i]) / (slen[i] if slen[i] > 0 else 1.0)
+        out.append((float(pts[i][0] + seg[i][0] * f), float(pts[i][1] + seg[i][1] * f)))
+    return out
+
+
+def edges_to_digraph(edges, step_meters: float = 5.0, snap_decimals: int = 3) -> nx.DiGraph:
+    """Build the matcher's ``DiGraph`` from an edge table: ``edges`` is ``[(edge_id, coords), ...]``
+    with ``coords`` a projected (meters) polyline, directed along its digitization. Each polyline is
+    **densified** at ``step_meters`` (this is what supplies the subdivision — interior points on
+    every real edge); shared endpoints become one junction node (coordinates snapped to
+    ``snap_decimals``); every arc carries ``road_id`` (its input edge id) and ``seq`` (its position
+    along that edge) so segment-mode matchings aggregate back to input-edge level."""
+    G = nx.DiGraph()
+    node_at: Dict[tuple, int] = {}
+
+    def node(pt):
+        key = (round(pt[0], snap_decimals), round(pt[1], snap_decimals))
+        if key not in node_at:
+            nid = len(node_at)
+            G.add_node(nid, x=float(pt[0]), y=float(pt[1]))
+            node_at[key] = nid
+        return node_at[key]
+
+    for eid, coords in edges:
+        pts = _densify(coords, step_meters)
+        prev = node(pts[0])
+        for k, p in enumerate(pts[1:]):
+            cur = node(p)
+            if cur != prev:
+                G.add_edge(prev, cur, road_id=eid, seq=k)
+            prev = cur
+    return G
+
+
+# ---------------------------------------------------------------------------------------
 # One-call pipeline entry point
 # ---------------------------------------------------------------------------------------
-def match_tree(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
-               beta: float = 1.0, mode: str = "point", engine: str = "cell",
-               bearing_weight: float = 1.0, k_min: int = 1, allow_dag: bool = False):
-    """One-call Tree-DTW pipeline (docs/tree_dtw_matching.md): ``prepare`` -> ``forward`` (the
+def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
+              beta: float = 1.0, mode: str = "point", engine: str = "cell",
+              bearing_weight: float = 1.0, k_min: int = 1):
+    """One-call DAG-DTW pipeline (docs/dag_dtw_matching.md): ``prepare`` -> ``forward`` (the
     coupled pass) -> extraction, on ``A``/``B`` (``mode="point"``, ``M`` over vertices) or on their
     directed line graphs (``mode="segment"``, ``M`` over arcs — nodes are ``(u, v)`` edge tuples of
     the originals, so the result is self-describing).
@@ -1045,17 +1089,17 @@ def match_tree(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0
     ``engine``: ``"cell"`` (the cell-level join — exact over the full space; default),
     ``"branch"`` (the branching exploration), ``"join"`` (the vertex-level junction join), or
     ``"all"`` — run all three and return the **cheapest valid** matching, the cross-validating
-    choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). ``allow_dag=True`` accepts a
-    subdivided DAG source (reconvergences) — there only the ``"cell"`` engine carries the exactness
-    claim (docs/tree_dtw_matching.md §10.4). Returns ``(M, committed)``; raises ``ValueError``
-    on infeasibility (increase ``r``)."""
+    choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). The source may be any
+    **subdivided DAG** (a tree is the special case); on reconvergent sources only the ``"cell"``
+    engine carries the exactness claim (docs/dag_dtw_matching.md §10.4). Returns
+    ``(M, committed)``; raises ``ValueError`` on infeasibility (increase ``r``)."""
     if mode == "segment":
         A2, B2 = line_digraph(A), line_digraph(B)
     elif mode == "point":
         A2, B2 = A, B
     else:
         raise ValueError(f"unknown mode {mode!r} (use 'point' or 'segment')")
-    prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight, allow_dag=allow_dag)
+    prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight)
     forward(A2, B2, alpha=alpha, beta=beta)
     engines = {"cell": extract_cell, "branch": extract, "join": extract_join}
     if engine in engines:
@@ -1397,5 +1441,5 @@ if __name__ == "__main__":
         prepare(digraph({0: (0, 0), 1: (1, 1), 2: (1, -1), 3: (2, 0)},
                         [(0, 1), (0, 2), (1, 3), (2, 3)]), B, r=20.0)
         print("\nERROR: diamond was NOT rejected")
-    except NotATree as e:
+    except NotADAG as e:
         print(f"\ndiamond correctly rejected: {e}")

@@ -880,6 +880,95 @@ class DuckDBMapMatcher:
         routes_summary = self._apply_dtypes(routes_summary, self.ROUTES_SUMMARY_DTYPES)
         return routes_long, routes_summary
 
+    def match_dag(self, alpha: float = 1.0, beta: float = 1.0, engine: str = "cell",
+                  bearing_weight: float = 2.0, max_distance: Optional[float] = None,
+                  step_meters: float = 5.0, snap_decimals: int = 3):
+        """Mode 3 — DAG-to-network matching (DAG-DTW), on the SAME configured sources as the other
+        modes: source A must form a directed **acyclic** graph (a route tree, a sensor cone, a
+        divided road that rejoins); B may cycle. Geometry is transformed to ``utm_srid`` and both
+        edge tables are converted to ``networkx`` graphs internally (each polyline densified at
+        ``step_meters`` — this supplies the subdivision; shared endpoints become junctions snapped
+        at ``snap_decimals``). Runs the segment-mode pipeline (arc states with a ``bearing_weight``
+        heading term) and the chosen extraction engine (``"cell"`` exact / ``"branch"`` /
+        ``"join"`` / ``"all"`` = cheapest valid of the three); ``alpha ∈ (0,1]`` discounts 1:N
+        coverage, ``beta ∈ [1,∞)`` penalizes N:1 stalls (docs/dag_dtw_matching.md §3).
+
+        Returns ``(dag_long, dag_summary)`` — the Mode-1-style pair:
+
+        - ``dag_long``: one row per (A-edge, B-edge) the matching connects — ``source_id, dest_id,
+          seq`` (order along the A-edge), ``n_pairs`` (matched arc pairs), ``avg_dist_m`` (mean
+          midpoint drift, meters).
+        - ``dag_summary``: one row per A-edge — ``source_id, dest_ids`` (ordered ``;``-join),
+          ``n_dest, n_pairs, avg_dist_m, match_type`` (``1:1`` / ``1:N_ROUTE``).
+
+        Raises ``NotADAG`` if source A has a directed cycle, and ``ValueError`` on infeasibility
+        (increase ``max_distance``)."""
+        from shapely import wkt as _shapely_wkt
+        from .dag_dtw import (edges_to_digraph, line_digraph, prepare, forward,
+                              extract, extract_join, extract_cell, _cost_of, check_rules)
+        if not self.source_a or not self.source_b or not self.utm_srid:
+            raise ValueError("Sources not configured. Call configure_sources() first.")
+        r = float(max_distance if max_distance is not None else (self.max_distance or 30.0))
+        axy = f", always_xy := {'true' if self.always_xy else 'false'}"
+
+        def fetch(source, cols):
+            q = f"""SELECT {cols['id']} AS id,
+                           ST_AsText(ST_Transform({cols['geom']}, 'EPSG:4326',
+                                                  'EPSG:{self.utm_srid}'{axy})) AS wkt
+                    FROM {source}"""
+            df = self.conn.execute(q).fetchdf()
+            return [(row.id, list(_shapely_wkt.loads(row.wkt).coords)) for row in df.itertuples()]
+
+        A = edges_to_digraph(fetch(self.source_a, self.columns_a), step_meters, snap_decimals)
+        B = edges_to_digraph(fetch(self.source_b, self.columns_b), step_meters, snap_decimals)
+        LA, LB = line_digraph(A), line_digraph(B)
+        for (u, v) in LA.nodes:                                 # carry the input-edge bookkeeping
+            LA.nodes[(u, v)]["road_id"] = A[u][v]["road_id"]
+            LA.nodes[(u, v)]["seq"] = A[u][v]["seq"]
+        for (u, v) in LB.nodes:
+            LB.nodes[(u, v)]["road_id"] = B[u][v]["road_id"]
+        prepare(LA, LB, r=r, bearing_weight=bearing_weight)
+        forward(LA, LB, alpha=alpha, beta=beta)
+        engines = {"cell": extract_cell, "branch": extract, "join": extract_join}
+        if engine in engines:
+            M, _ = engines[engine](LA, LB, alpha, beta)
+        elif engine == "all":                                   # cheapest valid of the three
+            best = None
+            for fn in (extract_cell, extract, extract_join):
+                try:
+                    Mx, _ = fn(LA, LB, alpha, beta)
+                except ValueError:
+                    continue
+                c = _cost_of(LA, LB, Mx, alpha, beta)
+                if best is None or c < best[0] - 1e-12:
+                    best = (c, Mx)
+            if best is None:
+                raise ValueError("all three extraction engines infeasible -- increase max_distance")
+            M = best[1]
+        else:
+            raise ValueError(f"unknown engine {engine!r} (use 'cell', 'branch', 'join' or 'all')")
+
+        rows = []
+        for (sa, sb) in M:                                      # arc pair -> input-edge pair + drift
+            ax, ay = LA.nodes[sa]["x"], LA.nodes[sa]["y"]
+            bx, by = LB.nodes[sb]["x"], LB.nodes[sb]["y"]
+            rows.append(dict(source_id=LA.nodes[sa]["road_id"], dest_id=LB.nodes[sb]["road_id"],
+                             a_seq=LA.nodes[sa]["seq"],
+                             dist_m=float(np.hypot(ax - bx, ay - by))))
+        pairs = pd.DataFrame(rows)
+        dag_long = (pairs.groupby(["source_id", "dest_id"], as_index=False)
+                    .agg(seq=("a_seq", "min"), n_pairs=("a_seq", "size"),
+                         avg_dist_m=("dist_m", "mean")))
+        dag_long["seq"] = dag_long.groupby("source_id")["seq"].rank(method="first").astype(int)
+        dag_long = dag_long.sort_values(["source_id", "seq"]).reset_index(drop=True)
+        summary = (dag_long.sort_values(["source_id", "seq"])
+                   .groupby("source_id", as_index=False)
+                   .agg(dest_ids=("dest_id", lambda d: ";".join(map(str, d))),
+                        n_dest=("dest_id", "nunique"), n_pairs=("n_pairs", "sum"),
+                        avg_dist_m=("avg_dist_m", "mean")))
+        summary["match_type"] = np.where(summary["n_dest"] > 1, "1:N_ROUTE", "1:1")
+        return dag_long, summary
+
     def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
                      trim_ends_m: float = 0.0, n_jobs: int = 1,
                      emission: str = "point", bearing_weight: float = 0.0):

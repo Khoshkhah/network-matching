@@ -6,14 +6,15 @@ segmented differently. It combines **Dynamic Time Warping (DTW)** for shape alig
 **DuckDB Spatial** for fast candidate search, and works in a local projected CRS so all distances
 are in meters.
 
-The library offers **three matchers**. The first two share the `DuckDBMapMatcher` class, inputs,
-and CRS handling; the third (Tree-DTW) is a standalone `networkx`-based matcher:
+The library offers **three matchers**, all behind the same `DuckDBMapMatcher` class — same
+inputs (WKT CSV / geofiles / DuckDB tables), same CRS handling, same two-table output shape.
+Mode 3 (DAG-DTW) additionally has a standalone `networkx` API:
 
 | Mode | Entry point | Produces | Best for |
 |------|-------------|----------|----------|
-| **Route-based (graph-DTW)** | `match_routes()` | each A-edge → a connected **route** of B-edges | conflating networks split differently; the recommended default |
-| **Edge-to-edge** | `match()` + `resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning points/edges to a single nearest segment; fine-grained control |
-| **Tree/DAG-to-network (Tree-DTW)** | `match_tree()` | a validated matching **relation** `M` of a directed source *tree or DAG* onto a target network | matching a tree- or DAG-shaped subnetwork (a route tree, a sensor cone, a divided road that rejoins) at point or segment resolution |
+| **Route-based (graph-DTW)** | `m.match_routes()` | each A-edge → a connected **route** of B-edges | conflating networks split differently; the recommended default |
+| **Edge-to-edge** | `m.match()` + `m.resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning points/edges to a single nearest segment; fine-grained control |
+| **DAG-to-network (DAG-DTW)** | `m.match_dag()` | an **exact**, validity-checked matching of the whole source DAG onto the target, as Mode-1-style tables | matching a DAG-shaped subnetwork (a route tree, a sensor cone, a divided road that rejoins) in one globally consistent pass |
 
 ---
 
@@ -159,45 +160,69 @@ meters) is the primary quality score. `match_type` is `1:1_SYMMETRIC`, `1:N_SPLI
 
 ---
 
-## Mode 3 — Tree/DAG-to-network matching (Tree-DTW)
+## Mode 3 — DAG-to-network matching (DAG-DTW)
 
-An **exact** matcher for a directed source **tree** (branches and merges, never a loop) or —
-with `allow_dag=True` — any **subdivided DAG** (reconvergences/diamonds allowed; the cell engine
-is verified exact there, 195/195 vs full-space brute force), against any directed target network
-(cycles allowed). Standalone: plain `networkx.DiGraph` inputs whose nodes carry
-projected `x, y` in meters — no DuckDB involved. The source must be **subdivided** (≥ 1 interior
-point per real edge); weights `alpha ∈ (0, 1]` (1:N coverage discount), `beta ∈ [1, ∞)` (N:1 stall
-penalty).
+An **exact** matcher for a directed source **DAG** — branches, merges, reconvergences (diamonds,
+divided roads) all legal; only a directed cycle is rejected (`NotADAG`) — against any directed
+target network (cycles allowed). Where Modes 1–2 match each A-edge independently, Mode 3 matches
+the **whole source structure in one globally consistent pass**: the result is a matching relation
+validated by four warping rules (V1–V4) and minimized by direct cost. Weights: `alpha ∈ (0, 1]`
+discounts 1:N coverage, `beta ∈ [1, ∞)` penalizes N:1 stalls.
+
+Same inputs and output shape as the other modes:
 
 ```python
-import networkx as nx
-from network_matching import match_tree
+from network_matching import DuckDBMapMatcher
 
-# A: source TREE (nodes carry x, y; subdivided). B: target network (may cycle).
-M, committed = match_tree(A, B, r=20.0)                              # point mode, M ⊆ V(A)×V(B)
-M_seg, _     = match_tree(A, B, r=20.0, mode="segment",              # arc mode: nodes are (u, v)
+m = DuckDBMapMatcher.from_wkt_csv(
+    "data/osm_edges.csv", "data/sweden_edges.csv",
+    id_a="edge_id", id_b="directed_id", utm_srid=3006, max_distance=30)
+
+dag_long, dag_summary = m.match_dag(alpha=0.5, beta=1.5)   # engine="cell" (exact) by default
+```
+
+Geometry is transformed to `utm_srid` and converted to `networkx` graphs internally (each
+polyline densified at `step_meters` — this supplies the required subdivision; shared endpoints
+become junctions). Matching runs at **segment resolution** (arc states with a `bearing_weight`
+heading term, default 2.0). Output is the Mode-1-style pair:
+
+- **`dag_summary`** — one row per A-edge: `dest_ids` (ordered `;`-join), `n_dest`, `n_pairs`,
+  `avg_dist_m`, `match_type` (`1:1` / `1:N_ROUTE`).
+- **`dag_long`** — one row per matched (A-edge, B-edge): `seq` (order along the A-edge),
+  `n_pairs` (matched arc pairs), `avg_dist_m` (mean midpoint drift, meters).
+
+**Standalone `networkx` API** — plain `DiGraph` inputs whose nodes carry projected `x, y` in
+meters, no DuckDB involved; the source must be **subdivided** (≥ 1 interior point per real edge):
+
+```python
+from network_matching import match_dag
+
+# A: source DAG (nodes carry x, y; subdivided; diamonds OK). B: target network (may cycle).
+M, committed = match_dag(A, B, r=20.0, alpha=0.5, beta=1.5)         # point mode, M ⊆ V(A)×V(B)
+M_seg, _     = match_dag(A, B, r=20.0, mode="segment",              # arc mode: nodes are (u, v)
                           bearing_weight=2.0, engine="all")          # edge tuples of the originals
-M_dag, _     = match_tree(A_dag, B, r=20.0, allow_dag=True)          # subdivided DAG source (diamonds OK)
 ```
 
 Feasibility failures never return a broken matching — they raise `ValueError` telling you to
-increase `r` (`match_radius_m`), and every returned `M` has passed the V1–V4 validity judge.
+increase the radius (`max_distance` / `r`), and every returned matching has passed the V1–V4
+validity judge.
 
 Three **cross-validating extraction engines** share one validity judge (rules V1–V4) and one cost:
 `engine="cell"` (the cell-level join — exact over the full space; default), `"branch"` (branching
 exploration), `"join"` (vertex-level junction join), or `"all"` (run all three, return the cheapest
 valid matching). On the structured 384-case envelope the cell engine is valid **384/384** and never
-costlier than either other engine. Spec (algorithm + all three engines):
-[docs/tree_dtw_matching.md](docs/tree_dtw_matching.md).
+costlier than either other engine; on reconvergent DAG sources it is verified exact 195/195 vs
+full-space brute force. Spec (algorithm + all three engines):
+[docs/dag_dtw_matching.md](docs/dag_dtw_matching.md).
 
 **Play with it interactively** — scenarios, the historical failure demos and their fixes:
 
 ```bash
-jupyter lab notebooks/tree_dtw_playground.ipynb          # interactive Plotly playground
-python scripts/tree_dtw_debug_viz.py --case diamond --dag   # debug view: cell states (alive /
-                                                            # forbidden / removed / D=∞) + engine
-                                                            # comparison with a dropdown (HTML to output/)
-python scripts/test_tree_point.py                        # three-engine cross-validation sweep
+jupyter lab notebooks/dag_dtw_playground.ipynb          # interactive Plotly playground
+python scripts/dag_dtw_debug_viz.py --case diamond      # debug view: cell states (alive /
+                                                         # forbidden / removed / D=∞) + engine
+                                                         # comparison with a dropdown (HTML to output/)
+python scripts/test_dag_point.py                        # three-engine cross-validation sweep
                                                          # (structure × density × shift × noise × weights)
 ```
 
@@ -241,7 +266,7 @@ m.set_parameters(max_distance=25)
 |----------|--------|
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
-| [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md) | Tree-DTW (Mode 3) — the complete spec: forward table with the split (V3) coupling, the three extraction engines (§5 branching, §10 vertex & **cell-level joins** — exact over the full space), validity rules V1–V4, point & segment modes, DAG sources. |
+| [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) | DAG-DTW (Mode 3) — the complete spec: forward table with the split (V3) coupling, the three extraction engines (§5 branching, §10 vertex & **cell-level joins** — exact over the full space), validity rules V1–V4, point & segment modes, DAG sources. |
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
@@ -255,9 +280,9 @@ m.set_parameters(max_distance=25)
 ## Project layout
 
 ```
-network_matching/   library — matcher, graph_dtw, tree_dtw (Mode 3), synthetic (test cases), bgraph_prep, dtw
-scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, tree_dtw_debug_viz.py + test_tree_point.py (Mode 3), ...
-notebooks/          playgrounds — graph_dtw_playground.ipynb (Mode 1), tree_dtw_playground.ipynb (Mode 3)
+network_matching/   library — matcher, graph_dtw, dag_dtw (Mode 3), synthetic (test cases), bgraph_prep, dtw
+scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, dag_dtw_debug_viz.py + test_dag_point.py (Mode 3), ...
+notebooks/          playgrounds — graph_dtw_playground.ipynb (Mode 1), dag_dtw_playground.ipynb (Mode 3)
 docs/               documentation
 tests/              pytest suite
 data/               INPUT data only (osm_edges.csv, sweden_edges.csv, boundary)

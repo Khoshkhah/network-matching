@@ -61,10 +61,10 @@ To build a general and reusable tool, we decouple the **storage format** from th
 
 ---
 
-**Beside this DuckDB flow** sits one standalone matcher: **Tree-DTW** (`match_tree`,
-`network_matching/tree_dtw.py`) — pure `networkx`, no database; a directed source *tree or subdivided DAG* matched
+**Beside this DuckDB flow** sits one standalone matcher: **DAG-DTW** (`match_dag`,
+`network_matching/dag_dtw.py`) — pure `networkx`, no database; a directed source *tree or subdivided DAG* matched
 exactly onto a directed target network, with three cross-validating extraction engines. See
-`docs/tree_dtw_matching.md`.
+`docs/dag_dtw_matching.md`.
 
 ## 3. Class API Reference: `DuckDBMapMatcher`
 

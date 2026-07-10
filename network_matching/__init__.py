@@ -12,7 +12,7 @@ from .graph_dtw import (
     graph_dtw_align,
     match_edge_to_bgraph,
 )
-from .tree_dtw import NotATree, match_tree
+from .dag_dtw import NotADAG, match_dag
 from .bgraph_prep import validate_b_geometry
 from .thresholds import suggest_thresholds, isolation_forest_flags
 
@@ -23,8 +23,8 @@ __all__ = [
     "build_local_digraph",
     "graph_dtw_align",
     "match_edge_to_bgraph",
-    "match_tree",
-    "NotATree",
+    "match_dag",
+    "NotADAG",
     "validate_b_geometry",
     "suggest_thresholds",
     "isolation_forest_flags",

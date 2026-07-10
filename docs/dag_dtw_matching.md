@@ -1,21 +1,22 @@
-# Tree-DTW: Matching a Directed Tree or DAG to a Directed Network
+# DAG-DTW: Matching a Directed Tree or DAG to a Directed Network
 
-Tree-DTW aligns a **directed tree** — a road structure that branches and merges but never loops — or, opt-in, any **subdivided DAG** (reconvergences allowed, §10.4) onto a **directed target network**, generalizing DTW from sequences to trees and DAGs. The output is a **matching relation** `M ⊆ V(A) × V(B)`: valid by the four warping rules (§3), selected by direct cost. The algorithm is **one forward table** (with the split coupling built in, §4.1a) plus an **anchored extraction** over it (§5); no backward pass is needed to match. Two modes share all of it: **point** (vertices of `A`,`B`) and **segment** (the same algorithm on the line graphs `L(A)`,`L(B)`, §8).
+DAG-DTW aligns a **directed source DAG** — a road structure that branches, merges, and may reconverge (a tree is the special case with no reconvergence) — onto a **directed target network**, generalizing DTW from sequences to DAGs. The output is a **matching relation** `M ⊆ V(A) × V(B)`: valid by the four warping rules (§3), selected by direct cost. The algorithm is **one forward table** (with the split coupling built in, §4.1a) plus an **anchored extraction** over it (§5); no backward pass is needed to match. Two modes share all of it: **point** (vertices of `A`,`B`) and **segment** (the same algorithm on the line graphs `L(A)`,`L(B)`, §8).
 
 | piece | status |
 |---|---|
 | forward table with V3 coupling (§4) | implemented — `forward` |
 | extraction (§5, §10) | **three cross-validating engines**: `extract` (branching, §5), `extract_join` (vertex join, §10.1), **`extract_cell`** (cell-level join — exact over the full space, 384/384 on the envelope; §10.2) |
 | validation & diagnostics (§6) | implemented |
-| segment mode (§8) | implemented & verified (three-way + full-space brute on the line graphs, bearing active); a merge+split junction is still rejected upstream (`NotATree` on `L(A)`'s cluster) |
+| segment mode (§8) | implemented & verified (three-way + full-space brute on the line graphs, bearing active); a merge+split junction's `L(A)` cluster is a reconvergent DAG — accepted natively, three engines valid & agreeing on it |
 | known validator limit on cyclic B (§7) | documented, pinned by test |
-| **DAG sources** (reconvergences) | opt-in `allow_dag=True`; `extract_cell` verified exact — 195/195 vs full-space brute (§10.4); other engines: no exactness claim on DAGs |
+| **DAG sources** (reconvergences) | accepted by default — only a **directed cycle** is rejected (`NotADAG`); `extract_cell` verified exact — 195/195 vs full-space brute (§10.4); other engines: judged cross-checks on DAGs |
+| DuckDB pipeline (§9) | `DuckDBMapMatcher.match_dag()` — same sources/CRS handling as Modes 1–2, returns `(dag_long, dag_summary)` DataFrames |
 
 ---
 
 ## 1. Inputs
 
-* **A — the source**, a directed tree: no undirected cycle (a fork may never rejoin itself; a diamond is rejected — `NotATree`). With **`allow_dag=True`** a **subdivided DAG** (reconvergences allowed, no directed cycle) is accepted — on DAG sources only the cell-level engine carries the exactness claim (§10.4). Vertices carry coordinates `x, y`; a **junction is a vertex** (split = out-degree > 1, merge = in-degree > 1). `Apred/Asucc` are the immediate neighbours.
+* **A — the source**, a **directed acyclic graph**: forks, merges, and reconvergences (diamonds, divided roads) are all legal; only a **directed cycle** is rejected (`NotADAG`). A tree is the special case with no reconvergence — on reconvergent sources only the cell-level engine carries the exactness claim (§10.4). Vertices carry coordinates `x, y`; a **junction is a vertex** (split = out-degree > 1, merge = in-degree > 1). `Apred/Asucc` are the immediate neighbours.
 * **A must be subdivided**: at least one interior point on every real edge. This is what makes a split's children pairwise incomparable (§4.0) and a merge's parents childless-siblings — the ordering and coupling guarantees rest on it.
 * **B — the target**, any directed network; **it may cycle** (roundabouts, grids). `Bpred/Bsucc` are its neighbours.
 * **Candidates.** Each A-vertex `a` gets a radius-gated candidate set `cand(a) = {v ∈ V(B) : ‖a−v‖ ≤ r}` (`r = match_radius_m`; if fewer than `k_min` fall inside, the `k_min` nearest are kept). Each pair `(a, v)` is a **cell**; cells hold the emission `E`, the forward cost `D`, its back-pointer `bpD`, and a `forbidden` flag (§4.1a). The whole algorithm runs on these cells.
@@ -23,7 +24,7 @@ Tree-DTW aligns a **directed tree** — a road structure that branches and merge
 
 ## 2. The Structural Core: Independence
 
-A merge's incoming branches live in **disjoint upstream subtrees** — if they shared an ancestor, that ancestor would fork and rejoin, an undirected cycle, which a tree forbids. So each branch can be optimized independently and their costs **added** at the merge — this is why one number per cell suffices, and why the forward sum at a merge is exact (§4.1).
+On a **tree**, a merge's incoming branches live in **disjoint upstream subtrees** — if they shared an ancestor, that ancestor would fork and rejoin, an undirected cycle, which a tree forbids. So each branch can be optimized independently and their costs **added** at the merge — this is why one number per cell suffices, and why the forward sum at a merge is exact (§4.1). On a **reconvergent DAG** the branches *can* share an ancestor, so the forward sum double-counts it — which is exactly why on DAG sources only the cell engine, which never reads `D`'s values, keeps the exactness claim (§10.4).
 
 A split is the mirror **with a twist**: its branches are disjoint *downstream*, but they **share the split vertex**. The forward recurrence alone fills each branch independently, so nothing forces them to agree on the split's cell — that agreement is enforced **during the build** by the forbid-and-rebuild step (§4.1a).
 
@@ -181,7 +182,7 @@ always — a violation is an exactness bug by definition (pinned in the suite).
 * **Best of the enumerated labels** — the extraction returns the cheapest matching among the anchor's `≤ |cand(anchor)|` labels. This is deliberate (generation is cheap and honest scoring judges); it is **not** a proven global optimum. The two-table traceback's old "exact optimum" claim was disproven (its arbitrary seed is unsound at a merge — `D+B−E` is not constant across vertices); the anchored extraction fixed that case.
 * **Feasibility, never silent breakage**: an unreachable vertex, an emptied split, or an all-invalid enumeration raises `ValueError` telling you to increase `match_radius_m`.
 * **Validator limit on cyclic B**: on a 2-cycle `p⇄q` the local (V1) predicate cannot orient a step — the *smallest* case is a 2-vertex chain over `p⇄q`, where the geometrically correct matching (and every separating alternative, in both directions) is flagged. This is a property of the predicate, not of the matcher; pinned by `test_smallest_invalid_output_two_cycle`.
-* **The extraction never returns an invalid matching**: candidates violating (V1)–(V4) are discarded by the judge, so the result is valid-by-check or the call raises (no-valid-candidate / state-cap — both explicit). Structured point-mode envelope: 367/384 valid returns, 17 refusals, 0 invalid outputs (`scripts/test_tree_point.py`; dense-target + heavy-shift regimes refuse).
+* **The extraction never returns an invalid matching**: candidates violating (V1)–(V4) are discarded by the judge, so the result is valid-by-check or the call raises (no-valid-candidate / state-cap — both explicit). Structured point-mode envelope: 367/384 valid returns, 17 refusals, 0 invalid outputs (`scripts/test_dag_point.py`; dense-target + heavy-shift regimes refuse).
 * **Complexity**: table `O(|A| × band)` plus the per-row (H) relaxation and the (rare, bounded) §4.1a rebuilds; extraction `O(labels × |A|)`; all linear-ish in practice.
 
 ## 8. Segment Mode — the Same Algorithm on the Line Graphs
@@ -194,7 +195,7 @@ A point-mode *state* is a vertex pair; dressing its cost with a heading term doe
 | `E = ‖a − v‖` | `E = ‖mid(s) − mid(e)‖ + λ·circ(bear(s), bear(e))` |
 | `Apred/Bpred` | arc adjacency in `L(A)` / `L(B)` |
 
-Everything — layering, the recurrence, the coupling, the extraction, `check_rules` — is byte-for-byte the point-mode code on the lifted graphs; every state pays its emission (a stall costs `βE`, never zero — the heading cannot be bypassed). A junction is a vertex, so the line graph connects real segments directly; there are no stitch connectors to park on. A merge+split vertex becomes a bipartite cluster in `L(A)` — one shared pin, not a reconvergence — **but the tree gate currently rejects it** (`NotATree` sees the undirected cycle): a known open item. The matching is emitted and validated **on the arcs** (`M_seg ⊆ E(A) × E(B)`); any per-point view is derived convenience, never validated in its place.
+Everything — layering, the recurrence, the coupling, the extraction, `check_rules` — is byte-for-byte the point-mode code on the lifted graphs; every state pays its emission (a stall costs `βE`, never zero — the heading cannot be bypassed). A junction is a vertex, so the line graph connects real segments directly; there are no stitch connectors to park on. A merge+split vertex becomes a bipartite cluster in `L(A)` — a reconvergent DAG, accepted natively (all three engines return valid, agreeing matchings on it; only the cell engine carries the exactness claim there, §10.4). The matching is emitted and validated **on the arcs** (`M_seg ⊆ E(A) × E(B)`); any per-point view is derived convenience, never validated in its place.
 
 ## 9. Implementation Notes (Parts)
 
@@ -210,12 +211,14 @@ Everything — layering, the recurrence, the coupling, the extraction, `check_ru
   | vertex order (§4.0) | `layer_order` |
   | forward pass incl. V3 coupling (§4.1–§4.1a) | `forward` |
   | extraction (§5) | `extract` (branching) · `extract_join` (vertex join) · `extract_cell` (cell join) |
-  | one-call pipeline | `match_tree(A, B, r, α, β, mode, engine)` — `engine="all"` = cheapest valid of the three |
+  | one-call pipeline | `match_dag(A, B, r, α, β, mode, engine)` — `engine="all"` = cheapest valid of the three |
+  | DuckDB pipeline | `DuckDBMapMatcher.match_dag(alpha, beta, engine, bearing_weight, …)` — Mode-1/2 input system (WKT CSV / geofiles / DuckDB tables, lon-lat → UTM), converts to `networkx` via `edges_to_digraph` (densify + junction-snap), runs segment mode, returns `(dag_long, dag_summary)` DataFrames |
+  | geometry → graph | `edges_to_digraph(edges, step_meters, snap_decimals)` — densified polylines (supplies the §1 subdivision), junction-snapped; arcs carry `road_id` + `seq` |
   | judge (§6) | `check_rules` |
   | diagnostics (§6) | `backward`, `extract_two_table`, `validate_tables`, `check_reciprocity`, `check_reachability`, `check_forward`, `check_backward_v2`, `check_split_exits` |
   | segment lift (§8) | `line_digraph` |
 
-* **Playground** — `notebooks/tree_dtw_playground.ipynb` (interactive Plotly scenarios, the historical failure demos and their fixes). **Cross-validation sweep** — `scripts/test_tree_point.py` (all three engines over structure × density × shift × noise × weights).
+* **Playground** — `notebooks/dag_dtw_playground.ipynb` (interactive Plotly scenarios, the historical failure demos and their fixes). **Cross-validation sweep** — `scripts/test_dag_point.py` (all three engines over structure × density × shift × noise × weights).
 
 ---
 
@@ -299,20 +302,20 @@ cheapest-first; the first `M` passing `check_rules` wins (judge unchanged). Loud
 |---|---|
 | tiny dense-B cases vs **full-space** brute force (all entry+run combinations), point **and** segment (bearing active) | equal to the digit |
 | random mini polytrees vs full-space brute | exact & valid, every case |
-| structured 384-case envelope (`scripts/test_tree_point.py`, all three engines) | branching 376/384 · vertex join 379/384 · **cell join 384/384** valid |
+| structured 384-case envelope (`scripts/test_dag_point.py`, all three engines) | branching 376/384 · vertex join 379/384 · **cell join 384/384** valid |
 | invariant `C(cell) ≤ C(branching)` and `≤ C(vertex join)` | **384/384** — pinned in the suite: a violation is an exactness bug by definition |
 | pinned divergence case | cell strictly beats the vertex join *and* equals the full-space optimum |
 
-The three engines cross-validate: run them (`match_tree(engine="all")`), take the cheapest valid
+The three engines cross-validate: run them (`match_dag(engine="all")`), take the cheapest valid
 `M`; `value == C(M)` is self-checked.
 
-### 10.4 DAG sources (`allow_dag=True`)
+### 10.4 DAG sources (accepted by default)
 
 The tree property was only ever needed for the **forward sum's** cost exactness (§2) — and the cell
 engine never reads `D`'s values, so it carries no tree dependence: on a diamond, the two arms hold
 the merge's pending separator and must agree when they meet at the **shared ancestor's join** — the
-same consumed-once mechanism, resolving earlier than at the root. `prepare`/`match_tree` accept a
-**subdivided DAG** with `allow_dag=True` (directed cycles still rejected). Verified: 75 jittered
+same consumed-once mechanism, resolving earlier than at the root. `prepare`/`match_dag` accept any
+**subdivided DAG** by default (only a directed cycle is rejected — `NotADAG`). Verified: 75 jittered
 diamonds × 3 weights + 120 random subdivided reconvergent DAGs = **195/195 exact** vs the
 full-space brute force, all valid. Scoping: only `extract_cell` carries the exactness claim on DAG
 sources — the other engines consume `D` values (tree-only arguments) and act as judged cross-checks
