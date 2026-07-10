@@ -5,17 +5,17 @@ Tree-DTW aligns a **directed tree** — a road structure that branches and merge
 | piece | status |
 |---|---|
 | forward table with V3 coupling (§4) | implemented — `forward` |
-| extraction (§5) | **three cross-validating engines**: `extract` (branching), `extract_join` (vertex join), **`extract_cell`** (cell-level join — exact over the full space, 384/384 on the envelope; `docs/junction_join_extraction.md` §8) |
+| extraction (§5, §10) | **three cross-validating engines**: `extract` (branching, §5), `extract_join` (vertex join, §10.1), **`extract_cell`** (cell-level join — exact over the full space, 384/384 on the envelope; §10.2) |
 | validation & diagnostics (§6) | implemented |
 | segment mode (§8) | implemented & verified (three-way + full-space brute on the line graphs, bearing active); a merge+split junction is still rejected upstream (`NotATree` on `L(A)`'s cluster) |
 | known validator limit on cyclic B (§7) | documented, pinned by test |
-| **DAG sources** (reconvergences) | opt-in `allow_dag=True`; `extract_cell` verified exact — 195/195 vs full-space brute (§8.6 of the extraction spec); other engines: no exactness claim on DAGs |
+| **DAG sources** (reconvergences) | opt-in `allow_dag=True`; `extract_cell` verified exact — 195/195 vs full-space brute (§10.4); other engines: no exactness claim on DAGs |
 
 ---
 
 ## 1. Inputs
 
-* **A — the source**, a directed tree: no undirected cycle (a fork may never rejoin itself; a diamond is rejected — `NotATree`). With **`allow_dag=True`** a **subdivided DAG** (reconvergences allowed, no directed cycle) is accepted — on DAG sources only the cell-level engine carries the exactness claim (`docs/junction_join_extraction.md` §8.6). Vertices carry coordinates `x, y`; a **junction is a vertex** (split = out-degree > 1, merge = in-degree > 1). `Apred/Asucc` are the immediate neighbours.
+* **A — the source**, a directed tree: no undirected cycle (a fork may never rejoin itself; a diamond is rejected — `NotATree`). With **`allow_dag=True`** a **subdivided DAG** (reconvergences allowed, no directed cycle) is accepted — on DAG sources only the cell-level engine carries the exactness claim (§10.4). Vertices carry coordinates `x, y`; a **junction is a vertex** (split = out-degree > 1, merge = in-degree > 1). `Apred/Asucc` are the immediate neighbours.
 * **A must be subdivided**: at least one interior point on every real edge. This is what makes a split's children pairwise incomparable (§4.0) and a merge's parents childless-siblings — the ordering and coupling guarantees rest on it.
 * **B — the target**, any directed network; **it may cycle** (roundabouts, grids). `Bpred/Bsucc` are its neighbours.
 * **Candidates.** Each A-vertex `a` gets a radius-gated candidate set `cand(a) = {v ∈ V(B) : ‖a−v‖ ≤ r}` (`r = match_radius_m`; if fewer than `k_min` fall inside, the `k_min` nearest are kept). Each pair `(a, v)` is a **cell**; cells hold the emission `E`, the forward cost `D`, its back-pointer `bpD`, and a `forbidden` flag (§4.1a). The whole algorithm runs on these cells.
@@ -157,14 +157,14 @@ cheapest `C(M)` wins. If no candidate of any label survives, raise the feasibili
 branching is capped (default 4096 states, `max_states`) and **exceeding the cap raises** — never a
 silent truncation.
 
-**Further engines.** The junction-join extraction (spec:
-`docs/junction_join_extraction.md`) computes the optimal sink/split labels by a recursive table join
-over the split hierarchy — forward-only, exact over the stored-history family, polynomial, no caps.
-**`extract_cell`** (spec §8) is the **cell-level join** — built from scratch upstream out of `E`
+**Further engines (§10).** The junction-join extractions compute the optimal labels by recursive
+table joins — forward-only, polynomial, no caps: the vertex-level join (§10.1, exact over the
+stored-history family) and the cell-level join (§10.2, exact over the full space).
+**`extract_cell`** (§10.2) is the **cell-level join** — built from scratch upstream out of `E`
 alone, exact over the *full* space including coverage runs; on the structured envelope it is valid
-384/384 and never costlier than either other engine. The three engines **cross-validate**: run
-them, take the cheapest valid `M`; `C(cell) ≤ C(branching)` and `C(cell) ≤ C(vertex-join)` always —
-a violation is an exactness bug by definition (pinned in the suite).
+384/384 and never costlier than either other engine. The three engines **cross-validate** (§10.3):
+run them, take the cheapest valid `M`; `C(cell) ≤ C(branching)` and `C(cell) ≤ C(vertex-join)`
+always — a violation is an exactness bug by definition (pinned in the suite).
 
 ## 6. Verification & Diagnostics
 
@@ -215,4 +215,105 @@ Everything — layering, the recurrence, the coupling, the extraction, `check_ru
   | diagnostics (§6) | `backward`, `extract_two_table`, `validate_tables`, `check_reciprocity`, `check_reachability`, `check_forward`, `check_backward_v2`, `check_split_exits` |
   | segment lift (§8) | `line_digraph` |
 
-* **Playground** — `notebooks/tree_dtw_playground.ipynb` (interactive Plotly scenarios, the historical failure demos and their fixes). **Design record** — `docs/tree_dtw_minimal_matching.md` (the anchored-enumeration design, measurements, and the open-decision history).
+* **Playground** — `notebooks/tree_dtw_playground.ipynb` (interactive Plotly scenarios, the historical failure demos and their fixes). **Cross-validation sweep** — `scripts/test_tree_point.py` (all three engines over structure × density × shift × noise × weights).
+
+---
+
+## 10. The Join Engines — exact extraction by table joins
+
+Two further extraction engines share §5's judge and cost; both are **joins over tables**, not
+searches. The **cell-level join** (`extract_cell`) is the primary engine — exact over the full
+space; the vertex-level join and the §5 branching exploration remain as cross-checks.
+
+### 10.1 The vertex-level join (`extract_join`)
+
+Between junctions `bpD` chains are deterministic: each sink label induces exactly one label at
+every ancestor junction. So the sink labels are the only free variables, and (V3) at a split is a
+**join condition** — all branches must induce the same split label. Every table is a *sink-type*
+table (`label → through-cost` + pinned labels): sweep splits deepest-first; per branch keep the
+best row per induced label (a contraction, never a cross-product); sum — the split factor makes
+the sum exact (`Σᵢ (branchᵢ + D[U][u]/k) = Σᵢ branchᵢ + D[U][u]`); the joined table *is* a
+sink of the reduced graph, so the recursion is type-uniform; a merge's table is **consumed once**
+(a second split reaching the shared region continues through the collapsed table's recorded
+interior cells — no cost division). The root table's minimum pins every sink and split.
+
+**Scope — cell resolution.** Rows are vertex labels with *stored* histories, so intra-vertex
+alternatives (where a run starts, which run cell a child connects through) are frozen: the vertex
+join is exact over the **stored-history family** only. Divergences from the cell engine occur
+exactly in dense-target coverage regimes, at any weights — which motivates:
+
+### 10.2 The cell-level join (`extract_cell`) — the primary engine
+
+Built **from scratch upstream out of `E` alone** — the stored `D`/`bpD` propagation is never
+consulted (it froze the very choices being optimized, and its values carry shared-cone `1/outdeg`
+fractions); `forbidden` and `D < ∞` serve only as pruning.
+
+**The data packet — one row:**
+
+```
+row = ( entry,     the cell of THIS vertex where its parent will connect (the upward interface)
+        value,     cost of everything below, per the ledger -- this vertex's entry-E NOT yet paid
+        pending,   {(merge-vertex, its entry-cell) -> stall-flag} : deferred merge entries
+        cells )    {vertex -> its run} : the piece of M built so far -- M travels WITH the row
+```
+
+**The E-multiplier ledger** — every cell's emission enters exactly once, weighted by the move that
+enters the cell: **1** (source free entry / advance), **β** (stall — some parent arm holds the same
+cell), **α** (cover — a run cell). No fractional factors anywhere: plain sums at split cells,
+consumed-once at merges. **Deferred entry**: whether a vertex's entry cell pays `1` or `β` is the
+parent's call, so its entry-`E` is paid at the step connecting it to its parent — at a merge, at
+the root join, `β` if **any** arm stalls.
+
+**Three flow operations** (reverse topological sweep, one vertex at a time):
+
+* **PASS** (chain vertex `X`, child `c`): per entry `e` and run `R = e→…→u`, take a child row whose
+  entry `ce` connects at the run **end** (`ce == u` stall / `ce ∈ Bsucc(u)` advance), **pay the
+  child's deferred entry now**, add `α·E` per cover cell, `cells ← child.cells + {X: R}`; contract
+  per `(entry, pending)`.
+* **MERGE of data** (split `X`, children `c₁ … c_k`): as PASS with all `k` children connecting at
+  the **same** run end — per-cell (V3). Sum the values, union the cells (disjoint subtrees),
+  reconcile the pendings (same merge-vertex with different entry cells ⇒ the combination is
+  discarded; stall flags OR).
+* **SPLIT of data** (merge `m` serving several parent arms): **consumed-once** — the first arm
+  absorbs value and cells but leaves `m`'s entry-`E` unpaid, gaining
+  `pending[(m, entry)] = did-this-arm-stall`; every other arm receives only an *interface* (entry
+  cells, value 0, the same pending key with its own flag). Nothing is counted twice — which is why
+  no `1/indeg` exists.
+
+**Cell removal (pre-pass)**: one reverse search from **all sink cells** over the cell-move graph
+(cover reversed inside a vertex, advance/stall reversed across edges); every cell never seen is
+removed, in every role; runs may not cover removed cells. A vertex with no surviving cell ⇒
+immediate, precisely located infeasibility. The `D < ∞` filter prunes the upstream mirror.
+
+**Termination and the root join**: sources pay their own entry-`E` (full — free entry) and become
+root tables; the root join combines one row per root (pendings must agree on every merge's entry
+cell; flags OR; each deferred merge entry paid once), **contracting per pending-key after each
+fold**. The joined value equals `C(M)` exactly. **`M` is never extracted** — the winning row's
+`cells` map *is* the relation; no traceback, no reconstruction, no gap-fill. Rows are tried
+cheapest-first; the first `M` passing `check_rules` wins (judge unchanged). Loud caps only
+(`run_cap` bounds cover runs; `max_rows` raises, never truncates).
+
+### 10.3 Verification & the standing cross-validation
+
+| check | result |
+|---|---|
+| tiny dense-B cases vs **full-space** brute force (all entry+run combinations), point **and** segment (bearing active) | equal to the digit |
+| random mini polytrees vs full-space brute | exact & valid, every case |
+| structured 384-case envelope (`scripts/test_tree_point.py`, all three engines) | branching 376/384 · vertex join 379/384 · **cell join 384/384** valid |
+| invariant `C(cell) ≤ C(branching)` and `≤ C(vertex join)` | **384/384** — pinned in the suite: a violation is an exactness bug by definition |
+| pinned divergence case | cell strictly beats the vertex join *and* equals the full-space optimum |
+
+The three engines cross-validate: run them (`match_tree(engine="all")`), take the cheapest valid
+`M`; `value == C(M)` is self-checked.
+
+### 10.4 DAG sources (`allow_dag=True`)
+
+The tree property was only ever needed for the **forward sum's** cost exactness (§2) — and the cell
+engine never reads `D`'s values, so it carries no tree dependence: on a diamond, the two arms hold
+the merge's pending separator and must agree when they meet at the **shared ancestor's join** — the
+same consumed-once mechanism, resolving earlier than at the root. `prepare`/`match_tree` accept a
+**subdivided DAG** with `allow_dag=True` (directed cycles still rejected). Verified: 75 jittered
+diamonds × 3 weights + 120 random subdivided reconvergent DAGs = **195/195 exact** vs the
+full-space brute force, all valid. Scoping: only `extract_cell` carries the exactness claim on DAG
+sources — the other engines consume `D` values (tree-only arguments) and act as judged cross-checks
+there; the coupling's forbidden-pruning is empirically safe on DAGs, theoretically unproven.

@@ -440,7 +440,7 @@ def test_extract_raises_when_infeasible_forward_only():
 
 
 # ---------------------------------------------------------------------------------------------------
-# The junction-join extraction (docs/junction_join_extraction.md) + cross-validation of both engines
+# The junction-join extraction (docs/tree_dtw_matching.md §10) + cross-validation of both engines
 # ---------------------------------------------------------------------------------------------------
 IN_DOMAIN = [(1.0, 1.0), (0.5, 1.0), (0.3, 1.5), (1.0, 2.0)]
 
@@ -526,7 +526,7 @@ def test_extract_join_segment_mode(alpha, beta):
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 2.0)])
 def test_extract_join_exact_on_merge_shape(alpha, beta):
     """The consumed-once merge arithmetic: on the canonical U->x->m<-z<-V shape the join equals the
-    brute-force optimum over all sink-label combinations (docs/junction_join_extraction.md §5)."""
+    brute-force optimum over all sink-label combinations (docs/tree_dtw_matching.md §10 §5)."""
     import itertools
     A, B = _merge_shape()
     prepare(A, B, r=40.0)
@@ -577,7 +577,7 @@ def test_extractions_cross_validate(alpha, beta):
             if cj > cb + 1e-6:
                 # the join is exact over the STORED-HISTORY family (vertex resolution); branching
                 # can only beat it through intra-vertex run alternatives -- so a divergence must
-                # involve coverage (docs/junction_join_extraction.md, cell-resolution scope)
+                # involve coverage (docs/tree_dtw_matching.md §10, cell-resolution scope)
                 runs = any(len({v for a2, v in M if a2 == a}) > 1
                            for M in (Mj, Mb) for a in {x for x, _ in M})
                 assert runs, (f"seed {seed}: join ({cj:.3f}) > branching ({cb:.3f}) "
@@ -585,7 +585,7 @@ def test_extractions_cross_validate(alpha, beta):
 
 
 # ---------------------------------------------------------------------------------------------------
-# The cell-level join (docs/junction_join_extraction.md §8) + the three-way cross-validation
+# The cell-level join (docs/tree_dtw_matching.md §10.2) + the three-way cross-validation
 # ---------------------------------------------------------------------------------------------------
 def _full_space_brute(A, B, alpha, beta, run_cap=3, cap=200_000):
     """Ground truth over the FULL space: every (entry, run) combination per vertex, judged by

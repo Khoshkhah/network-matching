@@ -54,7 +54,7 @@ def _validate(A: nx.DiGraph, B: nx.DiGraph, allow_dag: bool = False) -> None:
     a tree (a polytree: undirected graph a forest -- no reconvergence); with ``allow_dag=True`` any
     **subdivided DAG** is accepted (diamonds/reconvergences allowed, still no directed cycle) -- on
     DAG sources only :func:`extract_cell` carries the exactness claim
-    (docs/junction_join_extraction.md §8.6)."""
+    (docs/tree_dtw_matching.md §10.4)."""
     for name, G in (("A", A), ("B", B)):
         if not isinstance(G, nx.DiGraph):
             raise TypeError(f"{name} must be a networkx.DiGraph, got {type(G).__name__}")
@@ -659,7 +659,7 @@ def extract(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
 
 
 # ---------------------------------------------------------------------------------------
-# The junction-join extraction (docs/junction_join_extraction.md) -- forward-only, EXACT
+# The junction-join extraction (docs/tree_dtw_matching.md §10) -- forward-only, EXACT
 # ---------------------------------------------------------------------------------------
 def _reconstruct_from_sinks(A, sink_labels):
     """``(M, committed)`` from pinned sink labels by the ``bpD`` up-flood (cover chains -> run cells,
@@ -728,7 +728,7 @@ def _jj_induce(A, cells, path):
 
 
 def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0):
-    """**The junction-join extraction** (docs/junction_join_extraction.md) -- forward-only and
+    """**The junction-join extraction** (docs/tree_dtw_matching.md §10) -- forward-only and
     **exact**: the optimal labels for all sinks and splits by a recursive table join over the split
     hierarchy. Every table is a sink-type table (label -> through-cost + pinned labels + recorded
     cells); splits are processed deepest-first; each branch's terminal is found by walking down to
@@ -840,7 +840,7 @@ def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 
 
 # ---------------------------------------------------------------------------------------
-# The cell-level join (docs/junction_join_extraction.md §8) -- full resolution, from scratch
+# The cell-level join (docs/tree_dtw_matching.md §10.2) -- full resolution, from scratch
 # ---------------------------------------------------------------------------------------
 def _cell_reachable(A: nx.DiGraph, B: nx.DiGraph) -> set:
     """§8.2 cell-removal pre-pass: one reverse search from ALL sink cells over the cell-move graph
@@ -900,7 +900,7 @@ def _pend_union(p0: dict, p1: dict):
 
 def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
                  run_cap: int = 8, max_rows: int = 50000):
-    """**The cell-level join** (docs/junction_join_extraction.md §8) -- exact over the FULL
+    """**The cell-level join** (docs/tree_dtw_matching.md §10.2) -- exact over the FULL
     cell-level space, runs included. Built from scratch upstream: only ``prepare``'s ``E`` and the
     ``forbidden``/``D<inf`` filters (pruning) are used -- the stored propagation is never consulted.
     A row is ``(entry, value, pending, cells)``; the E-multiplier ledger is {1 advance/source,
@@ -1045,7 +1045,7 @@ def match_tree(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0
     ``"all"`` — run all three and return the **cheapest valid** matching, the cross-validating
     choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). ``allow_dag=True`` accepts a
     subdivided DAG source (reconvergences) — there only the ``"cell"`` engine carries the exactness
-    claim (docs/junction_join_extraction.md §8.6). Returns ``(M, committed)``; raises ``ValueError``
+    claim (docs/tree_dtw_matching.md §10.4). Returns ``(M, committed)``; raises ``ValueError``
     on infeasibility (increase ``r``)."""
     if mode == "segment":
         A2, B2 = line_digraph(A), line_digraph(B)

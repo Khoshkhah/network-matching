@@ -182,8 +182,8 @@ Three **cross-validating extraction engines** share one validity judge (rules V1
 `engine="cell"` (the cell-level join — exact over the full space; default), `"branch"` (branching
 exploration), `"join"` (vertex-level junction join), or `"all"` (run all three, return the cheapest
 valid matching). On the structured 384-case envelope the cell engine is valid **384/384** and never
-costlier than either other engine. Spec: [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md);
-extraction engines: [docs/junction_join_extraction.md](docs/junction_join_extraction.md).
+costlier than either other engine. Spec (algorithm + all three engines):
+[docs/tree_dtw_matching.md](docs/tree_dtw_matching.md).
 
 ---
 
@@ -225,10 +225,7 @@ m.set_parameters(max_distance=25)
 |----------|--------|
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
-| [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) | DAG-DTW — DTW generalized so the *source* is a topologically-ordered DAG, matched jointly with consistent junctions (spec + point-to-point v1; demo `notebooks/dag_dtw_playground.ipynb`). |
-| [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md) | Tree-DTW (Mode 3) — the algorithm: one forward table with the split (V3) coupling built in, anchored extraction, validity rules V1–V4, point & segment modes. |
-| [docs/junction_join_extraction.md](docs/junction_join_extraction.md) | Tree-DTW extraction engines — the junction join and the **cell-level join** (exact over the full space; verified against full-space brute force). |
-| [docs/tree_dtw_minimal_matching.md](docs/tree_dtw_minimal_matching.md) | Tree-DTW design record — anchored minimal matchings, the enumerate-and-score architecture, decisions and history. |
+| [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md) | Tree-DTW (Mode 3) — the complete spec: forward table with the split (V3) coupling, the three extraction engines (§5 branching, §10 vertex & **cell-level joins** — exact over the full space), validity rules V1–V4, point & segment modes, DAG sources. |
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
