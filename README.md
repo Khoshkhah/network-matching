@@ -26,8 +26,9 @@ pip install -r requirements.txt  # core + visualization + notebook tooling
 ```
 
 **Dependencies.** Core: `duckdb` (spatial extension auto-loaded), `numpy`, `pandas`, `shapely`,
-`geopandas`, `joblib` (parallel route matching). Visualization (scripts/notebooks): `folium`,
-`branca`, `matplotlib`. Optional: `scipy` (faster endpoint validation; pure-numpy fallback).
+`geopandas`, `networkx` (Mode 3), `joblib` (parallel route matching). Visualization
+(scripts/notebooks): `folium`, `branca`, `matplotlib`, `plotly` (Mode 3 playground). Optional:
+`scipy` (faster candidate gating and endpoint validation; pure-numpy fallback).
 
 ---
 
@@ -176,7 +177,11 @@ from network_matching import match_tree
 M, committed = match_tree(A, B, r=20.0)                              # point mode, M ⊆ V(A)×V(B)
 M_seg, _     = match_tree(A, B, r=20.0, mode="segment",              # arc mode: nodes are (u, v)
                           bearing_weight=2.0, engine="all")          # edge tuples of the originals
+M_dag, _     = match_tree(A_dag, B, r=20.0, allow_dag=True)          # subdivided DAG source (diamonds OK)
 ```
+
+Feasibility failures never return a broken matching — they raise `ValueError` telling you to
+increase `r` (`match_radius_m`), and every returned `M` has passed the V1–V4 validity judge.
 
 Three **cross-validating extraction engines** share one validity judge (rules V1–V4) and one cost:
 `engine="cell"` (the cell-level join — exact over the full space; default), `"branch"` (branching
@@ -184,6 +189,14 @@ exploration), `"join"` (vertex-level junction join), or `"all"` (run all three, 
 valid matching). On the structured 384-case envelope the cell engine is valid **384/384** and never
 costlier than either other engine. Spec (algorithm + all three engines):
 [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md).
+
+**Play with it interactively** — scenarios, the historical failure demos and their fixes:
+
+```bash
+jupyter lab notebooks/tree_dtw_playground.ipynb        # interactive Plotly playground
+python scripts/test_tree_point.py                      # three-engine cross-validation sweep
+                                                       # (structure × density × shift × noise × weights)
+```
 
 ---
 
@@ -231,6 +244,7 @@ m.set_parameters(max_distance=25)
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
 | [docs/algorithm.md](docs/algorithm.md) | The three-tier edge-to-edge architecture. |
 | [docs/symmetric_matching.md](docs/symmetric_matching.md) | Symmetric (two-way) split/merge reconciliation. |
+| [docs/threshold_estimation.md](docs/threshold_estimation.md) | Data-driven match-quality thresholds (`suggest_thresholds`). |
 | [docs/framework.md](docs/framework.md) | Software design. |
 
 ---
@@ -239,8 +253,8 @@ m.set_parameters(max_distance=25)
 
 ```
 network_matching/   library — matcher, graph_dtw, tree_dtw (Mode 3), synthetic (test cases), bgraph_prep, dtw
-scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, graph_dtw_perturb_test.py, ...
-notebooks/          demos — route tables, real-data plots, synthetic cases
+scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, test_tree_point.py (Mode 3 sweep), ...
+notebooks/          playgrounds — graph_dtw_playground.ipynb (Mode 1), tree_dtw_playground.ipynb (Mode 3)
 docs/               documentation
 tests/              pytest suite
 data/               INPUT data only (osm_edges.csv, sweden_edges.csv, boundary)
