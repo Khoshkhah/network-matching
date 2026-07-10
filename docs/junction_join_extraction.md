@@ -192,34 +192,64 @@ the fresh upward pass shares nothing — plain sums at split cells, consumed-onc
 (stall ⇔ the entry lies in some parent's run) — so each vertex's entry-`E` is **deferred to the
 step that connects it to its parent**, and at a merge to the **last** arm (any arm stalling ⇒ `β`).
 
-### 8.2 The sweep
+### 8.2 The sweep — how data flows cell to cell
 
-Reverse topological order, one vertex at a time (the one-step formulation):
+**The data packet — one row.** Every vertex's table is a set of rows; a row is the unit that flows:
 
-* a vertex's table is keyed by its **entry cell** (its interface to the parent); a row = the choice
-  of entry + **run** (a directed cover path from the entry), value = `α·E` of the run's cover cells
-  + for every child: the connection step (`β·E(child entry)` on stall, `1·E` on advance, both
-  requiring the child's entry to be the run's end cell or one B-arc past it) + the child's value.
-  Contract per key. A **split** simply has several children in that sum — all connected through the
-  same run end: (V3) per cell, by construction.
-* a child with **several parents** (a merge) is absorbed by **one** parent line (consumed-once); every
-  other parent line starts a fresh table seeded at the child's entry-cell interface with a **pending
-  separator** `(child, entry, stall-flag)` and the child's entry-`E` left unpaid.
-* **cell removal (pre-pass)**: run one **reverse search from all sink cells** over the cell-move
-  graph — cover reversed inside a vertex, advance/stall reversed across edges — and **remove every
-  cell the exploration never sees**, in every role (entries, run ends, intermediates alike): an
-  unseen cell cannot appear on any chain to a sink. One sweep (`sink_reachable`), no role
-  bookkeeping; runs may not cover removed cells either. It over-approximates exact usefulness (a
-  split-end kept via one child may still fail the other — the join's own dead-combo handling absorbs
-  that), which is precisely what makes it safe. The upstream mirror (no path from sources) stays
-  pruned by the `D < ∞` filter. A vertex with no surviving cell ⇒ immediate, precisely located
-  infeasibility.
-* **roots**: each source adds its own entry-`E` (always full — free entry). The component's answer
-  joins all root tables **on their pending separators** (cells must match; the deferred entry-`E`
-  is paid once, `β` if any arm's stall-flag is set); the minimum joined row is the exact optimum
-  over the **full cell-level space** — runs included.
+```
+row = ( entry,     the cell of THIS vertex where its parent will connect (the upward interface)
+        value,     cost of everything below, per the ledger -- this vertex's entry-E NOT yet paid
+        pending,   {(merge-vertex, its entry-cell) -> stall-flag} : deferred merge entries
+        cells )    {vertex -> its run} : the piece of M built so far -- M travels WITH the row
+```
 
-Validity of the final `M` is judged by `check_rules`, unchanged.
+Vertices are processed in reverse topological order, each exactly once. Three flow operations:
+
+**PASS — a chain vertex `X`, one child `c`.** For each choice of `X`'s entry `e` and run
+`R = e→…→u`: take a child row whose entry `ce` connects at the run **end** — `ce == u` (stall) or
+`ce ∈ Bsucc(u)` (advance) — and **pay the child's deferred entry now** (`β·E(c,ce)` on stall,
+`1·E(c,ce)` on advance: stall-vs-advance is the parent's call, which is why the child could not
+price its own entry). Add `α·E` per cover cell of `R`; `cells ← child.cells + {X: R}`; `X`'s own
+entry-E stays unpaid (deferred to *its* parent). Keep the cheapest row per `(entry, pending)` key —
+the contraction.
+
+**MERGE of data — a split vertex `X`, children `c₁ … c_k`.** As PASS, but **all k children must
+connect at the same run end `u`** — that *is* (V3), per cell. Combining one row per child:
+`value` = Σ child values + Σ their just-paid entries + the run's covers; `pending` = union (flags
+OR'd; two branches carrying the *same* merge-vertex with *different* entry cells ⇒ the combination
+is **discarded**); `cells` = union of the k maps (disjoint — different subtrees). Merging data in a
+cell = *sum the values, union the cells, reconcile the pendings, at one shared cell.*
+
+**SPLIT of data — a merge vertex `m` serving two parent arms.** Consumed-once; the data is never
+duplicated. The **first** parent line absorbs everything — value and cells — but does **not** pay
+`m`'s entry-E: the row gains `pending[(m, entry)] = did-this-arm-stall`. Every **other** parent
+line receives only an *interface*: rows with `m`'s possible entry cells, `value = 0`, empty cells,
+and the same pending key with its own arm's stall flag. Splitting data = *full data up exactly one
+arm; the other arms carry only the coordination key.* This is why no `1/indeg` division exists —
+nothing was counted twice to begin with.
+
+**Cell removal (pre-pass).** Before the sweep: one **reverse search from all sink cells** over the
+cell-move graph (cover reversed inside a vertex, advance/stall reversed across edges); every cell
+the exploration never sees is **removed, in every role** (entries, run ends, intermediates alike) —
+an unseen cell cannot appear on any chain to a sink; runs may not cover removed cells either
+(`sink_reachable`). It over-approximates exact usefulness, which is what makes it safe; the
+upstream mirror (no path from sources) stays pruned by the `D < ∞` filter. A vertex with no
+surviving cell ⇒ immediate, precisely located infeasibility.
+
+**Termination and the root join.** The sweep finishes when it reaches the **sources**; each source
+pays its own entry-E in full (free entry, `w = 1`) and its rows become **root tables** — one root
+per source line (several exactly when merges split the lines). The **root join** then picks one row
+per root: legal only if the pendings **agree on every merge's entry cell**; flags OR; each pending
+`(m, e)` finally pays its deferred `E(m,e)` once — `β` if *any* arm stalled, else `1`. The joined
+value is the complete `C(M)` (self-checked: `value == C(M)` holds on every verified case).
+
+**`M` is never extracted — it travels with the rows.** The winning row's `cells` map *is* the
+relation: `M = {(vertex, cell) for each vertex's run}`. No traceback, no pointer walk, no
+reconstruction, no gap-fill. The final `M` goes to `check_rules` — the judge's role unchanged.
+Worked micro-example (y-split): sink rows carry `{2:(u,)}` and `{3:(d,)}`; the split's row merges
+them into `{1:(j,), 2:(u,), 3:(d,)}` while paying `E(2,u) + E(3,d)`; the source's row adds
+`{0:(s,)}`, pays `E(1,j)`, then its own `E(0,s)` — the root row's value is the full cost and its
+cells map is the full `M`.
 
 ### 8.3 Expected invariants (the three-way cross-validation)
 
