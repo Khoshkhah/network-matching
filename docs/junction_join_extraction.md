@@ -166,3 +166,77 @@ Library wiring done: `extract_join` (judge unchanged — root rows tried cheapes
 valid wins), suite 191 passing incl. `test_extract_join_exact_on_merge_shape` (vs brute force) and
 the cross-validation tests; dual-engine envelope: join 379/384, branching 376/384, divergences
 confined to coverage regimes (§6a). Both engines stay — they cross-validate each other.
+
+---
+
+## 8. Cell-Level Join — full resolution (PROTOTYPE-VERIFIED)
+
+The §6a gap closed at the source: run the same recursion with **cells, not vertex labels**, as the
+propagating object. No stored history is replayed — the engine needs only `prepare`'s `E` (and
+`forbidden` as pruning); `D`/`bpD` are not consulted. Intra-vertex moves are first-class variables.
+
+### 8.1 The E-multiplier ledger
+
+Every cell's emission enters the total exactly once, weighted by the move that enters the cell:
+
+| move into the cell | multiplier |
+|---|---|
+| source free entry / advance (one B-arc from the parent's cell) | **1** |
+| stall (some parent arm holds the same cell) | **β** |
+| cover (same vertex, one B-arc — a run cell) | **α** |
+
+No `1/outdeg` fractions appear anywhere: those exist only inside *stored* `D` values (shared cones);
+the fresh upward pass shares nothing — plain sums at split cells, consumed-once at merges.
+
+**Deferred entry.** Whether a vertex's *entry* cell pays `1` or `β` depends on the parent's cell
+(stall ⇔ the entry lies in some parent's run) — so each vertex's entry-`E` is **deferred to the
+step that connects it to its parent**, and at a merge to the **last** arm (any arm stalling ⇒ `β`).
+
+### 8.2 The sweep
+
+Reverse topological order, one vertex at a time (the one-step formulation):
+
+* a vertex's table is keyed by its **entry cell** (its interface to the parent); a row = the choice
+  of entry + **run** (a directed cover path from the entry), value = `α·E` of the run's cover cells
+  + for every child: the connection step (`β·E(child entry)` on stall, `1·E` on advance, both
+  requiring the child's entry to be the run's end cell or one B-arc past it) + the child's value.
+  Contract per key. A **split** simply has several children in that sum — all connected through the
+  same run end: (V3) per cell, by construction.
+* a child with **several parents** (a merge) is absorbed by **one** parent line (consumed-once); every
+  other parent line starts a fresh table seeded at the child's entry-cell interface with a **pending
+  separator** `(child, entry, stall-flag)` and the child's entry-`E` left unpaid.
+* **cell removal (pre-pass)**: run one **reverse search from all sink cells** over the cell-move
+  graph — cover reversed inside a vertex, advance/stall reversed across edges — and **remove every
+  cell the exploration never sees**, in every role (entries, run ends, intermediates alike): an
+  unseen cell cannot appear on any chain to a sink. One sweep (`sink_reachable`), no role
+  bookkeeping; runs may not cover removed cells either. It over-approximates exact usefulness (a
+  split-end kept via one child may still fail the other — the join's own dead-combo handling absorbs
+  that), which is precisely what makes it safe. The upstream mirror (no path from sources) stays
+  pruned by the `D < ∞` filter. A vertex with no surviving cell ⇒ immediate, precisely located
+  infeasibility.
+* **roots**: each source adds its own entry-`E` (always full — free entry). The component's answer
+  joins all root tables **on their pending separators** (cells must match; the deferred entry-`E`
+  is paid once, `β` if any arm's stall-flag is set); the minimum joined row is the exact optimum
+  over the **full cell-level space** — runs included.
+
+Validity of the final `M` is judged by `check_rules`, unchanged.
+
+### 8.3 Expected invariants (the three-way cross-validation)
+
+`C(cell-join) ≤ C(branching)` **always** — no coverage exception (this is what closes §6a) — and
+`C(cell-join) ≤ C(vertex-join)`; all three valid or loudly infeasible. Verified below.
+
+### 8.4 Verification results (`scripts/cell_join_prototype.py`)
+
+| check | result |
+|---|---|
+| tiny dense-B cases (chain, y-split) vs **full-space** brute force (all entry+run combinations) | equal to the digit, 3 weights each |
+| mini-merge (pending-separator path) vs branching & vertex-join | equal, 3 weights |
+| 30 random mini polytrees vs full-space brute force | **30/30 exact & valid** |
+| `value == C(M)` self-check | passes on every case |
+| §6a closure — divergence hunt (200 random dense-B cases) | 4 cases where **cell-join < vertex-join**; in each, cell-join == branching, and where the full brute is computable, **cell-join == full-space optimum** (e.g. 15.382 vs vertex-join 15.407) |
+
+The cell-level engine is exact over the **full** cell-level space — runs included — and closes the
+§6a gap by construction and by measurement. Status: prototype; wiring it in as `extract_cell` (or as
+the replacement for the vertex-level join) is the remaining implementation step, after which the
+three-way cross-validation of §8.3 becomes the standing verification harness.
