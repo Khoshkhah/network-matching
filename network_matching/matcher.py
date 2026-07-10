@@ -960,8 +960,8 @@ class DuckDBMapMatcher:
         edge tables are converted to ``networkx`` graphs internally (each polyline densified at
         ``step_meters`` — this supplies the subdivision; shared endpoints become junctions snapped
         at ``snap_decimals``). Runs the segment-mode pipeline (arc states with a ``bearing_weight``
-        heading term) and the chosen extraction engine (``"cell"`` exact / ``"branch"`` /
-        ``"join"`` / ``"all"`` = cheapest valid of the three); ``alpha ∈ (0,1]`` discounts 1:N
+        heading term) and the chosen extraction engine (``"cell"`` exact / ``"join"``
+        cross-validation / ``"all"`` = cheapest valid of the two); ``alpha ∈ (0,1]`` discounts 1:N
         coverage, ``beta ∈ [1,∞)`` penalizes N:1 stalls (docs/dag_dtw_matching.md §3).
 
         Returns ``(dag_long, dag_summary)`` — the Mode-1-style pair:
@@ -976,7 +976,7 @@ class DuckDBMapMatcher:
         (increase ``max_distance``)."""
         from shapely import wkt as _shapely_wkt
         from .dag_dtw import (edges_to_digraph, line_digraph, prepare, forward,
-                              extract, extract_join, extract_cell, _cost_of, check_rules)
+                              extract_join, extract_cell, _cost_of, check_rules)
         if not self.source_a or not self.source_b or not self.utm_srid:
             raise ValueError("Sources not configured. Call configure_sources() first.")
         r = float(max_distance if max_distance is not None else (self.max_distance or 30.0))
@@ -1000,12 +1000,12 @@ class DuckDBMapMatcher:
             LB.nodes[(u, v)]["road_id"] = B[u][v]["road_id"]
         prepare(LA, LB, r=r, bearing_weight=bearing_weight)
         forward(LA, LB, alpha=alpha, beta=beta)
-        engines = {"cell": extract_cell, "branch": extract, "join": extract_join}
+        engines = {"cell": extract_cell, "join": extract_join}
         if engine in engines:
             M, _ = engines[engine](LA, LB, alpha, beta)
-        elif engine == "all":                                   # cheapest valid of the three
+        elif engine == "all":                                   # cheapest valid of the two
             best = None
-            for fn in (extract_cell, extract, extract_join):
+            for fn in (extract_cell, extract_join):
                 try:
                     Mx, _ = fn(LA, LB, alpha, beta)
                 except ValueError:
@@ -1014,10 +1014,10 @@ class DuckDBMapMatcher:
                 if best is None or c < best[0] - 1e-12:
                     best = (c, Mx)
             if best is None:
-                raise ValueError("all three extraction engines infeasible -- increase max_distance")
+                raise ValueError("both extraction engines infeasible -- increase max_distance")
             M = best[1]
         else:
-            raise ValueError(f"unknown engine {engine!r} (use 'cell', 'branch', 'join' or 'all')")
+            raise ValueError(f"unknown engine {engine!r} (use 'cell', 'join' or 'all')")
 
         rows = []
         for (sa, sb) in M:                                      # arc pair -> input-edge pair + drift

@@ -1,10 +1,10 @@
 """DAG-DTW debugging visualization (Mode 3) — standalone HTML written to output/.
 
-Runs the full pipeline (prepare -> forward -> all three extraction engines) on a synthetic case and
+Runs the full pipeline (prepare -> forward -> both extraction engines) on a synthetic case and
 renders two linked views:
 
   1. CORRESPONDENCE — source A (black, real position), target B (grey, lifted), orange match links;
-     a dropdown switches between the three engines (cell join / branching / vertex join), the title
+     a dropdown switches between the two engines (cell join / vertex join), the title
      showing each engine's decision cost and validity.
   2. CELL TABLE — every candidate cell (A-vertex row x B-cell column) colored by state:
      green = alive, orange X = forbidden (the §4.1a coupling), grey = removed by the sink-search
@@ -12,7 +12,7 @@ renders two linked views:
      Hover shows E, D and the stored back-pointer.
 
 Also prints a text diagnostic: per-vertex cell counts, the engine comparison table, and the
-cross-validation verdict (C(cell) <= both -- an exactness invariant, docs §10.3).
+cross-validation verdict (C(cell) <= C(join) -- an exactness invariant, docs §10.2).
 
 Run:
     python scripts/dag_dtw_debug_viz.py --case y_split
@@ -33,7 +33,7 @@ import networkx as nx
 import numpy as np
 import plotly.graph_objects as go
 
-from network_matching.dag_dtw import (digraph, line_digraph, prepare, forward, extract,
+from network_matching.dag_dtw import (digraph, line_digraph, prepare, forward,
                                        extract_join, extract_cell, check_rules, _cost_of,
                                        _cell_reachable, _b_order, INF)
 
@@ -240,7 +240,7 @@ def main():
         print(f"{str(a):>14} {len(cand):>5} {na:>6} {nf:>10} {nr:>8} {ni:>6}")
 
     engines = {}
-    for name, fn in (("cell join", extract_cell), ("branching", extract), ("vertex join", extract_join)):
+    for name, fn in (("cell join", extract_cell), ("vertex join", extract_join)):
         t0 = time.perf_counter()
         try:
             M, _ = fn(src, tgt, args.alpha, args.beta)
@@ -255,7 +255,7 @@ def main():
     cc = engines["cell join"][1]
     if cc is not None:
         ok = all(o[1] is None or cc <= o[1] + 1e-6 for o in engines.values())
-        print(f"cross-validation: C(cell) <= both others  ->  {'OK' if ok else '*** VIOLATED (exactness bug) ***'}")
+        print(f"cross-validation: C(cell) <= C(vertex join)  ->  {'OK' if ok else '*** VIOLATED (exactness bug) ***'}")
 
     fig1 = correspondence_figure(A0, B0, src, tgt, engines)
     fig2 = cell_table_figure(src, tgt, seen, engines["cell join"][0])

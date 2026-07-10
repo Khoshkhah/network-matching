@@ -6,7 +6,7 @@ import networkx as nx
 import pytest
 
 from network_matching.dag_dtw import (digraph, line_digraph, prepare, forward, backward, match_dag, NotADAG,
-                                       extract, extract_join, extract_cell, extract_two_table,
+                                       extract_join, extract_cell, extract_two_table,
                                        check_reciprocity, check_reachability, check_forward_v3,
                                        check_backward_v2, check_rules, check_split_exits,
                                        layer_order, _advance_anchor, _cost_of,
@@ -136,7 +136,7 @@ def test_reachability_has_teeth():
 
 def test_extract_raises_feasibility_not_keyerror():
     """A merge whose branches can't co-reach within r must raise the feasibility ValueError -- not crash
-    with KeyError on a None back-pointer (the coupled-infeasibility guard in extract)."""
+    with KeyError on a None back-pointer (the coupled-infeasibility guard in the two-table traceback)."""
     A = digraph({0: (26.65, 8.0), 1: (17.66, 17.2), 2: (6.86, 10.31)}, [(0, 1), (2, 1)])   # merge at 1
     B = digraph({"b0": (19.95, 17.41), "b1": (1.14, 15.82), "b2": (12.09, 1.99),
                  "b3": (3.67, -1.07), "b4": (5.08, 4.52), "b5": (9.15, -1.29)},
@@ -147,9 +147,9 @@ def test_extract_raises_feasibility_not_keyerror():
 
 
 def test_coverage_gap_fill_backward_run():
-    """A 1:N run recorded on the BACKWARD cover chain must be materialised (§8.6 gap-fill), not dropped:
-    a chain 0->1->2 at alpha=0.5 where node 2 covers b3->b5 -- b3 is recorded backward. extract() now
-    fills the gap (2, b3) instead of leaving a V2/V3 hole."""
+    """A 1:N run recorded on the BACKWARD cover chain must be materialised (the §6b gap-fill), not
+    dropped: a chain 0->1->2 at alpha=0.5 where node 2 covers b3->b5 -- b3 is recorded backward.
+    extract_two_table() fills the gap (2, b3) instead of leaving a V2/V3 hole."""
     import random
     A = digraph({0: (1.34, 12.48), 1: (16.92, 1.96), 2: (0.9, 18.8)}, [(0, 1), (1, 2)])
     r = random.Random(127 + 90001)
@@ -280,8 +280,8 @@ def test_forward_requires_subdivision():
 
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
 def test_forward_pipeline_with_two_table_extraction(alpha, beta):
-    """the forward pass composes with the unchanged backward + extract: the committed matching is a legal
-    warping and the split commits to a surviving (non-forbidden) cell."""
+    """the forward pass composes with the unchanged backward + two-table traceback: the committed
+    matching is a legal warping and the split commits to a surviving (non-forbidden) cell."""
     A, B = make("split")
     prepare(A, B, r=20.0)
     forward(A, B, alpha=alpha, beta=beta)
@@ -355,92 +355,43 @@ def test_v3_reachability_and_invariant_random_sweep(alpha, beta):
 
 
 # ---------------------------------------------------------------------------------------------------
-# Forward-only anchored extraction (design doc "Fork B realized"): two pointer types, no backward
-# table -- anchor = fewest usable cells, per-label flood, reject-and-retry, direct-cost selection.
+# The judge on adversarial targets + located feasibility (docs §5.3, §7)
 # ---------------------------------------------------------------------------------------------------
-@pytest.mark.parametrize("name", ["chain", "split", "merge"])
-@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
-def test_extract_scenarios_valid(name, alpha, beta):
-    """extract (forward table only -- no backward pass) returns a legal warping on every
-    scenario and weighting; committed cells are never forbidden; the result is deterministic."""
-    A, B = make(name)
-    prepare(A, B, r=20.0)
-    forward(A, B, alpha=alpha, beta=beta)
-    M, committed = extract(A, B, alpha=alpha, beta=beta)
-    v1, v2, v3 = check_rules(M, A, B)
-    assert not (v1 or v2 or v3), f"{name} a={alpha} b={beta}: {v1} {v2} {v3}"
-    assert set(committed) == set(A.nodes)                       # full coverage (V4)
-    assert all(not A.nodes[a]["cand"][v].get("forbidden") for a, v in committed.items())
-    M2, c2 = extract(A, B, alpha=alpha, beta=beta)
-    assert M2 == M and c2 == committed                          # deterministic
-
-
-@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.2, 0.2)])
-def test_extract_segment_mode(alpha, beta):
-    """The identical extraction on the line-graphs (segment mode) -- same code, arc index set."""
-    A, B = make("split")
-    LA, LB = line_digraph(A), line_digraph(B)
-    prepare(LA, LB, r=20.0)
-    forward(LA, LB, alpha=alpha, beta=beta)
-    M, committed = extract(LA, LB, alpha=alpha, beta=beta)
-    v1, v2, v3 = check_rules(M, LA, LB)
-    assert not (v1 or v2 or v3)
-    assert set(committed) == set(LA.nodes)
-
-
-@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
-def test_extract_random_sweep(alpha, beta):
-    """Random out-trees over random (often cyclic) targets: the label enumeration NEVER exhausts
-    (reject-and-retry always finds a workable label), the result NEVER violates V2/V3 (the couplings
-    are by construction), and any V1 flag occurs only on a CYCLIC B -- the documented local-predicate
-    sensitivity (a 2-cycle makes a legal forward step also readable backward), which the two-table
-    extract shares on the same inputs."""
-    for seed in range(30):
-        A, B = _rand_tree_case(seed)
-        prepare(A, B, r=40.0)
-        forward(A, B, alpha=alpha, beta=beta)
-        M, committed = extract(A, B, alpha=alpha, beta=beta)   # must not raise
-        v1, v2, v3 = check_rules(M, A, B)
-        assert not v2 and not v3, f"seed {seed}: V2/V3 must be impossible by construction"
-        if v1:
-            assert not nx.is_directed_acyclic_graph(B), \
-                f"seed {seed}: V1 on an ACYCLIC target is a real bug"
-        assert set(committed) == set(A.nodes)
-
-
 def test_two_cycle_judge_prefers_valid():
     """The SMALLEST adversarial input: a 2-vertex chain over a 2-cycle target (|A|=2, |B|=2). On p⇄q
     the local V1 predicate cannot orient a step, so EVERY matching separating the two vertices —
-    including the geometrically nicest {(0,p),(1,q)} — is flagged. The judge discards them (validity
-    IS the definition of a matching) and returns a VALID candidate instead — here a stall, both
-    vertices on one cell. The separating alternative stays flagged, documenting the validator's
-    2-cycle limit; the extraction no longer *returns* anything invalid."""
+    including the geometrically nicest {(0,p),(1,q)} — is flagged (docs §7). NO engine ever returns
+    an invalid matching: the cell join's root contraction leaves only the flagged row, so it REFUSES
+    (loud ValueError); the vertex join returns a VALID stall (both vertices on one cell); the
+    cross-validating engine='all' therefore still succeeds."""
     A = digraph({0: (0, 0), 1: (10, 0)}, [(0, 1)])
     B = digraph({"p": (0, 1), "q": (10, 1)}, [("p", "q"), ("q", "p")])
     prepare(A, B, r=20.0)
     forward(A, B)
-    M, _ = extract(A, B)
-    v1, v2, v3 = check_rules(M, A, B)
-    assert not (v1 or v2 or v3)                                 # the judge only returns VALID matchings
+    with pytest.raises(ValueError):                             # refusal, never an invalid return
+        extract_cell(A, B)
+    M, _ = extract_join(A, B)
+    assert not any(check_rules(M, A, B))                        # the valid stall
+    M2, _ = match_dag(A, B, r=20.0, engine="all")               # cross-validation saves the case
+    assert not any(check_rules(M2, A, B))
     assert check_rules({(0, "p"), (1, "q")}, A, B)[0]           # the separating matching is flagged ...
     assert check_rules({(0, "q"), (1, "p")}, A, B)[0]           # ... and so is its mirror: 2-cycle limit
 
 
-
-def test_extract_raises_when_infeasible_forward_only():
-    """A vertex whose row is all-infinite (gate severed between two far-apart target chains) leaves
-    the anchor without a usable cell -> ValueError, never a broken matching."""
+def test_extract_cell_raises_when_infeasible():
+    """A vertex whose row is all-infinite (gate severed between two far-apart target chains) has no
+    surviving cell -> the located feasibility ValueError (docs §5.2), never a broken matching."""
     A = digraph({0: (0, 0), 1: (100, 0)}, [(0, 1)])
     B = digraph({"c0": (0, 1), "c1": (1, 1), "d0": (100, 1), "d1": (101, 1)},
                 [("c0", "c1"), ("d0", "d1")])
     prepare(A, B, r=5.0)
     forward(A, B)
     with pytest.raises(ValueError):
-        extract(A, B)
+        extract_cell(A, B)
 
 
 # ---------------------------------------------------------------------------------------------------
-# The junction-join extraction (docs/dag_dtw_matching.md §10) + cross-validation of both engines
+# The vertex-level junction join (docs/dag_dtw_matching.md §10) -- the cross-validation engine
 # ---------------------------------------------------------------------------------------------------
 IN_DOMAIN = [(1.0, 1.0), (0.5, 1.0), (0.3, 1.5), (1.0, 2.0)]
 
@@ -526,7 +477,7 @@ def test_extract_join_segment_mode(alpha, beta):
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 2.0)])
 def test_extract_join_exact_on_merge_shape(alpha, beta):
     """The consumed-once merge arithmetic: on the canonical U->x->m<-z<-V shape the join equals the
-    brute-force optimum over all sink-label combinations (docs/dag_dtw_matching.md §10 §5)."""
+    brute-force optimum over all sink-label combinations (docs/dag_dtw_matching.md §10.1)."""
     import itertools
     A, B = _merge_shape()
     prepare(A, B, r=40.0)
@@ -550,42 +501,8 @@ def test_extract_join_exact_on_merge_shape(alpha, beta):
     assert abs(_cost_of(A, B, Mj, alpha, beta) - best) < 1e-6
 
 
-@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
-def test_extractions_cross_validate(alpha, beta):
-    """The two engines check each other: whenever both succeed, both matchings are valid, and the
-    join can lose to the branching ONLY through coverage (intra-vertex run alternatives -- outside
-    the join's stored-history family). Random subdivided polytrees over often-cyclic targets."""
-    for seed in range(16):
-        A, B = _rand_polytree_case(seed)
-        prepare(A, B, r=40.0)
-        forward(A, B, alpha=alpha, beta=beta)
-        try:
-            Mj, _ = extract_join(A, B, alpha=alpha, beta=beta)
-        except ValueError:
-            Mj = None
-        try:
-            Mb, _ = extract(A, B, alpha=alpha, beta=beta)
-        except ValueError:
-            Mb = None
-        if Mj is not None:
-            assert not any(check_rules(Mj, A, B)), f"seed {seed}: join returned invalid M"
-        if Mb is not None:
-            assert not any(check_rules(Mb, A, B)), f"seed {seed}: branching returned invalid M"
-        if Mj is not None and Mb is not None:
-            cj = _cost_of(A, B, Mj, alpha, beta)
-            cb = _cost_of(A, B, Mb, alpha, beta)
-            if cj > cb + 1e-6:
-                # the join is exact over the STORED-HISTORY family (vertex resolution); branching
-                # can only beat it through intra-vertex run alternatives -- so a divergence must
-                # involve coverage (docs/dag_dtw_matching.md §10, cell-resolution scope)
-                runs = any(len({v for a2, v in M if a2 == a}) > 1
-                           for M in (Mj, Mb) for a in {x for x, _ in M})
-                assert runs, (f"seed {seed}: join ({cj:.3f}) > branching ({cb:.3f}) "
-                              f"WITHOUT coverage -- a real exactness bug")
-
-
 # ---------------------------------------------------------------------------------------------------
-# The cell-level join (docs/dag_dtw_matching.md §10.2) + the three-way cross-validation
+# The cell-level join -- THE extraction (docs §5) + the standing cross-validation (docs §10.2)
 # ---------------------------------------------------------------------------------------------------
 def _full_space_brute(A, B, alpha, beta, run_cap=3, cap=200_000):
     """Ground truth over the FULL space: every (entry, run) combination per vertex, judged by
@@ -660,15 +577,15 @@ def test_extract_cell_equals_full_space_brute(alpha, beta):
                 [(f"b{i}", f"b{i+1}") for i in range(6)])
     prepare(A, B, r=25.0)
     forward(A, B, alpha=alpha, beta=beta)
-    M, _ = extract_cell(A, B, alpha=alpha, beta=beta, run_cap=3)
+    M, _ = extract_cell(A, B, alpha=alpha, beta=beta)
     bf = _full_space_brute(A, B, alpha, beta, run_cap=3)
     assert bf is not None
     assert abs(_cost_of(A, B, M, alpha, beta) - bf) < 1e-6
 
 
 def test_extract_cell_beats_vertex_join_on_divergence():
-    """The §6a/§8 closure, pinned: on this dense-B split (hunted divergence case), the cell join is
-    strictly cheaper than the vertex-level join, equals the full-space optimum, and stays valid."""
+    """The pinned divergence case (docs §10.2): on this dense-B split, the cell join is strictly
+    cheaper than the vertex-level join, equals the full-space optimum, and stays valid."""
     A = digraph({0: (0, 0), 1: (7, 0.371), 2: (14, 4.368), 3: (14, -3.301)},
                 [(0, 1), (1, 2), (1, 3)])
     B = digraph({"b0": (0.0, 0.743), "b1": (2.2, 0.766), "b2": (4.4, 1.091), "b3": (6.6, 0.726),
@@ -676,7 +593,7 @@ def test_extract_cell_beats_vertex_join_on_divergence():
                 [(f"b{i}", f"b{i+1}") for i in range(6)])
     prepare(A, B, r=20.0)
     forward(A, B, alpha=0.5, beta=1.0)
-    Mc, _ = extract_cell(A, B, alpha=0.5, beta=1.0, run_cap=3)
+    Mc, _ = extract_cell(A, B, alpha=0.5, beta=1.0)
     Mv, _ = extract_join(A, B, alpha=0.5, beta=1.0)
     cc = _cost_of(A, B, Mc, 0.5, 1.0)
     cv = _cost_of(A, B, Mv, 0.5, 1.0)
@@ -687,39 +604,38 @@ def test_extract_cell_beats_vertex_join_on_divergence():
 
 
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
-def test_three_way_cross_validation(alpha, beta):
-    """The standing harness: whenever engines succeed they are valid, and the cell join is never
-    costlier than EITHER other engine -- no coverage exception (it is exact over the full space)."""
+def test_cross_validation(alpha, beta):
+    """The standing harness (docs §10.2): whenever an engine succeeds it is valid, and the cell join
+    is never costlier than the vertex join -- no coverage exception (it is exact over the full
+    space). Random subdivided polytrees over often-cyclic targets."""
     for seed in range(14):
         A, B = _rand_polytree_case(seed)
         prepare(A, B, r=40.0)
         forward(A, B, alpha=alpha, beta=beta)
         results = {}
-        for tag, fn in (("cell", extract_cell), ("branch", extract), ("vtx", extract_join)):
+        for tag, fn in (("cell", extract_cell), ("vtx", extract_join)):
             try:
                 M, _ = fn(A, B, alpha, beta)
                 assert not any(check_rules(M, A, B)), f"seed {seed}: {tag} returned invalid M"
                 results[tag] = _cost_of(A, B, M, alpha, beta)
             except ValueError:
                 results[tag] = None
-        if results["cell"] is not None:
-            for other in ("branch", "vtx"):
-                if results[other] is not None:
-                    assert results["cell"] <= results[other] + 1e-6, \
-                        f"seed {seed}: cell join costlier than {other} -- exactness bug"
+        if results["cell"] is not None and results["vtx"] is not None:
+            assert results["cell"] <= results["vtx"] + 1e-6, \
+                f"seed {seed}: cell join costlier than the vertex join -- exactness bug"
 
 
 @pytest.mark.parametrize("name", ["chain", "split", "merge"])
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
-def test_three_way_cross_validation_segment(name, alpha, beta):
-    """SEGMENT mode: the same three-way harness on the line graphs -- every returning engine is
-    valid on L(A)/L(B), and the cell join is never costlier than either other engine."""
+def test_cross_validation_segment(name, alpha, beta):
+    """SEGMENT mode: the same harness on the line graphs -- every returning engine is valid on
+    L(A)/L(B), and the cell join is never costlier than the vertex join."""
     A, B = make(name)
     LA, LB = line_digraph(A), line_digraph(B)
     prepare(LA, LB, r=20.0, bearing_weight=2.0)
     forward(LA, LB, alpha=alpha, beta=beta)
     results = {}
-    for tag, fn in (("cell", extract_cell), ("branch", extract), ("vtx", extract_join)):
+    for tag, fn in (("cell", extract_cell), ("vtx", extract_join)):
         try:
             M, _ = fn(LA, LB, alpha, beta)
             assert not any(check_rules(M, LA, LB)), f"{name} {tag}: invalid segment M"
@@ -728,10 +644,9 @@ def test_three_way_cross_validation_segment(name, alpha, beta):
         except ValueError:
             results[tag] = None
     assert results["cell"] is not None, f"{name}: cell join infeasible in segment mode"
-    for other in ("branch", "vtx"):
-        if results[other] is not None:
-            assert results["cell"] <= results[other] + 1e-6, \
-                f"{name}: segment cell join costlier than {other} -- exactness bug"
+    if results["vtx"] is not None:
+        assert results["cell"] <= results["vtx"] + 1e-6, \
+            f"{name}: segment cell join costlier than the vertex join -- exactness bug"
 
 
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (0.3, 1.5)])
@@ -744,13 +659,13 @@ def test_extract_cell_segment_equals_full_space_brute(alpha, beta):
     LA, LB = line_digraph(A), line_digraph(B)
     prepare(LA, LB, r=25.0, bearing_weight=2.0)
     forward(LA, LB, alpha=alpha, beta=beta)
-    M, _ = extract_cell(LA, LB, alpha=alpha, beta=beta, run_cap=3)
+    M, _ = extract_cell(LA, LB, alpha=alpha, beta=beta)
     bf = _full_space_brute(LA, LB, alpha, beta, run_cap=3)
     assert bf is not None
     assert abs(_cost_of(LA, LB, M, alpha, beta) - bf) < 1e-6
 
 
-@pytest.mark.parametrize("engine", ["cell", "branch", "join", "all"])
+@pytest.mark.parametrize("engine", ["cell", "join", "all"])
 def test_match_dag_pipeline_wrapper(engine):
     """The one-call pipeline entry: prepare -> forward -> extraction, every engine, both modes."""
     A, B = make("split")
@@ -765,7 +680,7 @@ def test_match_dag_pipeline_wrapper(engine):
 
 
 # ---------------------------------------------------------------------------------------------------
-# DAG sources (accepted by default): the cell engine is exact on subdivided reconvergent DAGs (§10.4)
+# DAG sources (accepted by default): the cell engine is exact on subdivided reconvergent DAGs (docs §7, §10.2)
 # ---------------------------------------------------------------------------------------------------
 def _diamond_case(shift=0.4, jitter=0.0, seed=0):
     """Subdivided diamond: S→s1→J→{x,z}→m→t1→T (J splits, m reconverges) over a congruent
@@ -803,7 +718,7 @@ def test_extract_cell_exact_on_dag_diamonds(alpha, beta):
         A, B = _diamond_case(jitter=1.2, seed=seed)
         prepare(A, B, r=4.0)
         forward(A, B, alpha=alpha, beta=beta)
-        M, com = extract_cell(A, B, alpha=alpha, beta=beta, run_cap=1)
+        M, com = extract_cell(A, B, alpha=alpha, beta=beta)
         assert not any(check_rules(M, A, B))
         assert set(com) == set(A.nodes)
         bf = _full_space_brute(A, B, alpha, beta, run_cap=1)
@@ -852,7 +767,7 @@ def test_extract_cell_exact_on_random_reconvergent_dags():
             forward(A, B, 0.5, 1.0)
         except ValueError:
             continue
-        M, _ = extract_cell(A, B, 0.5, 1.0, run_cap=1)
+        M, _ = extract_cell(A, B, 0.5, 1.0)
         assert not any(check_rules(M, A, B)), f"seed {seed}"
         bf = _full_space_brute(A, B, 0.5, 1.0, run_cap=1)
         assert bf is not None and abs(_cost_of(A, B, M, 0.5, 1.0) - bf) < 1e-6, f"seed {seed}"

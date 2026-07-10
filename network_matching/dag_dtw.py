@@ -53,7 +53,7 @@ def _emit(ax: float, ay: float, abear, bx: float, by: float, bbear, lam: float) 
 def _validate(A: nx.DiGraph, B: nx.DiGraph) -> None:
     """Both are DiGraphs, every node has ``x``/``y``, and ``A`` is a **DAG** (directed-acyclic;
     reconvergences/diamonds are fine -- a tree is the special case). On reconvergent sources only
-    :func:`extract_cell` carries the exactness claim (docs/dag_dtw_matching.md §10.4)."""
+    :func:`extract_cell` carries the exactness claim (docs/dag_dtw_matching.md §7, §10.2)."""
     for name, G in (("A", A), ("B", B)):
         if not isinstance(G, nx.DiGraph):
             raise TypeError(f"{name} must be a networkx.DiGraph, got {type(G).__name__}")
@@ -376,9 +376,9 @@ def _is_cover(bp, c) -> bool:
 
 
 def extract_two_table(A: nx.DiGraph, B: nx.DiGraph):
-    """The two-table traceback (docs §5) — the PREVIOUS default extraction, kept for the §6b
-    cross-table diagnostics (:func:`check_reciprocity` compares its committed matching against both
-    tables) and for comparison; the default is now the forward-only :func:`extract`. Seed any
+    """The two-table traceback (docs §6b) — a PREVIOUS extraction, kept only for the cross-table
+    diagnostics (:func:`check_reciprocity` compares its committed matching against both tables);
+    the extraction is :func:`extract_cell` (docs §5). Seed any
     uncommitted vertex at its joint arg-min ``D+B−E`` (feasibility rule §1.3 if none is finite), then
     flood the stored back-pointers — commit each predecessor in the forward anchor's ``bpD`` and each
     successor in the backward anchor's ``bpB`` — until every vertex in the component is committed;
@@ -437,7 +437,7 @@ def extract_two_table(A: nx.DiGraph, B: nx.DiGraph):
             for (s, w) in cc[tail]["bpB"]:
                 commit(s, w)
 
-    # Coverage gap-fill (§8.6). A 1:N run recorded on the *backward* cover chain is missed by the
+    # Coverage gap-fill (docs §6b). A 1:N run recorded on the *backward* cover chain is missed by the
     # forward-only read above, leaving an uncovered target cell between two committed neighbours. Fill
     # it from the committed pivots, not the cover chains: for each source edge, cover the B-path between
     # the two pivots, assigning each still-uncovered cell to the downstream vertex it is a candidate of.
@@ -454,141 +454,8 @@ def extract_two_table(A: nx.DiGraph, B: nx.DiGraph):
 
 
 # ---------------------------------------------------------------------------------------
-# The extraction (docs §5) -- branching exploration over the forward table, valid-only judge
+# Decision cost of a relation (docs §3) -- shared by match_dag's engine="all" and the engines
 # ---------------------------------------------------------------------------------------
-def _reverse_bpD(A: nx.DiGraph) -> Dict[tuple, list]:
-    """The transpose ``R`` of the forward back-pointers: ``R[(p, x)]`` lists every finite cell
-    ``(c, w)`` with ``(p, x) in bpD[c][w]`` -- the DOWN-walk structure (same-vertex entries are the
-    reverse cover chain, other-vertex entries the child entry cells)."""
-    R: Dict[tuple, list] = {}
-    for c in A.nodes:
-        for w, cell in A.nodes[c]["cand"].items():
-            if cell["D"] >= INF:
-                continue
-            for (p, x) in cell["bpD"]:
-                if x is not None:
-                    R.setdefault((p, x), []).append((c, w))
-    return R
-
-
-def _pull_run(A: nx.DiGraph, st: dict, p: Hashable, y: Hashable) -> bool:
-    """Pull ``p``'s cover chain from cell ``y`` back to its already-known run cells (docs §5: runs
-    are not guessed -- the cells a connection references force exactly the chain between them).
-    False when the chain touches a forbidden cell or never meets the run."""
-    cc = A.nodes[p]["cand"]
-    seen = []
-    x = y
-    while x not in st["runs"][p]:
-        if x is None or x not in cc or cc[x].get("forbidden"):
-            return False
-        seen.append(x)
-        bp = cc[x]["bpD"]
-        if len(bp) == 1 and bp[0][0] == p:                      # COVER pair -> one B-arc back
-            x = bp[0][1]
-        else:
-            return False                                        # ran out of chain before meeting the run
-    st["runs"][p].update(seen)
-    return True
-
-
-def _explore_label(A: nx.DiGraph, R: Dict[tuple, list], comp: set, a0: Hashable, v0: Hashable,
-                   border: Dict[Hashable, int], cap: int) -> list:
-    """All complete candidate relations for ONE anchor label (docs §5). Deterministic moves are
-    taken; every genuine choice point -- a child vertex with several entry cells -- **branches**,
-    one continuation per option, every alternative kept alive until the judge. Touching a forbidden
-    cell (or a severed pointer) kills that branch only. Returns ``[(M, committed), ...]``; empty
-    when every branch dies."""
-    from collections import deque
-    forb = lambda a, v: v not in A.nodes[a]["cand"] or A.nodes[a]["cand"][v].get("forbidden")
-    fin = lambda a, v: A.nodes[a]["cand"][v]["D"] < INF
-    if forb(a0, v0) or not fin(a0, v0):
-        return []
-    states = [{"committed": {a0: v0}, "runs": {a0: {v0}}, "q": deque([a0])}]
-    out, processed = [], 0
-    seen_states: set = set()                                    # dedupe: same committed + same pending
-
-    def copy(st):
-        return {"committed": dict(st["committed"]),
-                "runs": {k: set(v) for k, v in st["runs"].items()},
-                "q": deque(st["q"])}
-
-    while states:
-        st = states.pop()
-        skey = (frozenset(st["committed"].items()), frozenset(st["q"]))
-        if skey in seen_states:                                 # identical future -- already explored
-            continue
-        seen_states.add(skey)
-        processed += 1
-        if processed > cap:
-            raise ValueError(f"extraction branching exceeded {cap} states -- raise max_states")
-        dead = False
-        while st["q"] and not dead:
-            c = st["q"].popleft()
-            w = st["committed"][c]
-            cc = A.nodes[c]["cand"]
-            # --- UP: own cover chain to the head, then the advance list (a merge commits ALL arms) ---
-            x = w
-            while True:
-                bp = cc[x]["bpD"]
-                if len(bp) == 1 and bp[0][0] == c:
-                    x = bp[0][1]
-                    if x is None or forb(c, x):
-                        dead = True
-                        break
-                    st["runs"][c].add(x)
-                else:
-                    break
-            if dead:
-                break
-            for (p, xp) in cc[x]["bpD"]:
-                if xp is None or forb(p, xp):
-                    dead = True
-                    break
-                if p in st["committed"]:
-                    if not _pull_run(A, st, p, xp):             # connects into p's run -> pull the chain
-                        dead = True
-                        break
-                else:
-                    st["committed"][p] = xp
-                    st["runs"][p] = {xp}
-                    st["q"].append(p)
-            if dead:
-                break
-            # --- DOWN: the run's forward closure, then each uncommitted child's entry options ---
-            clo = set(st["runs"][c])
-            frontier = list(clo)
-            while frontier:
-                y = frontier.pop()
-                for (c2, z) in R.get((c, y), []):
-                    if c2 == c and z not in clo and not forb(c, z):
-                        clo.add(z)
-                        frontier.append(z)
-            for s_ in A.successors(c):
-                if s_ in st["committed"]:
-                    continue
-                sc = A.nodes[s_]["cand"]
-                opts = sorted({t for y in clo for (s2, t) in R.get((c, y), [])
-                               if s2 == s_ and not forb(s_, t) and sc[t]["D"] < INF},
-                              key=lambda t: (border[t], str(t)))
-                if not opts:
-                    dead = True                                 # this branch cannot place s_
-                    break
-                for t in opts[1:]:                              # BRANCH: one continuation per option
-                    nst = copy(st)
-                    nst["committed"][s_] = t
-                    nst["runs"][s_] = {t}
-                    nst["q"].append(s_)
-                    nst["q"].appendleft(c)                      # reprocess c there (idempotent) for its other children
-                    states.append(nst)
-                st["committed"][s_] = opts[0]
-                st["runs"][s_] = {opts[0]}
-                st["q"].append(s_)
-        if not dead and set(st["committed"]) == comp:
-            out.append(({(a, v) for a, cells in st["runs"].items() for v in cells},
-                        st["committed"]))
-    return out
-
-
 def _cost_of(A: nx.DiGraph, B: nx.DiGraph, M: set, alpha: float, beta: float) -> float:
     """The decision cost of a complete relation, read off ``M`` and the graphs alone (docs §3/§5):
     per vertex, the run's ENTRY cell (no B-predecessor inside the run) pays full ``E`` -- or ``beta*E``
@@ -610,52 +477,8 @@ def _cost_of(A: nx.DiGraph, B: nx.DiGraph, M: set, alpha: float, beta: float) ->
     return C
 
 
-def extract(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
-            max_states: int = 4096):
-    """**The extraction** (docs §5) -- anchored branching enumeration over the forward table; **no
-    backward table**. Per weakly-connected component: the anchor is the vertex with the FEWEST usable
-    (non-forbidden, finite-``D``) cells; every usable anchor cell is explored via the two pointer
-    types (stored ``bpD`` up, its transpose down), and every genuine choice point **branches** -- all
-    alternatives stay alive until the judge. The judge discards candidates violating (V1)-(V4) --
-    validity is the definition of a matching -- and returns the cheapest valid ``C(M)``. Raises
-    ``ValueError`` when no candidate of any label survives, or when branching exceeds ``max_states``
-    (never a silent truncation). Requires :func:`prepare` + :func:`forward`. Returns
-    ``(M, committed)``. The two-table traceback remains as :func:`extract_two_table` (docs §6b)."""
-    border = _b_order(B)
-    R = _reverse_bpD(A)
-    M_all: set = set()
-    committed_all: Dict[Hashable, Hashable] = {}
-    for comp in nx.weakly_connected_components(A):
-        def usable(a):
-            return [v for v, c in A.nodes[a]["cand"].items()
-                    if not c.get("forbidden") and c["D"] < INF]
-        anchor = min(comp, key=lambda a: (len(usable(a)), str(a)))
-        labels = sorted(usable(anchor), key=lambda v: border[v])
-        if not labels:
-            raise ValueError(f"anchor {anchor!r} has no usable cell -- increase match_radius_m")
-        best = None
-        seen_M = set()
-        for v0 in labels:
-            for M, com in _explore_label(A, R, comp, anchor, v0, border, max_states):
-                key = frozenset(M)
-                if key in seen_M:
-                    continue
-                seen_M.add(key)
-                v1, v2, v3 = check_rules(M, A, B)
-                if v1 or v2 or v3:
-                    continue                                    # invalid candidate -- discarded
-                cost = _cost_of(A, B, M, alpha, beta)
-                if best is None or cost < best[0] - 1e-12:
-                    best = (cost, M, com)
-        if best is None:
-            raise ValueError(f"no valid candidate in component of {anchor!r} -- increase match_radius_m")
-        M_all |= best[1]
-        committed_all.update(best[2])
-    return M_all, committed_all
-
-
 # ---------------------------------------------------------------------------------------
-# The junction-join extraction (docs/dag_dtw_matching.md §10) -- forward-only, EXACT
+# The vertex-level junction join (docs/dag_dtw_matching.md §10) -- cross-validation engine
 # ---------------------------------------------------------------------------------------
 def _reconstruct_from_sinks(A, sink_labels):
     """``(M, committed)`` from pinned sink labels by the ``bpD`` up-flood (cover chains -> run cells,
@@ -724,20 +547,21 @@ def _jj_induce(A, cells, path):
 
 
 def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0):
-    """**The junction-join extraction** (docs/dag_dtw_matching.md §10) -- forward-only and
-    **exact**: the optimal labels for all sinks and splits by a recursive table join over the split
-    hierarchy. Every table is a sink-type table (label -> through-cost + pinned labels + recorded
-    cells); splits are processed deepest-first; each branch's terminal is found by walking down to
-    the first table-owned vertex (consumed-once: an absorbed table serves a later split through its
+    """**The vertex-level junction join** (docs/dag_dtw_matching.md §10) -- the CROSS-VALIDATION
+    engine, kept only to validate :func:`extract_cell`; exact over the stored-history family: the
+    optimal labels for all sinks and splits by a recursive table join over the split hierarchy.
+    Every table is a sink-type table (label -> through-cost + pinned labels + recorded cells);
+    splits are processed deepest-first; each branch's terminal is found by walking down to the
+    first table-owned vertex (consumed-once: an absorbed table serves a later split through its
     recorded interior cells -- the polytree message flow, no cost division). The root table's
-    minimum row is the exact decision-cost optimum; rows are tried cheapest-first and the first
-    whose reconstructed ``M`` passes ``check_rules`` wins (the judge's word is unchanged -- but note
-    the contraction keeps only per-label bests, so the validity fallback is narrower than
-    :func:`extract`'s candidate pool). Requires :func:`prepare` + :func:`forward`. Raises
-    ``ValueError`` when no row of a component survives. Returns ``(M, committed)``.
+    minimum row is the family's decision-cost optimum; rows are tried cheapest-first and the first
+    whose reconstructed ``M`` passes ``check_rules`` wins. Requires :func:`prepare` +
+    :func:`forward`. Raises ``ValueError`` when no row of a component survives. Returns
+    ``(M, committed)``.
 
-    Cross-validation invariant vs :func:`extract` (branching): whenever both succeed,
-    ``C(M_join) <= C(M_branch)`` -- the join is exact, the branching is best-of-enumerated."""
+    Cross-validation invariant vs :func:`extract_cell` (docs §10.2): whenever both succeed,
+    ``C(M_cell) <= C(M_join)`` -- the cell join is exact over the FULL space, this one only over
+    the stored-history family (intra-vertex run alternatives are frozen)."""
     M_all: set = set()
     committed_all: Dict[Hashable, Hashable] = {}
     for comp in nx.weakly_connected_components(A):
@@ -836,10 +660,11 @@ def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 
 
 # ---------------------------------------------------------------------------------------
-# The cell-level join (docs/dag_dtw_matching.md §10.2) -- full resolution, from scratch
+# The cell-level join (docs/dag_dtw_matching.md §5) -- THE extraction, implemented as the
+# per-cell backward sweep over the cell DAG (docs/cell_dag_extraction.md)
 # ---------------------------------------------------------------------------------------
 def _cell_reachable(A: nx.DiGraph, B: nx.DiGraph) -> set:
-    """§8.2 cell-removal pre-pass: one reverse search from ALL sink cells over the cell-move graph
+    """The §5.2 cell-removal pre-pass: one reverse search from ALL sink cells over the cell-move graph
     (cover reversed inside a vertex, advance/stall reversed across edges). Cells never seen cannot
     appear on any chain to a sink and are removed up front, in every role."""
     seen, stack = set(), []
@@ -865,24 +690,6 @@ def _cell_reachable(A: nx.DiGraph, B: nx.DiGraph) -> set:
     return seen
 
 
-def _cell_runs(A: nx.DiGraph, B: nx.DiGraph, a: Hashable, e: Hashable, seen: set,
-               cap: int, border: Dict[Hashable, int]):
-    """All directed cover paths from entry ``e`` inside cand(a) (simple, <= ``cap`` cover cells);
-    removed cells cannot be covered. Deterministic order."""
-    cand = A.nodes[a]["cand"]
-    out, stack = [], [(e,)]
-    while stack:
-        path = stack.pop()
-        out.append(path)
-        if len(path) > cap:
-            continue
-        for w in sorted(B.successors(path[-1]), key=lambda t: border.get(t, 0)):
-            if (w in cand and not cand[w].get("forbidden") and w not in path
-                    and (a, w) in seen):
-                stack.append(path + (w,))
-    return out
-
-
 def _pend_union(p0: dict, p1: dict):
     """Union two pending dicts; None on a separator-cell conflict; stall flags OR."""
     out = dict(p0)
@@ -895,21 +702,26 @@ def _pend_union(p0: dict, p1: dict):
 
 
 def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
-                 run_cap: int = 8, max_rows: int = 50000):
-    """**The cell-level join** (docs/dag_dtw_matching.md §10.2) -- exact over the FULL
-    cell-level space, runs included. Built from scratch upstream: only ``prepare``'s ``E`` and the
-    ``forbidden``/``D<inf`` filters (pruning) are used -- the stored propagation is never consulted.
-    A row is ``(entry, value, pending, cells)``; the E-multiplier ledger is {1 advance/source,
-    beta stall, alpha cover}; a vertex's entry-E is DEFERRED to its parent step (at a merge, to the
-    root join -- beta if ANY arm stalls); a merge child is absorbed by one parent line
-    (consumed-once), the other lines carry pending separators matched at the root join. ``M``
-    travels with the rows -- the winning row's cells map IS the relation, no traceback.
+                 max_rows: int = 50000):
+    """**THE extraction -- the cell-level join**, implemented as the per-cell backward sweep over
+    the cell DAG (docs/cell_dag_extraction.md; semantics unchanged: docs/dag_dtw_matching.md §5).
+    One reverse-topological sweep, sinks -> sources; per cell two states -- END (children attach
+    at the run end) and ENTRY (the cover recursion: runs are IMPLICIT, one arc per cover edge, no
+    ``run_cap``) -- each a table with one row ``(value, pending, cells)`` per pending signature,
+    cheapest only. Rows are pushed to their readers' inboxes and the row is freed the same turn,
+    so peak memory is the sweep frontier, not the whole table set. Merge coordination is
+    consumed-once + ``pending``, with **early discharge**: a key is paid and dropped at the arms'
+    first common ancestor (statically precomputed), which keeps chains of merges linear. Exact
+    over the FULL cell-level space; built from ``E`` alone -- the forward table serves only as
+    pruning (``forbidden`` / ``D < inf`` / sink-reach). The E-multiplier ledger is {1
+    advance/source, beta stall, alpha cover}; a vertex's entry-E is deferred to its parent's
+    connecting edge (a merge's to its discharge). ``M`` travels with the rows -- the winning
+    row's cells map IS the relation, no traceback.
 
-    Joined rows are tried cheapest-first; the first whose ``M`` passes ``check_rules`` wins. Raises
-    ``ValueError`` on infeasibility (a vertex with no surviving cell -- located precisely), when no
-    root row is valid, or when a table exceeds ``max_rows`` (loud, never a silent truncation).
-    ``run_cap`` bounds cover-run length. Requires :func:`prepare` + :func:`forward`. Returns
-    ``(M, committed)``."""
+    Joined rows are tried cheapest-first; the first whose ``M`` passes ``check_rules`` wins.
+    Raises ``ValueError`` on infeasibility (a vertex with no surviving cell -- located precisely),
+    when no root row is valid, or when a table exceeds ``max_rows`` (loud, never a silent
+    truncation). Requires :func:`prepare` + :func:`forward`. Returns ``(M, committed)``."""
     border = _b_order(B)
     seen = _cell_reachable(A, B)
     for X in A.nodes:
@@ -917,76 +729,168 @@ def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
                    for v in A.nodes[X]["cand"]):
             raise ValueError(f"vertex {X!r} has no surviving cell (sink-search + D-filter) -- "
                              "increase match_radius_m")
+    bsucc = {v: set(B.successors(v)) for v in B.nodes}
+    bpred = {v: set(B.predecessors(v)) for v in B.nodes}
     M_all: set = set()
     committed_all: Dict[Hashable, Hashable] = {}
     for comp in nx.weakly_connected_components(A):
         comp = set(comp)
         order = [n for n in nx.topological_sort(A) if n in comp]
-        tables: Dict[Hashable, list] = {}
-        absorbed_by: Dict[Hashable, Hashable] = {}
+        absorbed_by: Dict[Hashable, Hashable] = {}              # child -> its absorbing arm
         for X in reversed(order):
+            for c in sorted(A.successors(X), key=str):
+                if c in comp and c not in absorbed_by:
+                    absorbed_by[c] = X
+        row_cells = {X: [v for v in A.nodes[X]["cand"] if (X, v) in seen] for X in comp}
+        inbox: Dict[Hashable, dict] = {X: {} for X in comp}     # inbox[P][u][c] -> option rows
+        roots: list = []
+
+        # early discharge: a key (m, ce) is paid & dropped at the first swept vertex whose cone
+        # contains ALL of m's arms (their common ancestors, static) -- there every arm is folded
+        # into the row, so the assumption is a fact (docs/cell_dag_extraction.md §3.5).
+        dischargeable: Dict[Hashable, set] = {X: set() for X in comp}
+        for m in comp:
+            arms = list(A.predecessors(m))
+            if len(arms) < 2:
+                continue
+            anc = None
+            for p in arms:
+                s = nx.ancestors(A, p) | {p}
+                anc = s if anc is None else anc & s
+            for X in anc & comp:
+                dischargeable[X].add(m)
+
+        for X in reversed(order):                               # the backward sweep, row at a time
             cand = A.nodes[X]["cand"]
-            rows: Dict[tuple, tuple] = {}
-            entries = sorted((v for v in cand
-                              if (X, v) in seen and cand[v]["D"] < INF), key=lambda t: border[t])
-            for e in entries:
-                for R in _cell_runs(A, B, X, e, seen, run_cap, border):
-                    u = R[-1]
-                    combos = [(sum(alpha * cand[c]["E"] for c in R[1:]), {}, {X: R})]
-                    dead = False
-                    for c in sorted(A.successors(X), key=str):
-                        if c not in comp:
-                            continue
-                        if c in absorbed_by and absorbed_by[c] != X:
-                            child_rows = [(ce, 0.0, {(c, ce): False}, {})
-                                          for ce in sorted(A.nodes[c]["cand"], key=lambda t: border[t])
-                                          if (c, ce) in seen]
-                            deferred = True
-                        else:
-                            absorbed_by[c] = X
-                            child_rows = tables[c]
-                            deferred = A.in_degree(c) > 1
+            cells_row = row_cells[X]
+            rowset = set(cells_row)
+            children = [c for c in sorted(A.successors(X), key=str) if c in comp]
+
+            # END[(X,u)]: children attach at the run end u (cell_dag doc §3.2)
+            END: Dict[Hashable, list] = {}
+            my_inbox = inbox.pop(X)                             # consumed this turn, then freed
+            for u in sorted(cells_row, key=lambda t: border[t]):
+                combos = [(0.0, {}, {X: (u,)})]
+                dead = False
+                for c in children:
+                    if absorbed_by.get(c) == X:                 # absorbed: options were pushed
+                        opts = my_inbox.get(u, {}).get(c, [])
+                    else:                                       # other arm of a merge: interface
                         opts = []
-                        for (ce, cval, cpend, ccells) in child_rows:
+                        for ce in sorted(A.nodes[c]["cand"], key=lambda t: border[t]):
+                            if (c, ce) not in seen:
+                                continue
                             stall = (ce == u)
-                            if not stall and ce not in B.successors(u):
-                                continue                        # children connect at the run end only
-                            add = cval if deferred else \
-                                cval + (beta if stall else 1.0) * A.nodes[c]["cand"][ce]["E"]
-                            pend = dict(cpend)
-                            if deferred:
-                                pend[(c, ce)] = pend.get((c, ce), False) or stall
-                            opts.append((add, pend, ccells))
-                        if not opts:
-                            dead = True
-                            break
-                        nxt = []
-                        for (v0, p0, c0) in combos:
-                            for (av, ap, ac) in opts:
-                                p = _pend_union(p0, ap)
-                                if p is not None:
-                                    nxt.append((v0 + av, p, {**c0, **ac}))
-                        combos = nxt
-                        if not combos:
-                            dead = True
-                            break
-                    if dead:
-                        continue
-                    for (val, pend, cells) in combos:
-                        key = (e, frozenset(pend.items()))
-                        if key not in rows or val < rows[key][1] - 1e-12:
-                            rows[key] = (e, val, pend, cells)
-                    if len(rows) > max_rows:
+                            if not stall and ce not in bsucc[u]:
+                                continue
+                            opts.append((0.0, {(c, ce): stall}, {}))
+                    if not opts:
+                        dead = True
+                        break
+                    per_sig: dict = {}                          # contract per signature per fold
+                    for (v0, p0, c0) in combos:
+                        for (av, ap, ac) in opts:
+                            p = _pend_union(p0, ap)
+                            if p is None:
+                                continue
+                            key = frozenset(p.items())
+                            cur = per_sig.get(key)
+                            v = v0 + av
+                            if cur is None or v < cur[0] - 1e-12:
+                                per_sig[key] = (v, p, {**c0, **ac})
+                    combos = list(per_sig.values())
+                    if len(combos) > max_rows:
                         raise ValueError(f"cell-join table at {X!r} exceeded {max_rows} rows -- "
                                          "raise max_rows")
-            if not rows:
-                raise ValueError(f"vertex {X!r}: no feasible row -- increase match_radius_m")
-            tables[X] = sorted(rows.values(), key=lambda r: (r[1], border[r[0]]))
-        roots = []
-        for X in sorted(comp, key=str):                         # sources pay their own entry (full E)
-            if A.in_degree(X) == 0:
-                roots.append([(e, val + A.nodes[X]["cand"][e]["E"], pend, cells)
-                              for (e, val, pend, cells) in tables[X]])
+                    if not combos:
+                        dead = True
+                        break
+                if not dead and dischargeable[X]:               # early discharge + re-contract
+                    dis = dischargeable[X]
+                    per_sig = {}
+                    for (v0, p0, c0) in combos:
+                        if any(mm in dis for (mm, _ce) in p0):
+                            np, v = {}, v0
+                            for (mm, ce), flag in p0.items():
+                                if mm in dis:                   # all arms folded: pay once, drop
+                                    v += (beta if flag else 1.0) * A.nodes[mm]["cand"][ce]["E"]
+                                else:
+                                    np[(mm, ce)] = flag
+                            row = (v, np, c0)
+                        else:
+                            row = (v0, p0, c0)
+                        key = frozenset(row[1].items())
+                        cur = per_sig.get(key)
+                        if cur is None or row[0] < cur[0] - 1e-12:
+                            per_sig[key] = row
+                    combos = list(per_sig.values())
+                if not dead:
+                    END[u] = combos
+
+            # ENTRY[(X,v)]: the cover recursion (cell_dag doc §3.1) -- runs grow one arc per edge
+            succ_row = {v: [w for w in bsucc[v] if w in rowset] for v in cells_row}
+            TAIL: Dict[Hashable, dict] = {v: {} for v in cells_row}
+
+            def _fill(v):
+                table: dict = {}
+                for row in END.get(v, []):
+                    key = frozenset(row[1].items())
+                    cur = table.get(key)
+                    if cur is None or row[0] < cur[0] - 1e-12:
+                        table[key] = row
+                for w in succ_row[v]:
+                    aE = alpha * cand[w]["E"]
+                    for (val, pend, cells) in TAIL[w].values():
+                        nv = val + aE
+                        key = frozenset(pend.items())
+                        cur = table.get(key)
+                        if cur is None or nv < cur[0] - 1e-12:
+                            table[key] = (nv, pend, {**cells, X: (v,) + cells[X]})
+                if len(table) > max_rows:
+                    raise ValueError(f"cell-join table at {X!r} exceeded {max_rows} rows -- "
+                                     "raise max_rows")
+                changed = table != TAIL[v]
+                TAIL[v] = table
+                return changed
+
+            G_row = nx.DiGraph()
+            G_row.add_nodes_from(cells_row)
+            G_row.add_edges_from((v, w) for v in cells_row for w in succ_row[v])
+            try:                                                # acyclic row: one visit per cell
+                for v in reversed(list(nx.topological_sort(G_row))):
+                    _fill(v)
+            except nx.NetworkXUnfeasible:                       # cyclic row: relax to fixed point
+                passes, changed = 0, True
+                while changed:
+                    changed = False
+                    for v in cells_row:
+                        changed |= _fill(v)
+                    passes += 1
+                    if passes > 2 * len(cells_row) + 4:
+                        raise ValueError(f"cell-join row relaxation at {X!r} failed to converge")
+
+            # push ENTRY rows to the readers, then the row retires (cell_dag doc §4)
+            entry_cells = [e for e in cells_row if cand[e]["D"] < INF]
+            if A.in_degree(X) == 0:                             # source: pay own entry, to root
+                roots.append([(e, val + cand[e]["E"], pend, cells)
+                              for e in sorted(entry_cells, key=lambda t: border[t])
+                              for (val, pend, cells) in TAIL[e].values()])
+            else:
+                is_merge = A.in_degree(X) > 1
+                p_row = set(row_cells[absorbed_by[X]])          # only the absorber is pushed to
+                p_box = inbox[absorbed_by[X]]
+                for e in entry_cells:
+                    eE = cand[e]["E"]
+                    for (val, pend, cells) in TAIL[e].values():
+                        for u in ({e} | bpred[e]) & p_row:
+                            stall = (u == e)
+                            if is_merge:                        # deferred: tag, don't pay (§3.3)
+                                opt = (val, {**pend, (X, e): pend.get((X, e), False) or stall},
+                                       cells)
+                            else:                               # priced by the edge type (§3.2)
+                                opt = (val + (beta if stall else 1.0) * eE, pend, cells)
+                            p_box.setdefault(u, {}).setdefault(X, []).append(opt)
+            del END, TAIL, my_inbox                             # the row retires
         joined = [(0.0, {}, {})]
         for root in roots:
             folded: Dict[frozenset, tuple] = {}
@@ -1086,12 +990,12 @@ def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
     directed line graphs (``mode="segment"``, ``M`` over arcs — nodes are ``(u, v)`` edge tuples of
     the originals, so the result is self-describing).
 
-    ``engine``: ``"cell"`` (the cell-level join — exact over the full space; default),
-    ``"branch"`` (the branching exploration), ``"join"`` (the vertex-level junction join), or
-    ``"all"`` — run all three and return the **cheapest valid** matching, the cross-validating
+    ``engine``: ``"cell"`` (the cell-level join — THE extraction, exact over the full space;
+    default), ``"join"`` (the vertex-level junction join — the cross-validation engine, docs §10),
+    or ``"all"`` — run both and return the **cheapest valid** matching, the cross-validating
     choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). The source may be any
     **subdivided DAG** (a tree is the special case); on reconvergent sources only the ``"cell"``
-    engine carries the exactness claim (docs/dag_dtw_matching.md §10.4). Returns
+    engine carries the exactness claim (docs/dag_dtw_matching.md §7, §10.2). Returns
     ``(M, committed)``; raises ``ValueError`` on infeasibility (increase ``r``)."""
     if mode == "segment":
         A2, B2 = line_digraph(A), line_digraph(B)
@@ -1101,12 +1005,12 @@ def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
         raise ValueError(f"unknown mode {mode!r} (use 'point' or 'segment')")
     prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight)
     forward(A2, B2, alpha=alpha, beta=beta)
-    engines = {"cell": extract_cell, "branch": extract, "join": extract_join}
+    engines = {"cell": extract_cell, "join": extract_join}
     if engine in engines:
         return engines[engine](A2, B2, alpha, beta)
     if engine == "all":                                         # the cross-validating choice
         best = None
-        for fn in (extract_cell, extract, extract_join):
+        for fn in (extract_cell, extract_join):
             try:
                 M, com = fn(A2, B2, alpha, beta)
             except ValueError:
@@ -1115,9 +1019,9 @@ def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
             if best is None or c < best[0] - 1e-12:
                 best = (c, M, com)
         if best is None:
-            raise ValueError("all three extraction engines infeasible -- increase match_radius_m")
+            raise ValueError("both extraction engines infeasible -- increase match_radius_m")
         return best[1], best[2]
-    raise ValueError(f"unknown engine {engine!r} (use 'cell', 'branch', 'join' or 'all')")
+    raise ValueError(f"unknown engine {engine!r} (use 'cell', 'join' or 'all')")
 
 
 # ---------------------------------------------------------------------------------------
