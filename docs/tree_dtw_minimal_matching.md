@@ -211,6 +211,95 @@ by construction and are willing to give up interior seeding. Demonstrate whichev
 
 ---
 
+## Fork B realized — forward-only anchored extraction (the two-pointer protocol)
+
+**Status: implemented and DEFAULT** — `extract(A, B, α, β)` in `network_matching/tree_dtw.py` (run
+after `prepare` + `forward_v3`; no backward pass; `extract_forward` is a back-compat alias). Builds on
+§4.1a (forbid-and-rebuild) and replaces both the backward table and the two-table extraction — the
+latter remains as `extract_two_table` for the §6b cross-table diagnostics. One table (`D`/`bpD`),
+two pointer types:
+
+* **`bpD`** (stored) — walks **upstream**;
+* **`R` = transpose of `bpD`** (one pass to build) — walks **downstream**.
+
+### The forbidden rule during exploration — reject and retry
+
+No pointer ever links **into** a forbidden cell (the recurrence skips them), so **UP moves can never
+reach one**. A DOWN move, however, can find that a successor's only linking cells are themselves
+forbidden (a forbidden cell keeps its own *outgoing* pointers), or that it has none at all. The rule:
+
+> **The flood never commits a forbidden cell. If a successor cannot be placed on a non-forbidden
+> cell, the current anchor label's result is INVALID — discard it and continue with the next label
+> of the anchor vertex. If every label is invalid, raise the feasibility error (increase
+> `match_radius_m`).**
+
+The enumeration itself is the safety net — no repair, no extra machinery.
+
+*Optional hardening (not required):* running the §4.1a coupling at **every** vertex
+(`out_degree ≥ 1`; trivial for a chain vertex — single child, no rebuild cascade) makes dead-ends
+impossible by construction and shrinks the anchor's label count. Without it, a 136-case sweep saw
+~12 % of cases dead-end on *some* label — the reject-and-retry absorbs these; measure the rejection
+rate before deciding.
+
+### Anchor selection and enumeration
+
+Anchor vertex `a₀` = the vertex with the **fewest non-forbidden cells** (smallest enumeration; often
+1–2 after coupling). For **each** non-forbidden cell `v₀` of `a₀`: run the flood below → one complete
+`M(v₀)`; compute `C(M)` **directly from the relation** (advance = full `E`, 1:N cover = `α·E`,
+N:1 stall = `β·E` — all classifiable from `M` + the graphs alone); return the minimum-cost `M`.
+Generation is pointer-driven, judgment is the honest cost — the tables are never trusted for ranking.
+
+### The flood (per anchor cell) — deterministic
+
+Commit `(a₀, v₀)`; process committed vertices in any order (confluent, below). From committed `c`
+with pivot `w`:
+
+1. **UP — no choice.** Walk `c`'s cover chain from `w` to its head (`bpD[c][x] = [(c, x')]`); at the
+   head, `bpD[c][head]` names **one cell per predecessor** — commit them all. A merge commits all its
+   arms at once: **V2 by construction**.
+2. **DOWN — the transpose, one shared connection.** Let `run⁺(c)` = `w` + its reverse-cover closure
+   (cells whose cover chains lead back to `w`). Choose **one** non-forbidden `y* ∈ run⁺(c)` and commit
+   **every** successor `s` through it: some **non-forbidden** `w_s` with `(c, y*) ∈ bpD[s][w_s]`. All
+   children leave from the same `y*`: **V3 by construction** — a shared `y*` exists at a split because
+   every non-forbidden cell of `c` is linked by all children (§4.1a invariant). If some successor has
+   no non-forbidden `w_s` → **this label is INVALID** (reject-and-retry rule above).
+3. **Runs are pulled, not guessed.** `c`'s 1:N run in `M` = the cover chain from `y*` back to `w` —
+   determined retroactively by where the children connect. No second-table gap-fill. A sink's run is
+   its pivot.
+4. **A pinned run end stays pinned.** A vertex committed by a child's UP pin (the child's `bpD` named
+   `(c, x_p)`) has its run end **fixed at that pin**: for its remaining successors `y*` *is* the pivot
+   — extending the run past the cell one child already connected at would put that child mid-run
+   (a V3 break). Only a vertex committed from its parent (or the anchor itself) searches the closure.
+
+**The two in-flood rules** (the only heuristics; both then judged by `C(M)` across the enumeration):
+
+* `w_s` choice: `argmin D[s][w]` over the linking cells, ties by `border`;
+* `y*` choice: `argmin over non-forbidden run⁺ cells of Σ_s min D[s][·]`, ties by `border`.
+
+**Confluence.** On a tree each vertex is reached along its unique path from the anchor and committed
+first-wins, so `M` depends only on (anchor, rules) — not on exploration order.
+
+### What this removes / what remains
+
+* **Removed**: the backward pass (half the DP), and the whole §6b/§6d cross-table consistency problem —
+  one table, nothing to be reciprocal with.
+* **Measured** (136-case sweep — fixed scenarios + random out-trees over often-cyclic targets, α/β to
+  0.2, vs the two-table extract on the *same* coupled forward table): label enumeration **never
+  exhausted** (0 all-invalid cases); **valid `M` 133/136 vs 121/136** two-table; raw cost equal 65 /
+  forward-only better 32 / two-table better 39; deterministic on every case; segment mode identical.
+  The 3 invalids are all V1-only on **cyclic B**: two are the documented local-predicate sensitivity
+  (a 2-cycle makes a legal forward step also readable backward) — there the two-table extract returns
+  the **identical** matching, flagged identically; the third is an in-flood **rule-quality** case (the
+  `y*` rule chose a coverage run riding a back-arc where the two-table extraction found a clean
+  alternative) — covered by the open item below.
+* **Honest boundary** (unchanged from §3): the result is the best of the **enumerated** matchings —
+  `≤ |cand(a₀)|` of them — not a proven global optimum.
+* **Open**: the `y*`/`w_s` rules' quality (mitigated by enumeration + honest scoring), sink-side
+  coverage (forward cover only), and whether the optional all-vertex coupling is worth its extra
+  pruning now that rejection never exhausted in practice.
+
+---
+
 ## Appendices — moved into the algorithm spec
 
 Two pieces designed here have been promoted into `docs/tree_dtw_matching.md` as part of the core

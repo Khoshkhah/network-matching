@@ -6,9 +6,9 @@ import networkx as nx
 import pytest
 
 from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, forward_v3, backward,
-                                       extract, check_reciprocity, check_reachability, check_forward_v3,
-                                       check_backward_v2, check_rules, check_split_exits, layer_order,
-                                       _advance_anchor)
+                                       extract, extract_two_table, check_reciprocity,
+                                       check_reachability, check_forward_v3, check_backward_v2,
+                                       check_rules, check_split_exits, layer_order, _advance_anchor)
 
 
 def make(name):
@@ -31,7 +31,7 @@ def _match(A, B, r=20.0, alpha=1.0, beta=1.0):
     prepare(A, B, r=r)
     forward(A, B, alpha=alpha, beta=beta)
     backward(A, B, alpha=alpha, beta=beta)
-    return extract(A, B)
+    return extract_two_table(A, B)
 
 
 @pytest.mark.parametrize("name", ["chain", "split", "merge"])
@@ -54,7 +54,7 @@ def test_reciprocity_holds_segment(name, bw):
     LA, LB = line_digraph(A), line_digraph(B)
     prepare(LA, LB, r=20.0, bearing_weight=bw)
     forward(LA, LB); backward(LA, LB)
-    M, committed = extract(LA, LB)
+    M, committed = extract_two_table(LA, LB)
     assert check_reciprocity(LA, committed) == [], f"{name} bw={bw}: segment tables disagree"
 
 
@@ -141,7 +141,7 @@ def test_extract_raises_feasibility_not_keyerror():
                 [("b0", "b1"), ("b0", "b3"), ("b1", "b2"), ("b1", "b3"), ("b3", "b4"), ("b3", "b5"), ("b4", "b5")])
     prepare(A, B, r=5.0); forward(A, B); backward(A, B)
     with pytest.raises(ValueError):
-        extract(A, B)
+        extract_two_table(A, B)
 
 
 def test_coverage_gap_fill_backward_run():
@@ -154,7 +154,7 @@ def test_coverage_gap_fill_backward_run():
     Bn = {f"b{i}": (round(r.uniform(-3, 33), 2), round(r.uniform(-3, 23), 2)) for i in range(7)}
     B = digraph(Bn, [("b0", "b1"), ("b1", "b2"), ("b1", "b3"), ("b3", "b5"), ("b4", "b6")])
     prepare(A, B, r=40.0); forward(A, B, alpha=0.5, beta=1.0); backward(A, B, alpha=0.5, beta=1.0)
-    M, _ = extract(A, B)
+    M, _ = extract_two_table(A, B)
     v1, v2, v3 = check_rules(M, A, B)
     assert not (v1 or v2 or v3), f"dropped-coverage gap not filled: V2={v2} V3={v3}"
     assert (2, "b3") in M                                  # the previously-dropped cell is now covered
@@ -295,7 +295,7 @@ def test_forward_v3_pipeline_extracts_valid_matching(alpha, beta):
     prepare(A, B, r=20.0)
     forward_v3(A, B, alpha=alpha, beta=beta)
     backward(A, B, alpha=alpha, beta=beta)
-    M, committed = extract(A, B)
+    M, committed = extract_two_table(A, B)
     v1, v2, v3 = check_rules(M, A, B)
     assert not (v1 or v2 or v3)
     assert not A.nodes[1]["cand"][committed[1]]["forbidden"]    # split pinned on a surviving exit
@@ -339,7 +339,7 @@ def test_v3_pipeline_cross_table_agreement(name, alpha, beta):
     prepare(A, B, r=20.0)
     forward_v3(A, B, alpha=alpha, beta=beta)
     backward(A, B, alpha=alpha, beta=beta)                      # canonical order: backward under the flags
-    M, committed = extract(A, B)
+    M, committed = extract_two_table(A, B)
     assert check_reciprocity(A, committed) == [], f"{name} a={alpha} b={beta}: tables disagree"
     assert check_reachability(A, "D") == [] and check_reachability(A, "B") == []
     v1, v2, v3 = check_rules(M, A, B)
@@ -370,13 +370,98 @@ def test_v3_never_regresses_reciprocity(alpha, beta):
     for seed in range(20):
         A, B = _rand_tree_case(seed)
         prepare(A, B, r=40.0); forward(A, B, alpha, beta); backward(A, B, alpha, beta)
-        _, cp = extract(A, B)
+        _, cp = extract_two_table(A, B)
         plain_fails = bool(check_reciprocity(A, cp))
 
         A2, B2 = _rand_tree_case(seed)
         prepare(A2, B2, r=40.0); forward_v3(A2, B2, alpha, beta); backward(A2, B2, alpha, beta)
-        _, cv = extract(A2, B2)
+        _, cv = extract_two_table(A2, B2)
         v3_fails = bool(check_reciprocity(A2, cv))
 
         assert not (v3_fails and not plain_fails), \
             f"seed {seed} a={alpha} b={beta}: forward_v3 REGRESSED reciprocity"
+
+
+# ---------------------------------------------------------------------------------------------------
+# Forward-only anchored extraction (design doc "Fork B realized"): two pointer types, no backward
+# table -- anchor = fewest usable cells, per-label flood, reject-and-retry, direct-cost selection.
+# ---------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
+def test_extract_forward_scenarios_valid(name, alpha, beta):
+    """extract_forward (forward table only -- no backward pass) returns a legal warping on every
+    scenario and weighting; committed cells are never forbidden; the result is deterministic."""
+    A, B = make(name)
+    prepare(A, B, r=20.0)
+    forward_v3(A, B, alpha=alpha, beta=beta)
+    M, committed = extract(A, B, alpha=alpha, beta=beta)
+    v1, v2, v3 = check_rules(M, A, B)
+    assert not (v1 or v2 or v3), f"{name} a={alpha} b={beta}: {v1} {v2} {v3}"
+    assert set(committed) == set(A.nodes)                       # full coverage (V4)
+    assert all(not A.nodes[a]["cand"][v].get("forbidden") for a, v in committed.items())
+    M2, c2 = extract(A, B, alpha=alpha, beta=beta)
+    assert M2 == M and c2 == committed                          # deterministic
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.2, 0.2)])
+def test_extract_forward_segment_mode(alpha, beta):
+    """The identical extraction on the line-graphs (segment mode) -- same code, arc index set."""
+    A, B = make("split")
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0)
+    forward_v3(LA, LB, alpha=alpha, beta=beta)
+    M, committed = extract(LA, LB, alpha=alpha, beta=beta)
+    v1, v2, v3 = check_rules(M, LA, LB)
+    assert not (v1 or v2 or v3)
+    assert set(committed) == set(LA.nodes)
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
+def test_extract_forward_random_sweep(alpha, beta):
+    """Random out-trees over random (often cyclic) targets: the label enumeration NEVER exhausts
+    (reject-and-retry always finds a workable label), the result NEVER violates V2/V3 (the couplings
+    are by construction), and any V1 flag occurs only on a CYCLIC B -- the documented local-predicate
+    sensitivity (a 2-cycle makes a legal forward step also readable backward), which the two-table
+    extract shares on the same inputs."""
+    for seed in range(30):
+        A, B = _rand_tree_case(seed)
+        prepare(A, B, r=40.0)
+        forward_v3(A, B, alpha=alpha, beta=beta)
+        M, committed = extract(A, B, alpha=alpha, beta=beta)   # must not raise
+        v1, v2, v3 = check_rules(M, A, B)
+        assert not v2 and not v3, f"seed {seed}: V2/V3 must be impossible by construction"
+        if v1:
+            assert not nx.is_directed_acyclic_graph(B), \
+                f"seed {seed}: V1 on an ACYCLIC target is a real bug"
+        assert set(committed) == set(A.nodes)
+
+
+def test_smallest_invalid_output_two_cycle():
+    """The SMALLEST input on which the algorithm's output is reported invalid: a 2-vertex chain over a
+    2-cycle target (|A|=2, |B|=2). The extraction returns the geometrically correct M =
+    {(0,p),(1,q)} — and check_rules flags V1, because with p⇄q the legal forward step p→q is *also*
+    readable backward through q→p; the local V1 predicate cannot orient a step on a 2-cycle. This is
+    a property of the VALIDATOR on cyclic targets, not of the extraction: the two-table extraction
+    returns the identical M with the identical flag, and EVERY matching separating the two vertices
+    (including the mirror image) fires V1 here — no algorithm choosing distinct cells can pass."""
+    A = digraph({0: (0, 0), 1: (10, 0)}, [(0, 1)])
+    B = digraph({"p": (0, 1), "q": (10, 1)}, [("p", "q"), ("q", "p")])
+    prepare(A, B, r=20.0)
+    forward_v3(A, B)
+    M, _ = extract(A, B)
+    assert M == {(0, "p"), (1, "q")}                            # the correct matching...
+    v1, v2, v3 = check_rules(M, A, B)
+    assert v1 and not v2 and not v3                             # ...flagged V1, and only V1
+    assert check_rules({(0, "q"), (1, "p")}, A, B)[0]           # the mirror fires too: unavoidable
+
+
+def test_extract_forward_raises_when_infeasible():
+    """A vertex whose row is all-infinite (gate severed between two far-apart target chains) leaves
+    the anchor without a usable cell -> ValueError, never a broken matching."""
+    A = digraph({0: (0, 0), 1: (100, 0)}, [(0, 1)])
+    B = digraph({"c0": (0, 1), "c1": (1, 1), "d0": (100, 1), "d1": (101, 1)},
+                [("c0", "c1"), ("d0", "d1")])
+    prepare(A, B, r=5.0)
+    forward_v3(A, B)
+    with pytest.raises(ValueError):
+        extract(A, B)

@@ -386,14 +386,16 @@ def _is_cover(bp, c) -> bool:
     return len(bp) == 1 and bp[0][0] == c
 
 
-def extract(A: nx.DiGraph, B: nx.DiGraph):
-    """Extract the matching relation ``M`` (docs §5). Seed any uncommitted vertex at its joint arg-min
-    ``D+B−E`` (feasibility rule §1.3 if none is finite), then flood the stored back-pointers — commit
-    each predecessor in the forward anchor's ``bpD`` and each successor in the backward anchor's
-    ``bpB`` — until every vertex in the component is committed; re-seed for a disconnected forest. Each
-    vertex's **coverage run is read from the FORWARD cover chain only**, so runs partition (no overlap,
-    no gap-fill). Returns ``(M, committed)`` — ``M ⊆ V(A)×V(B)`` and ``committed`` = each vertex's pivot
-    cell. Works identically on ``A, B`` (point) or ``line_digraph`` graphs (segment)."""
+def extract_two_table(A: nx.DiGraph, B: nx.DiGraph):
+    """The two-table traceback (docs §5) — the PREVIOUS default extraction, kept for the §6b
+    cross-table diagnostics (:func:`check_reciprocity` compares its committed matching against both
+    tables) and for comparison; the default is now the forward-only :func:`extract`. Seed any
+    uncommitted vertex at its joint arg-min ``D+B−E`` (feasibility rule §1.3 if none is finite), then
+    flood the stored back-pointers — commit each predecessor in the forward anchor's ``bpD`` and each
+    successor in the backward anchor's ``bpB`` — until every vertex in the component is committed;
+    re-seed for a disconnected forest. Each vertex's **coverage run is read from the FORWARD cover
+    chain only**, so runs partition. Requires :func:`forward` (or :func:`forward_v3`) **and**
+    :func:`backward`. Returns ``(M, committed)``."""
     from collections import deque
     # A severed back-pointer (a cell reference of None) means the coupled optimum runs through an
     # infeasible cell -- the per-vertex feasibility check (§1.3) is not enough at a merge/split, whose
@@ -460,6 +462,187 @@ def extract(A: nx.DiGraph, B: nx.DiGraph):
                     and not A.nodes[ch]["cand"][cell].get("forbidden")):
                 M.add((ch, cell)); covered.add(cell)
     return M, committed
+
+
+# ---------------------------------------------------------------------------------------
+# Forward-only anchored extraction -- two pointer types, no backward table
+# (docs/tree_dtw_minimal_matching.md, "Fork B realized"; requires forward_v3)
+# ---------------------------------------------------------------------------------------
+class _Invalid(Exception):
+    """The current anchor label's flood reached a forbidden cell / severed pointer / placeless
+    successor -- the label's result is INVALID; the enumeration continues with the next label."""
+
+
+def _reverse_bpD(A: nx.DiGraph) -> Dict[tuple, list]:
+    """The transpose ``R`` of the forward back-pointers: ``R[(p, x)]`` lists every finite cell
+    ``(c, w)`` with ``(p, x) ∈ bpD[c][w]`` -- the DOWN-walk structure (same-vertex entries are the
+    reverse cover chain, other-vertex entries the successor advances)."""
+    R: Dict[tuple, list] = {}
+    for c in A.nodes:
+        for w, cell in A.nodes[c]["cand"].items():
+            if cell["D"] >= INF:
+                continue
+            for (p, x) in cell["bpD"]:
+                if x is not None:
+                    R.setdefault((p, x), []).append((c, w))
+    return R
+
+
+def _flood_forward(A: nx.DiGraph, R: Dict[tuple, list], a0: Hashable, v0: Hashable,
+                   border: Dict[Hashable, int]):
+    """One anchor label's deterministic flood (design doc, "The flood"): UP via the stored ``bpD``
+    (cover chain to the head, then the advance list -- V2 by construction), DOWN via ``R`` through
+    ONE shared connection cell ``y*`` per parent (V3 by construction); a vertex committed by a
+    child's UP pin has its run end FIXED there (``y* =`` pivot). Touching a forbidden cell or a
+    severed pointer, or a successor with no non-forbidden option, raises ``_Invalid`` (reject-and-
+    retry). Returns ``(run_cells, heads, committed)``."""
+    from collections import deque
+
+    def touch(a, v):
+        if v is None or A.nodes[a]["cand"][v].get("forbidden"):
+            raise _Invalid
+
+    committed: Dict[Hashable, Hashable] = {}
+    end_pinned: Dict[Hashable, bool] = {}
+    heads: Dict[Hashable, Hashable] = {}
+    run_cells: Dict[Hashable, set] = {}
+    q: deque = deque()
+
+    def commit(x, w, pinned):
+        touch(x, w)
+        if x in committed:
+            if committed[x] != w:                               # tree ⇒ unique path; defensive
+                raise _Invalid
+            return
+        committed[x] = w
+        end_pinned[x] = pinned
+        q.append(x)
+
+    commit(a0, v0, False)
+    while q:
+        c = q.popleft()
+        w = committed[c]
+        cc = A.nodes[c]["cand"]
+        # --- UP: walk the cover chain to the head, then commit the advance list (V2) ---
+        x, cells = w, {w}
+        while True:
+            bp = cc[x]["bpD"]
+            if len(bp) == 1 and bp[0][0] == c:                  # COVER pair -> one B-arc back
+                x = bp[0][1]
+                touch(c, x)
+                cells.add(x)
+            else:
+                break
+        heads[c], run_cells[c] = x, cells
+        for (p, xp) in cc[x]["bpD"]:                            # [] for a source
+            commit(p, xp, True)                                 # p's run END is pinned at xp
+        # --- DOWN: one shared connection y* for all uncommitted successors (V3) ---
+        succs = [s for s in A.successors(c) if s not in committed]
+        if not succs:
+            continue
+        if end_pinned[c]:
+            Ys = [] if cc[w].get("forbidden") else [w]          # run end already fixed at the pivot
+        else:
+            clo, seen = [w], {w}                                # reverse-cover closure from the pivot
+            i = 0
+            while i < len(clo):
+                y = clo[i]; i += 1
+                for (c2, z) in R.get((c, y), []):
+                    if c2 == c and z not in seen:
+                        seen.add(z); clo.append(z)
+            Ys = [y for y in clo if not cc[y].get("forbidden")]
+        best = None                                             # (Σ min D, border[y*], y*, picks)
+        for y in Ys:
+            tot, ok, picks = 0.0, True, {}
+            for s in succs:
+                sc = A.nodes[s]["cand"]
+                opts = [t for (s2, t) in R.get((c, y), [])
+                        if s2 == s and sc[t]["D"] < INF and not sc[t].get("forbidden")]
+                if not opts:
+                    ok = False
+                    break
+                t = min(opts, key=lambda t: (sc[t]["D"], border[t]))
+                picks[s] = t
+                tot += sc[t]["D"]
+            if ok and (best is None or (tot, border[y]) < (best[0], best[1])):
+                best = (tot, border[y], y, picks)
+        if best is None:
+            raise _Invalid                                      # no shared exit -> reject this label
+        _, _, ystar, picks = best
+        if ystar != w:                                          # pull the run: chain y* -> ... -> w
+            x2 = ystar
+            touch(c, x2)
+            run_cells[c].add(x2)
+            while x2 != w:
+                x2 = cc[x2]["bpD"][0][1]                        # closure cells are COVER cells
+                touch(c, x2)
+                run_cells[c].add(x2)
+        for s, t in picks.items():
+            commit(s, t, False)
+    return run_cells, heads, committed
+
+
+def _relation_cost(A: nx.DiGraph, run_cells: Dict[Hashable, set], heads: Dict[Hashable, Hashable],
+                   M: set, alpha: float, beta: float) -> float:
+    """The decision cost of a complete relation, read off ``M`` + the graphs alone (design doc §3):
+    a vertex's run-entry cell pays full ``E`` -- or ``β·E`` when it stalls on a cell some predecessor
+    also holds (N:1) -- and every further covered cell pays ``α·E`` (1:N)."""
+    C = 0.0
+    for a, cells in run_cells.items():
+        cand = A.nodes[a]["cand"]
+        h = heads[a]
+        stall = any((p, h) in M for p in A.predecessors(a))
+        C += (beta if stall else 1.0) * cand[h]["E"]
+        for cell in cells:
+            if cell != h:
+                C += alpha * cand[cell]["E"]
+    return C
+
+
+def extract(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0):
+    """**The default extraction** — forward-only, anchored (docs/tree_dtw_minimal_matching.md,
+    "Fork B realized"); **no backward table**. Per weakly-connected component: the anchor is the
+    vertex with the FEWEST usable (non-forbidden, finite-``D``) cells; every usable cell of the
+    anchor is flooded (:func:`_flood_forward`) into a complete candidate relation, labels whose flood
+    touches a forbidden cell / severed pointer / placeless successor are rejected (reject-and-retry),
+    each surviving candidate is scored by the direct relation cost (:func:`_relation_cost`), and the
+    cheapest wins. Requires :func:`prepare` + :func:`forward_v3` (the coupling is what guarantees a
+    shared V3 exit exists at every split). Raises ``ValueError`` when an anchor has no usable cell or
+    every label of a component is invalid. Returns ``(M, committed)``. The previous two-table
+    traceback remains as :func:`extract_two_table`."""
+    border = _b_order(B)
+    R = _reverse_bpD(A)
+    M_all: set = set()
+    committed_all: Dict[Hashable, Hashable] = {}
+    for comp in nx.weakly_connected_components(A):
+        def usable(a):
+            return [v for v, c in A.nodes[a]["cand"].items()
+                    if not c.get("forbidden") and c["D"] < INF]
+        anchor = min(comp, key=lambda a: (len(usable(a)), str(a)))
+        labels = sorted(usable(anchor), key=lambda v: border[v])
+        if not labels:
+            raise ValueError(f"anchor {anchor!r} has no usable cell -- increase match_radius_m")
+        best = None                                             # (cost, M, committed)
+        for v0 in labels:                                       # enumerate the anchor's labels
+            try:
+                run_cells, heads, committed = _flood_forward(A, R, anchor, v0, border)
+            except _Invalid:
+                continue
+            if len(committed) != len(comp):                     # defensive: the flood must cover comp
+                continue
+            M = {(a, cell) for a, cells in run_cells.items() for cell in cells}
+            cost = _relation_cost(A, run_cells, heads, M, alpha, beta)
+            if best is None or cost < best[0] - 1e-12:
+                best = (cost, M, committed)
+        if best is None:
+            raise ValueError(f"every anchor label of component of {anchor!r} is invalid -- "
+                             "increase match_radius_m")
+        M_all |= best[1]
+        committed_all.update(best[2])
+    return M_all, committed_all
+
+
+extract_forward = extract                                       # back-compat alias (same function)
 
 
 # ---------------------------------------------------------------------------------------
@@ -750,7 +933,7 @@ if __name__ == "__main__":
         prepare(GA, GB, r=25.0)
         forward(GA, GB)
         backward(GA, GB)
-        M, committed = extract(GA, GB)
+        M, committed = extract_two_table(GA, GB)
         v1, v2, v3 = check_rules(M, GA, GB)
         v4 = [a for a in GA.nodes if not any(x == a for (x, _w) in M)]     # every source vertex covered?
         recip = check_reciprocity(GA, committed)                          # §6b cross-table agreement

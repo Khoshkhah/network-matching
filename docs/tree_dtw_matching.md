@@ -319,6 +319,13 @@ $B$ is filled the same way, with both moves mirrored: the $\beta$ stall over suc
 
 ## 5. The Traceback Stage: Extracting the Match Relation `M`
 
+> **The default extraction is now the forward-only anchored extraction** — `extract(A, B, α, β)`,
+> run after `prepare` + `forward_v3` (§4.1a): one table, two pointer types (`bpD` up, its transpose
+> down), anchor enumeration with reject-and-retry, direct-cost selection. Protocol and measurements:
+> `docs/tree_dtw_minimal_matching.md`, "Fork B realized". The two-table traceback specified in this
+> section remains available as **`extract_two_table`** (it is what the §6b cross-table diagnostics
+> compare against, and requires the §4.2 backward table).
+
 ### 5.1 Intuitive Concept
 
 1. **Why one table isn't enough.** Each coupling enforces its own rule **by construction**: the predecessor sum in $D$ makes every merge's approaches meet at one point (V2), and — its exact mirror — the successor sum in $B$ makes every split's exits leave one point (V3). But a single directed sweep carries only **one** of the two. If you take just $D$ and read an independent $\arg\min$ per sink, the splits are left uncoordinated: two branches of a fork place it at **different** points — the phantom of §4.1.
@@ -630,7 +637,10 @@ Every `argmin` in Parts 3–4 (the advance step's choice of predecessor cell, an
 
 ### Part 5 — Extraction → `M`
 
-The joint traceback (§5), reading only the stored back-pointers.
+> **Default:** `extract(A, B, α, β)` is the forward-only anchored extraction (see the §5 banner and
+> `docs/tree_dtw_minimal_matching.md`). The two-table traceback below is **`extract_two_table`**.
+
+The joint two-table traceback (§5), reading only the stored back-pointers.
 
 1. **Seed.** Pick any still-uncommitted A-vertex `r` and its `v* = argmin_{v ∈ cand(r)} ( D[r][v] + B[r][v] − E(r,v) )` (feasibility rule Part 1.3 if none is finite). Commit `r → v*`. This is the **only** arg-min in the whole extraction.
 2. **Flood via back-pointers.** From a committed `(c, v)` walk the coverage run, then commit each predecessor in `bpD[c][·]` and each successor in `bpB[c][·]`, repeating until the queue drains. Following predecessors (up), successors (down), and siblings (down from a shared parent) reaches the seed's **entire weakly-connected component** — a single connected tree needs exactly **one** seed. The flood never crosses into a disconnected part (no back-pointer spans the gap). **Coverage is read from the forward COVER chain only** (never both chains — that over-assigns) — but a 1:N run can be recorded on the *backward* chain instead, which the forward-only read then **drops**, leaving an uncovered target cell between two committed neighbours.
