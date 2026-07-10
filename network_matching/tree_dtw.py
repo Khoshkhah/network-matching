@@ -49,9 +49,12 @@ def _emit(ax: float, ay: float, abear, bx: float, by: float, bbear, lam: float) 
     return e
 
 
-def _validate(A: nx.DiGraph, B: nx.DiGraph) -> None:
-    """Both are DiGraphs, every node has ``x``/``y``, and ``A`` is a tree (a polytree: a DAG whose
-    undirected graph is a forest -- no directed cycle, no reconvergence)."""
+def _validate(A: nx.DiGraph, B: nx.DiGraph, allow_dag: bool = False) -> None:
+    """Both are DiGraphs, every node has ``x``/``y``, and ``A`` is acyclic. By default ``A`` must be
+    a tree (a polytree: undirected graph a forest -- no reconvergence); with ``allow_dag=True`` any
+    **subdivided DAG** is accepted (diamonds/reconvergences allowed, still no directed cycle) -- on
+    DAG sources only :func:`extract_cell` carries the exactness claim
+    (docs/junction_join_extraction.md §8.6)."""
     for name, G in (("A", A), ("B", B)):
         if not isinstance(G, nx.DiGraph):
             raise TypeError(f"{name} must be a networkx.DiGraph, got {type(G).__name__}")
@@ -59,16 +62,17 @@ def _validate(A: nx.DiGraph, B: nx.DiGraph) -> None:
             if "x" not in G.nodes[n] or "y" not in G.nodes[n]:
                 raise ValueError(f"{name} node {n!r} is missing 'x'/'y' coordinates")
     if A.number_of_nodes() and not nx.is_directed_acyclic_graph(A):
-        raise NotATree("source A has a directed cycle -- not a tree")
-    if not nx.is_forest(A.to_undirected()):
-        raise NotATree("source A has an undirected cycle (a reconvergence/diamond) -- not a tree")
+        raise NotATree("source A has a directed cycle -- not a DAG")
+    if not allow_dag and not nx.is_forest(A.to_undirected()):
+        raise NotATree("source A has an undirected cycle (a reconvergence/diamond) -- not a tree; "
+                       "pass allow_dag=True to accept a subdivided DAG (cell engine)")
 
 
 # ---------------------------------------------------------------------------------------
 # Part 1 -- radius-gated candidates, stored on the A node
 # ---------------------------------------------------------------------------------------
 def prepare(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, k_min: int = 1,
-            bearing_weight: float = 1.0) -> nx.DiGraph:
+            bearing_weight: float = 1.0, allow_dag: bool = False) -> nx.DiGraph:
     """Validate ``A``, ``B`` and populate each A-vertex's radius-gated candidate table (docs §1-§2).
 
     For every A-vertex ``a`` writes::
@@ -86,7 +90,7 @@ def prepare(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, k_min: int = 1,
     ``D``/``bpD``/``B``/``bpB`` are placeholders for Parts 3-4. Works unchanged on ``A, B`` (point) or
     ``line_digraph(A), line_digraph(B)`` (segment). Returns ``A`` (mutated in place).
     """
-    _validate(A, B)
+    _validate(A, B, allow_dag=allow_dag)
     b_nodes: List[Hashable] = list(B.nodes)
     if not b_nodes:
         raise ValueError("target B has no vertices")
@@ -1030,7 +1034,7 @@ def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 # ---------------------------------------------------------------------------------------
 def match_tree(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
                beta: float = 1.0, mode: str = "point", engine: str = "cell",
-               bearing_weight: float = 1.0, k_min: int = 1):
+               bearing_weight: float = 1.0, k_min: int = 1, allow_dag: bool = False):
     """One-call Tree-DTW pipeline (docs/tree_dtw_matching.md): ``prepare`` -> ``forward`` (the
     coupled pass) -> extraction, on ``A``/``B`` (``mode="point"``, ``M`` over vertices) or on their
     directed line graphs (``mode="segment"``, ``M`` over arcs — nodes are ``(u, v)`` edge tuples of
@@ -1039,15 +1043,17 @@ def match_tree(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0
     ``engine``: ``"cell"`` (the cell-level join — exact over the full space; default),
     ``"branch"`` (the branching exploration), ``"join"`` (the vertex-level junction join), or
     ``"all"`` — run all three and return the **cheapest valid** matching, the cross-validating
-    choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). Returns ``(M, committed)``;
-    raises ``ValueError`` on infeasibility (increase ``r``)."""
+    choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). ``allow_dag=True`` accepts a
+    subdivided DAG source (reconvergences) — there only the ``"cell"`` engine carries the exactness
+    claim (docs/junction_join_extraction.md §8.6). Returns ``(M, committed)``; raises ``ValueError``
+    on infeasibility (increase ``r``)."""
     if mode == "segment":
         A2, B2 = line_digraph(A), line_digraph(B)
     elif mode == "point":
         A2, B2 = A, B
     else:
         raise ValueError(f"unknown mode {mode!r} (use 'point' or 'segment')")
-    prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight)
+    prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight, allow_dag=allow_dag)
     forward(A2, B2, alpha=alpha, beta=beta)
     engines = {"cell": extract_cell, "branch": extract, "join": extract_join}
     if engine in engines:

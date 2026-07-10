@@ -5,7 +5,7 @@ import math
 import networkx as nx
 import pytest
 
-from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward, match_tree,
+from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward, match_tree, NotATree,
                                        extract, extract_join, extract_cell, extract_two_table,
                                        check_reciprocity, check_reachability, check_forward_v3,
                                        check_backward_v2, check_rules, check_split_exits,
@@ -762,3 +762,118 @@ def test_match_tree_pipeline_wrapper(engine):
     M_seg, com_seg = match_tree(A2, B2, r=20.0, mode="segment", engine=engine, bearing_weight=2.0)
     assert all(isinstance(a, tuple) and isinstance(v, tuple) for a, v in M_seg)   # arcs = edge tuples
     assert len(com_seg) == A2.number_of_edges()
+
+
+# ---------------------------------------------------------------------------------------------------
+# DAG sources (allow_dag): the cell engine is exact on subdivided reconvergent DAGs (spec §8.6)
+# ---------------------------------------------------------------------------------------------------
+def _diamond_case(shift=0.4, jitter=0.0, seed=0):
+    """Subdivided diamond: S→s1→J→{x,z}→m→t1→T (J splits, m reconverges) over a congruent
+    (optionally jittered) target."""
+    import random
+    rng = random.Random(seed)
+    An = {"S": (0, 0), "s1": (4, 0), "J": (8, 0), "x": (12, 3), "z": (12, -3),
+          "m": (16, 0), "t1": (20, 0), "T": (24, 0)}
+    Ae = [("S", "s1"), ("s1", "J"), ("J", "x"), ("J", "z"), ("x", "m"), ("z", "m"),
+          ("m", "t1"), ("t1", "T")]
+    Bn = {k + "'": (v[0] + (rng.uniform(-jitter, jitter) if jitter else 0.0),
+                    v[1] + shift + (rng.uniform(-jitter, jitter) if jitter else 0.0))
+          for k, v in An.items()}
+    return digraph(An, Ae), digraph(Bn, [(a + "'", b + "'") for a, b in Ae])
+
+
+def test_allow_dag_gate():
+    """A reconvergent source is rejected by default (NotATree, with the allow_dag hint) and
+    accepted with allow_dag=True; a directed cycle stays rejected either way."""
+    A, B = _diamond_case()
+    with pytest.raises(NotATree):
+        prepare(A, B, r=6.0)
+    A2, B2 = _diamond_case()
+    prepare(A2, B2, r=6.0, allow_dag=True)                      # no raise
+    C = nx.DiGraph()
+    for n, (x, y) in {0: (0, 0), 1: (1, 0)}.items():
+        C.add_node(n, x=x, y=y)
+    C.add_edge(0, 1); C.add_edge(1, 0)                          # directed cycle
+    with pytest.raises(NotATree):
+        prepare(C, B2, r=6.0, allow_dag=True)
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
+def test_extract_cell_exact_on_dag_diamonds(alpha, beta):
+    """Jittered diamonds: extract_cell equals the FULL-SPACE brute-force optimum on reconvergent
+    sources -- the tree property is not needed by the cell engine."""
+    for seed in range(6):
+        A, B = _diamond_case(jitter=1.2, seed=seed)
+        prepare(A, B, r=4.0, allow_dag=True)
+        forward(A, B, alpha=alpha, beta=beta)
+        M, com = extract_cell(A, B, alpha=alpha, beta=beta, run_cap=1)
+        assert not any(check_rules(M, A, B))
+        assert set(com) == set(A.nodes)
+        bf = _full_space_brute(A, B, alpha, beta, run_cap=1)
+        assert bf is not None
+        assert abs(_cost_of(A, B, M, alpha, beta) - bf) < 1e-6, f"seed {seed}"
+
+
+def test_extract_cell_exact_on_random_reconvergent_dags():
+    """Random subdivided polytrees + one reconvergent (subdivided) edge, over target chains:
+    extract_cell == full-space brute force, valid, every case."""
+    import random
+    ran = 0
+    for seed in range(30):
+        rng = random.Random(seed)
+        n = 3
+        und = [(rng.randrange(i), i) for i in range(1, n)]
+        pos = {i: (rng.uniform(0, 14), rng.uniform(0, 14)) for i in range(n)}
+        A = nx.DiGraph()
+        for i in range(n):
+            A.add_node(i, x=pos[i][0], y=pos[i][1])
+        for k, (a, b) in enumerate(und):
+            if rng.random() < 0.5:
+                a, b = b, a
+            mid = f"m{k}"
+            A.add_node(mid, x=(pos[a][0] + pos[b][0]) / 2, y=(pos[a][1] + pos[b][1]) / 2)
+            A.add_edge(a, mid); A.add_edge(mid, b)
+        topo = list(nx.topological_sort(A))
+        pairs = [(u, v) for i, u in enumerate(topo) for v in topo[i + 1:]
+                 if nx.has_path(A, u, v) and not A.has_edge(u, v)]
+        if not pairs:
+            continue
+        u, v = rng.choice(pairs)
+        A.add_node("rc", x=(A.nodes[u]["x"] + A.nodes[v]["x"]) / 2,
+                   y=(A.nodes[u]["y"] + A.nodes[v]["y"]) / 2)
+        A.add_edge(u, "rc"); A.add_edge("rc", v)
+        if not nx.is_directed_acyclic_graph(A) or nx.is_forest(A.to_undirected()):
+            continue                                            # want a genuine reconvergence
+        B = nx.DiGraph()
+        vs = [f"v{i}" for i in range(4)]
+        for w in vs:
+            B.add_node(w, x=rng.uniform(0, 14), y=rng.uniform(0, 14))
+        for i in range(3):
+            B.add_edge(vs[i], vs[i + 1])
+        try:
+            prepare(A, B, r=20.0, allow_dag=True)
+            forward(A, B, 0.5, 1.0)
+        except ValueError:
+            continue
+        M, _ = extract_cell(A, B, 0.5, 1.0, run_cap=1)
+        assert not any(check_rules(M, A, B)), f"seed {seed}"
+        bf = _full_space_brute(A, B, 0.5, 1.0, run_cap=1)
+        assert bf is not None and abs(_cost_of(A, B, M, 0.5, 1.0) - bf) < 1e-6, f"seed {seed}"
+        ran += 1
+    assert ran >= 15, f"only {ran} reconvergent cases exercised -- generator drifted"
+
+
+def test_match_tree_dag_pipeline():
+    """The one-call pipeline on a DAG source: point mode (cell default), engine='all', and segment
+    mode (the line graph of a diamond is itself reconvergent -- allow_dag flows through)."""
+    A, B = _diamond_case()
+    M, com = match_tree(A, B, r=6.0, allow_dag=True)
+    assert not any(check_rules(M, A, B))
+    assert set(com) == set(A.nodes)
+    A2, B2 = _diamond_case()
+    M2, _ = match_tree(A2, B2, r=6.0, allow_dag=True, engine="all")
+    assert not any(check_rules(M2, A2, B2))
+    A3, B3 = _diamond_case()
+    Ms, cs = match_tree(A3, B3, r=6.0, allow_dag=True, mode="segment", bearing_weight=2.0)
+    assert all(isinstance(a, tuple) and isinstance(v, tuple) for a, v in Ms)
+    assert len(cs) == A3.number_of_edges()

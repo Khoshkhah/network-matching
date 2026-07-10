@@ -9,12 +9,13 @@ Tree-DTW aligns a **directed tree** — a road structure that branches and merge
 | validation & diagnostics (§6) | implemented |
 | segment mode (§8) | implemented & verified (three-way + full-space brute on the line graphs, bearing active); a merge+split junction is still rejected upstream (`NotATree` on `L(A)`'s cluster) |
 | known validator limit on cyclic B (§7) | documented, pinned by test |
+| **DAG sources** (reconvergences) | opt-in `allow_dag=True`; `extract_cell` verified exact — 195/195 vs full-space brute (§8.6 of the extraction spec); other engines: no exactness claim on DAGs |
 
 ---
 
 ## 1. Inputs
 
-* **A — the source**, a directed tree: no undirected cycle (a fork may never rejoin itself; a diamond is rejected — `NotATree`). Vertices carry coordinates `x, y`; a **junction is a vertex** (split = out-degree > 1, merge = in-degree > 1). `Apred/Asucc` are the immediate neighbours.
+* **A — the source**, a directed tree: no undirected cycle (a fork may never rejoin itself; a diamond is rejected — `NotATree`). With **`allow_dag=True`** a **subdivided DAG** (reconvergences allowed, no directed cycle) is accepted — on DAG sources only the cell-level engine carries the exactness claim (`docs/junction_join_extraction.md` §8.6). Vertices carry coordinates `x, y`; a **junction is a vertex** (split = out-degree > 1, merge = in-degree > 1). `Apred/Asucc` are the immediate neighbours.
 * **A must be subdivided**: at least one interior point on every real edge. This is what makes a split's children pairwise incomparable (§4.0) and a merge's parents childless-siblings — the ordering and coupling guarantees rest on it.
 * **B — the target**, any directed network; **it may cycle** (roundabouts, grids). `Bpred/Bsucc` are its neighbours.
 * **Candidates.** Each A-vertex `a` gets a radius-gated candidate set `cand(a) = {v ∈ V(B) : ‖a−v‖ ≤ r}` (`r = match_radius_m`; if fewer than `k_min` fall inside, the `k_min` nearest are kept). Each pair `(a, v)` is a **cell**; cells hold the emission `E`, the forward cost `D`, its back-pointer `bpD`, and a `forbidden` flag (§4.1a). The whole algorithm runs on these cells.

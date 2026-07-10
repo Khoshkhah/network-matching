@@ -294,3 +294,23 @@ harness in both modes. One-call pipeline entry: `match_tree(A, B, r, α, β, mod
 The cell engine is strictly dominant on this envelope: valid everywhere, never costlier than either
 other engine, no caps hit. The three-way cross-validation is the standing harness
 (`test_three_way_cross_validation`, `scripts/test_tree_point.py`).
+
+### 8.6 DAG sources — the cell engine extends beyond trees
+
+The tree property was only ever needed for the **forward sum's cost exactness** (a reconverging
+branch double-counts its shared ancestor — `docs/tree_dtw_matching.md` §2). The cell-level join
+never reads `D`'s values, so it carries **no tree dependence**: on a diamond, the two arms hold the
+merge's pending separator `(m, entry, stall-flag)` and are forced to agree when they meet at the
+shared ancestor's join — the same consumed-once mechanism, resolving earlier than at the root.
+`layer_order` and the sink-search removal were DAG-ready from the start.
+
+**Verified** (full-space brute force as ground truth): 75 jittered diamonds × 3 in-domain weights
+and 120 random subdivided reconvergent DAGs — **195/195 exact & valid**; the coupling's
+forbidden-pruning never changed a result (empirically safe on DAGs; theoretically unproven, since
+it derives from `D`-winners — treat as heuristic pruning there).
+
+**Library**: `prepare(..., allow_dag=True)` / `match_tree(..., allow_dag=True)` lift the `NotATree`
+reconvergence gate (directed acyclicity is still required; the source must still be subdivided).
+**Scoping**: only `extract_cell` carries the exactness claim on DAG sources — the other engines
+consume `D`'s values, whose exactness argument is tree-only; they remain usable on DAGs as judged
+cross-checks, without an optimality claim.

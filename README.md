@@ -161,10 +161,12 @@ meters) is the primary quality score. `match_type` is `1:1_SYMMETRIC`, `1:N_SPLI
 ## Mode 3 — Tree-to-network matching (Tree-DTW)
 
 An **exact** matcher for the case where the source is a directed **tree** (branches and merges,
-never a loop) and the target is any directed network (cycles allowed). Standalone: plain
-`networkx.DiGraph` inputs whose nodes carry projected `x, y` in meters — no DuckDB involved. The
-source must be **subdivided** (≥ 1 interior point per real edge); weights `alpha ∈ (0, 1]`
-(1:N coverage discount), `beta ∈ [1, ∞)` (N:1 stall penalty).
+never a loop) — or, with `allow_dag=True`, a **subdivided DAG** (reconvergences/diamonds allowed;
+the cell engine is verified exact there, 195/195 vs full-space brute force) — and the target is any
+directed network (cycles allowed). Standalone: plain `networkx.DiGraph` inputs whose nodes carry
+projected `x, y` in meters — no DuckDB involved. The source must be **subdivided** (≥ 1 interior
+point per real edge); weights `alpha ∈ (0, 1]` (1:N coverage discount), `beta ∈ [1, ∞)` (N:1 stall
+penalty).
 
 ```python
 import networkx as nx
