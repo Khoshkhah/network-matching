@@ -5,7 +5,7 @@ import math
 import networkx as nx
 import pytest
 
-from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, forward_v3, backward,
+from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward,
                                        extract, extract_two_table, check_reciprocity,
                                        check_reachability, check_forward_v3, check_backward_v2,
                                        check_rules, check_split_exits, layer_order, _advance_anchor)
@@ -178,8 +178,9 @@ def test_argmin_tie_break_deterministic():
 
 
 def test_forward_v3_backward_v2_coupling():
-    """§6d: the forward table couples merges (V2), not splits -- read alone it CAN violate V3 (and the
-    backward table mirror-violates V2). Clean α=β=1 inputs don't; a weighted split does."""
+    """§6d diagnostics: on a clean chain both per-table reads are consistent; on the weighted split the
+    per-sink forward read still diverges -- across the split's MULTIPLE surviving options, which is
+    legitimate (§4.1a) and exactly why check_forward_v3 is a diagnostic, not an invariant."""
     A = digraph({0: (0, 0), 1: (10, 0), 2: (20, 0)}, [(0, 1), (1, 2)])                # chain, no split/merge
     B = digraph({"b0": (0, .5), "b1": (10, .5), "b2": (20, .5)}, [("b0", "b1"), ("b1", "b2")])
     prepare(A, B, r=20.0); forward(A, B); backward(A, B)
@@ -188,7 +189,7 @@ def test_forward_v3_backward_v2_coupling():
     A2 = digraph({0: (6.73, 18.65), 1: (28.37, 0.46), 2: (25.41, 14.29)}, [(1, 0), (1, 2)])   # split at 1
     B2 = digraph({"b0": (10.71, 2.92), "b1": (30.12, 17.11), "b2": (-1.67, 12.48)}, [("b1", "b2")])
     prepare(A2, B2, r=40.0); forward(A2, B2, alpha=0.2, beta=0.2); backward(A2, B2, alpha=0.2, beta=0.2)
-    assert check_forward_v3(A2, B2)                        # split vertex 1 lands on two cells -> V3 violation
+    assert check_forward_v3(A2, B2)            # per-sink reads land on two (both-valid) surviving exits
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -218,11 +219,11 @@ def test_layer_order_longest_path_layering():
 @pytest.mark.parametrize("name", ["chain", "split", "merge"])
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
 def test_split_exits_invariant_point(name, alpha, beta):
-    """§4.1a: after forward_v3, every surviving split exit is linked by ALL children and the survivor
+    """§4.1a: after the forward pass, every surviving split exit is linked by ALL children and the survivor
     set is non-empty -- for every scenario and weighting."""
     A, B = make(name)
     prepare(A, B, r=20.0)
-    forward_v3(A, B, alpha=alpha, beta=beta)
+    forward(A, B, alpha=alpha, beta=beta)
     assert check_split_exits(A) == [], f"{name} a={alpha} b={beta}"
 
 
@@ -232,39 +233,27 @@ def test_split_exits_invariant_segment(alpha, beta):
     A, B = make("split")
     LA, LB = line_digraph(A), line_digraph(B)
     prepare(LA, LB, r=20.0)
-    forward_v3(LA, LB, alpha=alpha, beta=beta)
+    forward(LA, LB, alpha=alpha, beta=beta)
     assert check_split_exits(LA) == []
 
 
-def test_split_exits_has_teeth_and_forward_v3_closes():
-    """Negative control + the point of §4.1a: the PLAIN forward table violates the invariant (nothing
-    forbidden, children link only their own winners), and forward_v3 closes it -- here leaving TWO
-    surviving exits, both linked by both children (multiple options are legitimate, docs §4.1a)."""
+def test_split_exits_invariant_and_teeth():
+    """The §4.1a invariant holds after the forward pass -- here leaving TWO surviving exits, both
+    linked by both children (multiple options are legitimate). Negative control: wiping the coupling's
+    ``forbidden`` flags (= pretending the coupling never ran) must make the invariant fire, since the
+    children link only their own winners while every cell then "survives"."""
     A, B = _weighted_split()
     prepare(A, B, r=40.0); forward(A, B, alpha=0.2, beta=0.2)
-    assert check_split_exits(A), "plain forward should violate the §4.1a invariant here"
-
-    A2, B2 = _weighted_split()
-    prepare(A2, B2, r=40.0); forward_v3(A2, B2, alpha=0.2, beta=0.2)
-    assert check_split_exits(A2) == []
-    surv = {v for v, c in A2.nodes[1]["cand"].items() if not c["forbidden"]}
+    assert check_split_exits(A) == []
+    surv = {v for v, c in A.nodes[1]["cand"].items() if not c["forbidden"]}
     assert surv == {"b0", "b1"}                                 # multi-exit fixed point, all shared
+    for c in A.nodes[1]["cand"].values():
+        c["forbidden"] = False                                  # undo the coupling's verdict
+    assert check_split_exits(A), "invariant must fire once the coupling flags are wiped"
 
 
-def test_forward_v3_equals_forward_without_splits():
-    """With no split in A, forward_v3 forbids nothing and its table is bit-identical to forward's
-    (same recurrence, different-but-equivalent topological order)."""
-    for name in ["chain", "merge"]:
-        A, B = make(name);   prepare(A, B, r=20.0);   forward(A, B)
-        A2, B2 = make(name); prepare(A2, B2, r=20.0); forward_v3(A2, B2)
-        for a in A.nodes:
-            for v in A.nodes[a]["cand"]:
-                assert A.nodes[a]["cand"][v]["D"] == A2.nodes[a]["cand"][v]["D"]
-                assert A.nodes[a]["cand"][v]["bpD"] == A2.nodes[a]["cand"][v]["bpD"]
-                assert not A2.nodes[a]["cand"][v]["forbidden"]
 
-
-def test_forward_v3_raises_when_no_shared_exit():
+def test_forward_raises_when_no_shared_exit():
     """§4.1a feasibility: children forced onto disjoint target chains leave the split with no exit
     every child can use -> ValueError (increase match_radius_m), never a silently-broken table."""
     A = digraph({"J": (0, 0), "b1": (5, 1), "b2": (5, -1)}, [("J", "b1"), ("J", "b2")])
@@ -272,10 +261,10 @@ def test_forward_v3_raises_when_no_shared_exit():
                 [("p0", "p1"), ("q0", "q1")])
     prepare(A, B, r=1.5)
     with pytest.raises(ValueError, match="no surviving V3 exit"):
-        forward_v3(A, B)
+        forward(A, B)
 
 
-def test_forward_v3_requires_subdivision():
+def test_forward_requires_subdivision():
     """§4.0: a split whose children span layers (one child is also fed by a deeper branch) has no
     grouped sibling order -- rejected with the add-an-interior-point message."""
     A = digraph({"s": (0, 0), "c1": (1, 1), "c2": (5, -1),
@@ -284,16 +273,16 @@ def test_forward_v3_requires_subdivision():
     B = digraph({"x": (0, 0)}, [])
     prepare(A, B, r=100.0)
     with pytest.raises(ValueError, match="not subdivided"):
-        forward_v3(A, B)
+        forward(A, B)
 
 
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
-def test_forward_v3_pipeline_extracts_valid_matching(alpha, beta):
-    """forward_v3 composes with the unchanged backward + extract: the committed matching is a legal
+def test_forward_pipeline_with_two_table_extraction(alpha, beta):
+    """the forward pass composes with the unchanged backward + extract: the committed matching is a legal
     warping and the split commits to a surviving (non-forbidden) cell."""
     A, B = make("split")
     prepare(A, B, r=20.0)
-    forward_v3(A, B, alpha=alpha, beta=beta)
+    forward(A, B, alpha=alpha, beta=beta)
     backward(A, B, alpha=alpha, beta=beta)
     M, committed = extract_two_table(A, B)
     v1, v2, v3 = check_rules(M, A, B)
@@ -302,7 +291,7 @@ def test_forward_v3_pipeline_extracts_valid_matching(alpha, beta):
 
 
 # ---------------------------------------------------------------------------------------------------
-# Cross-table validation under the v3 pipeline (forward_v3 -> backward under the flags -> extract):
+# Cross-table validation (forward -> backward under the flags -> extract_two_table):
 # §6b reciprocity and §6c reachability must survive the V3 coupling.
 # ---------------------------------------------------------------------------------------------------
 def _rand_tree_case(seed):
@@ -337,7 +326,7 @@ def test_v3_pipeline_cross_table_agreement(name, alpha, beta):
     the §4.1a split invariant — for every scenario and suite weighting."""
     A, B = make(name)
     prepare(A, B, r=20.0)
-    forward_v3(A, B, alpha=alpha, beta=beta)
+    forward(A, B, alpha=alpha, beta=beta)
     backward(A, B, alpha=alpha, beta=beta)                      # canonical order: backward under the flags
     M, committed = extract_two_table(A, B)
     assert check_reciprocity(A, committed) == [], f"{name} a={alpha} b={beta}: tables disagree"
@@ -355,31 +344,12 @@ def test_v3_reachability_and_invariant_random_sweep(alpha, beta):
     for seed in range(20):
         A, B = _rand_tree_case(seed)
         prepare(A, B, r=40.0)
-        forward_v3(A, B, alpha=alpha, beta=beta)
+        forward(A, B, alpha=alpha, beta=beta)
         backward(A, B, alpha=alpha, beta=beta)
         assert check_reachability(A, "D") == [], f"seed {seed}: forward reachability broken"
         assert check_reachability(A, "B") == [], f"seed {seed}: backward reachability broken"
         assert check_split_exits(A) == [], f"seed {seed}: split invariant broken"
 
-
-@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (0.2, 0.2)])
-def test_v3_never_regresses_reciprocity(alpha, beta):
-    """Paired plain-vs-v3: wherever the v3 pipeline fails §6b reciprocity, the PLAIN pipeline already
-    fails it too (v3 closes the forward table's V3 corner — it fixes agreement cases, never breaks
-    one; the residual shared failures are the documented §6d complementarity, backward's V2 corner)."""
-    for seed in range(20):
-        A, B = _rand_tree_case(seed)
-        prepare(A, B, r=40.0); forward(A, B, alpha, beta); backward(A, B, alpha, beta)
-        _, cp = extract_two_table(A, B)
-        plain_fails = bool(check_reciprocity(A, cp))
-
-        A2, B2 = _rand_tree_case(seed)
-        prepare(A2, B2, r=40.0); forward_v3(A2, B2, alpha, beta); backward(A2, B2, alpha, beta)
-        _, cv = extract_two_table(A2, B2)
-        v3_fails = bool(check_reciprocity(A2, cv))
-
-        assert not (v3_fails and not plain_fails), \
-            f"seed {seed} a={alpha} b={beta}: forward_v3 REGRESSED reciprocity"
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -388,12 +358,12 @@ def test_v3_never_regresses_reciprocity(alpha, beta):
 # ---------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("name", ["chain", "split", "merge"])
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
-def test_extract_forward_scenarios_valid(name, alpha, beta):
-    """extract_forward (forward table only -- no backward pass) returns a legal warping on every
+def test_extract_scenarios_valid(name, alpha, beta):
+    """extract (forward table only -- no backward pass) returns a legal warping on every
     scenario and weighting; committed cells are never forbidden; the result is deterministic."""
     A, B = make(name)
     prepare(A, B, r=20.0)
-    forward_v3(A, B, alpha=alpha, beta=beta)
+    forward(A, B, alpha=alpha, beta=beta)
     M, committed = extract(A, B, alpha=alpha, beta=beta)
     v1, v2, v3 = check_rules(M, A, B)
     assert not (v1 or v2 or v3), f"{name} a={alpha} b={beta}: {v1} {v2} {v3}"
@@ -404,12 +374,12 @@ def test_extract_forward_scenarios_valid(name, alpha, beta):
 
 
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.2, 0.2)])
-def test_extract_forward_segment_mode(alpha, beta):
+def test_extract_segment_mode(alpha, beta):
     """The identical extraction on the line-graphs (segment mode) -- same code, arc index set."""
     A, B = make("split")
     LA, LB = line_digraph(A), line_digraph(B)
     prepare(LA, LB, r=20.0)
-    forward_v3(LA, LB, alpha=alpha, beta=beta)
+    forward(LA, LB, alpha=alpha, beta=beta)
     M, committed = extract(LA, LB, alpha=alpha, beta=beta)
     v1, v2, v3 = check_rules(M, LA, LB)
     assert not (v1 or v2 or v3)
@@ -417,7 +387,7 @@ def test_extract_forward_segment_mode(alpha, beta):
 
 
 @pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (1.0, 0.5), (0.2, 0.2)])
-def test_extract_forward_random_sweep(alpha, beta):
+def test_extract_random_sweep(alpha, beta):
     """Random out-trees over random (often cyclic) targets: the label enumeration NEVER exhausts
     (reject-and-retry always finds a workable label), the result NEVER violates V2/V3 (the couplings
     are by construction), and any V1 flag occurs only on a CYCLIC B -- the documented local-predicate
@@ -426,7 +396,7 @@ def test_extract_forward_random_sweep(alpha, beta):
     for seed in range(30):
         A, B = _rand_tree_case(seed)
         prepare(A, B, r=40.0)
-        forward_v3(A, B, alpha=alpha, beta=beta)
+        forward(A, B, alpha=alpha, beta=beta)
         M, committed = extract(A, B, alpha=alpha, beta=beta)   # must not raise
         v1, v2, v3 = check_rules(M, A, B)
         assert not v2 and not v3, f"seed {seed}: V2/V3 must be impossible by construction"
@@ -447,7 +417,7 @@ def test_smallest_invalid_output_two_cycle():
     A = digraph({0: (0, 0), 1: (10, 0)}, [(0, 1)])
     B = digraph({"p": (0, 1), "q": (10, 1)}, [("p", "q"), ("q", "p")])
     prepare(A, B, r=20.0)
-    forward_v3(A, B)
+    forward(A, B)
     M, _ = extract(A, B)
     assert M == {(0, "p"), (1, "q")}                            # the correct matching...
     v1, v2, v3 = check_rules(M, A, B)
@@ -455,39 +425,14 @@ def test_smallest_invalid_output_two_cycle():
     assert check_rules({(0, "q"), (1, "p")}, A, B)[0]           # the mirror fires too: unavoidable
 
 
-@pytest.mark.xfail(strict=True, reason="known open item (design doc, Fork B): the greedy per-child "
-                   "w_s pick (argmin D) can ride a cycle back-arc into an invalid M although a "
-                   "cheaper VALID matching exists; remove this marker when the rule is improved")
-def test_known_defect_greedy_pick_rides_back_arc():
-    """Minimal GENUINE failure (|A|=3, |B|=3): split 0→{1,2} over B = v1⇄v2, v2→v3 at α,β=(0.3,0.7).
-    extract() returns {(0,v2),(1,v2),(2,v1)} — child 2 greedily takes the nearest cell v1 through the
-    back-arc v2→v1, which crosses (V1) — although {(0,v2),(1,v3),(2,v3)} is VALID and CHEAPER
-    (ΣE 34.51 < 34.89). Unlike the 2-cycle sample above, this is a real algorithm defect: the flood's
-    per-child argmin-D rule never generates the valid alternative, and the anchor enumeration does
-    not vary per-child picks."""
-    A = digraph({0: (26.5, 22.5), 1: (18.5, 29.1), 2: (5.6, 8.6)}, [(0, 1), (0, 2)])
-    B = digraph({"v1": (11.1, 1.5), "v2": (21.8, 13.6), "v3": (10.2, 19.0)},
-                [("v1", "v2"), ("v2", "v1"), ("v2", "v3")])
-    prepare(A, B, r=40.0)
-    forward_v3(A, B, 0.3, 0.7)
-    M, _ = extract(A, B, 0.3, 0.7)
-    alt = {(0, "v2"), (1, "v3"), (2, "v3")}
-    a1, a2, a3 = check_rules(alt, A, B)
-    assert not (a1 or a2 or a3)                                 # the alternative IS valid ...
-    eM = sum(A.nodes[a]["cand"][v]["E"] for a, v in M)
-    eA = sum(A.nodes[a]["cand"][v]["E"] for a, v in alt)
-    assert eA <= eM + 1e-9                                      # ... and no more expensive
-    r1, r2, r3 = check_rules(M, A, B)
-    assert not (r1 or r2 or r3), "extract returned an invalid M although a cheaper valid one exists"
 
-
-def test_extract_forward_raises_when_infeasible():
+def test_extract_raises_when_infeasible_forward_only():
     """A vertex whose row is all-infinite (gate severed between two far-apart target chains) leaves
     the anchor without a usable cell -> ValueError, never a broken matching."""
     A = digraph({0: (0, 0), 1: (100, 0)}, [(0, 1)])
     B = digraph({"c0": (0, 1), "c1": (1, 1), "d0": (100, 1), "d1": (101, 1)},
                 [("c0", "c1"), ("d0", "d1")])
     prepare(A, B, r=5.0)
-    forward_v3(A, B)
+    forward(A, B)
     with pytest.raises(ValueError):
         extract(A, B)

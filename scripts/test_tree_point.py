@@ -1,7 +1,7 @@
 """Thorough POINT-mode test of the tree-DTW matcher (network_matching/tree_dtw.py).
 
 Sweeps structure (chain / y-split / merge / deep tree) x density (A vs B sampling) x lateral shift x
-noise x (alpha, beta), runs the full pipeline (prepare -> forward -> backward -> extract_two_table), and validates
+noise x (alpha, beta), runs the full pipeline (prepare -> forward -> extract), and validates
 the final matching M against V1-V4 with check_rules. Reports the pass envelope.
 
 Run:  python scripts/test_nx_point.py
@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import networkx as nx
 
-from network_matching.tree_dtw import prepare, forward, backward, extract_two_table, check_rules
+from network_matching.tree_dtw import prepare, forward, extract, check_rules
 
 
 def densify(waypoints, step):
@@ -74,9 +74,8 @@ def run_case(struct, a_step, b_step, shift, noise, alpha, beta, seed):
     B = build(poly, b_step, shift=0.0, noise=0.0, seed=0)
     prepare(A, B, r=20.0)
     forward(A, B, alpha, beta)
-    backward(A, B, alpha, beta)
     try:
-        M, _ = extract_two_table(A, B)
+        M, _ = extract(A, B, alpha, beta)
     except ValueError as e:
         return False, f"infeasible: {e}"
     v1, v2, v3 = check_rules(M, A, B)

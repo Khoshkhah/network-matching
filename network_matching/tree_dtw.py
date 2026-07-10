@@ -280,15 +280,6 @@ def _fill_row(A: nx.DiGraph, a: Hashable, pred, bpred, bsucc,
         cand[v][key], cand[v][bpkey] = D[v], bp[v]
 
 
-def forward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
-    """Fill the forward table ``D`` and back-pointers ``bpD`` on every A-vertex's candidate table
-    (docs §3). Requires :func:`prepare` to have run. Returns ``A`` (mutated in place)."""
-    order = list(nx.topological_sort(A))
-    _pass(A, B, order, A.predecessors, A.successors, B.predecessors, B.successors,
-          "D", "bpD", alpha, beta, _b_order(B))
-    return A
-
-
 def backward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
     """Fill the backward table ``B`` and back-pointers ``bpB`` (docs §4) — the identical three-way
     ``min`` with A and B **reversed**: sum over **successors**, ``step`` from a B-**successor**, split
@@ -300,23 +291,21 @@ def backward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0
     return A
 
 
-def forward_v3(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
-    """Fill the forward table ``D``/``bpD`` **with the split (V3) coupling** (docs §4.1a), sweeping A in
-    the §4.0 longest-path layer order: a split's children are all built — grouped, one layer — before
-    anything downstream reads their rows. As each child is built (**including the first**), every cell
-    of the split it does *not* link to is marked ``forbidden`` — dead as a pointer target for ALL
+def forward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
+    """**The forward pass** (docs §4): fill ``D``/``bpD`` in the §4.0 longest-path layer order with the
+    §4.1a split (V3) coupling built in. As each split's child is built (**including the first**), every
+    cell of the split it does *not* link to is marked ``forbidden`` — dead as a pointer target for ALL
     siblings, past and future, in any pass; already-built siblings that leaned on a newly-forbidden exit
     get a **whole-row rebuild** under the current flags, iterating to a fixed point. At the fixed point
     every surviving (non-forbidden) exit cell of every split is linked by ALL its children —
     :func:`check_split_exits` verifies exactly this. Multiple surviving exits are legitimate (the single
     one is chosen at extraction, which never commits a vertex to a forbidden cell).
 
-    Plain :func:`forward` remains the uncoupled §4.1 sweep; this pass owns the ``forbidden`` flags and
-    resets them first. **Run before** :func:`backward`: the backward pass reads the flags, so its
-    pointers never target a forbidden cell (the reverse order lets the unconstrained backward table
-    point into cells forbidden afterwards). Requires :func:`prepare`. Raises ``ValueError`` if a split
-    is left with no surviving exit (no V3-valid warping within ``match_radius_m``) or if A is not
-    subdivided (a split's children spanning layers — add an interior point on every real edge, §4.0)."""
+    This pass owns the ``forbidden`` flags and resets them first. **Run before** :func:`backward` when
+    the diagnostic backward table is wanted — it reads the flags, so its pointers never target a
+    forbidden cell. Requires :func:`prepare`. Raises ``ValueError`` if a split is left with no surviving
+    exit (no V3-valid warping within ``match_radius_m``) or if A is not subdivided (a split's children
+    spanning layers — add an interior point on every real edge, §4.0)."""
     order, L = layer_order(A)
     border = _b_order(B)
     deg = {n: max(1, len(list(A.successors(n)))) for n in A.nodes}
@@ -394,8 +383,8 @@ def extract_two_table(A: nx.DiGraph, B: nx.DiGraph):
     flood the stored back-pointers — commit each predecessor in the forward anchor's ``bpD`` and each
     successor in the backward anchor's ``bpB`` — until every vertex in the component is committed;
     re-seed for a disconnected forest. Each vertex's **coverage run is read from the FORWARD cover
-    chain only**, so runs partition. Requires :func:`forward` (or :func:`forward_v3`) **and**
-    :func:`backward`. Returns ``(M, committed)``."""
+    chain only**, so runs partition. Requires :func:`forward` **and** :func:`backward`.
+    Returns ``(M, committed)``."""
     from collections import deque
     # A severed back-pointer (a cell reference of None) means the coupled optimum runs through an
     # infeasible cell -- the per-vertex feasibility check (§1.3) is not enough at a merge/split, whose
@@ -466,7 +455,7 @@ def extract_two_table(A: nx.DiGraph, B: nx.DiGraph):
 
 # ---------------------------------------------------------------------------------------
 # Forward-only anchored extraction -- two pointer types, no backward table
-# (docs/tree_dtw_minimal_matching.md, "Fork B realized"; requires forward_v3)
+# (docs §5; design record: docs/tree_dtw_minimal_matching.md, "Fork B realized")
 # ---------------------------------------------------------------------------------------
 class _Invalid(Exception):
     """The current anchor label's flood reached a forbidden cell / severed pointer / placeless
@@ -606,10 +595,10 @@ def extract(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0)
     anchor is flooded (:func:`_flood_forward`) into a complete candidate relation, labels whose flood
     touches a forbidden cell / severed pointer / placeless successor are rejected (reject-and-retry),
     each surviving candidate is scored by the direct relation cost (:func:`_relation_cost`), and the
-    cheapest wins. Requires :func:`prepare` + :func:`forward_v3` (the coupling is what guarantees a
+    cheapest wins. Requires :func:`prepare` + :func:`forward` (the coupling is what guarantees a
     shared V3 exit exists at every split). Raises ``ValueError`` when an anchor has no usable cell or
     every label of a component is invalid. Returns ``(M, committed)``. The previous two-table
-    traceback remains as :func:`extract_two_table`."""
+    traceback remains as :func:`extract_two_table` (diagnostics, docs §6b)."""
     border = _b_order(B)
     R = _reverse_bpD(A)
     M_all: set = set()
@@ -640,9 +629,6 @@ def extract(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0)
         M_all |= best[1]
         committed_all.update(best[2])
     return M_all, committed_all
-
-
-extract_forward = extract                                       # back-compat alias (same function)
 
 
 # ---------------------------------------------------------------------------------------
@@ -844,7 +830,7 @@ def check_backward_v2(A: nx.DiGraph, B: nx.DiGraph):
 
 
 def check_split_exits(A: nx.DiGraph):
-    """The §4.1a invariant, after :func:`forward_v3`: for every split, (i) at least one exit cell
+    """The §4.1a invariant, after :func:`forward`: for every split, (i) at least one exit cell
     survives (non-``forbidden``), (ii) **every** child links to **every** surviving exit, and (iii) no
     child links to a forbidden cell. Returns the violations ``[(split, exit_or_None, child, why)]`` —
     empty ⇒ the forward table's split structure is (V3)-consistent. *(Deliberately NOT*

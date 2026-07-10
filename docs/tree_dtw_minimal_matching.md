@@ -214,7 +214,7 @@ by construction and are willing to give up interior seeding. Demonstrate whichev
 ## Fork B realized — forward-only anchored extraction (the two-pointer protocol)
 
 **Status: implemented and DEFAULT** — `extract(A, B, α, β)` in `network_matching/tree_dtw.py` (run
-after `prepare` + `forward_v3`; no backward pass; `extract_forward` is a back-compat alias). Builds on
+after `prepare` + `forward`; no backward pass; no alias). Builds on
 §4.1a (forbid-and-rebuild) and replaces both the backward table and the two-table extraction — the
 latter remains as `extract_two_table` for the §6b cross-table diagnostics. One table (`D`/`bpD`),
 two pointer types:
@@ -294,14 +294,12 @@ first-wins, so `M` depends only on (anchor, rules) — not on exploration order.
   alternative) — covered by the open item below.
 * **Honest boundary** (unchanged from §3): the result is the best of the **enumerated** matchings —
   `≤ |cand(a₀)|` of them — not a proven global optimum.
-* **Open**: the `y*`/`w_s` rules' quality (mitigated but **not eliminated** by enumeration + honest
-  scoring — the anchor enumeration does not vary per-child picks), sink-side coverage (forward cover
-  only), and whether the optional all-vertex coupling is worth its extra pruning now that rejection
-  never exhausted in practice. **Minimal genuine exhibit** (found by search over 1 500 case×weight
-  runs, 7 hits, then shrunk): split `0→{1,2}` over `B = {v1⇄v2, v2→v3}` at `(α,β)=(0.3,0.7)` — the
-  greedy `argmin D` child-pick rides the back-arc `v2→v1` into a V1-crossing `M` although
-  `{(0,v2),(1,v3),(2,v3)}` is valid and cheaper; pinned as
-  `test_known_defect_greedy_pick_rides_back_arc` (strict xfail — flips when the rule is fixed).
+* **Open**: aligning the exploration step with the dictated protocol (the greedy `y*`/`w_s` picks are
+  not part of it), sink-side coverage (forward cover only), and label exhaustion on dense-target
+  chains (in-domain, heavy 1:N — the one robustness gap the corrected weight domain leaves standing).
+  *Historical note:* the "greedy pick rides a back-arc" genuine-failure exhibit existed only at
+  `β < 1`, which the later weight-domain correction (`α ∈ (0,1]`, `β ∈ [1,∞)`) excluded; an in-domain
+  240-run scan found no genuine failure, and the strict-xfail exhibit test was removed with it.
 
 ---
 
