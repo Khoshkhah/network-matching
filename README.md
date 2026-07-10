@@ -13,7 +13,7 @@ and CRS handling; the third (Tree-DTW) is a standalone `networkx`-based matcher:
 |------|-------------|----------|----------|
 | **Route-based (graph-DTW)** | `match_routes()` | each A-edge → a connected **route** of B-edges | conflating networks split differently; the recommended default |
 | **Edge-to-edge** | `match()` + `resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning points/edges to a single nearest segment; fine-grained control |
-| **Tree-to-network (Tree-DTW)** | `match_tree()` | a validated matching **relation** `M` of a directed source *tree* onto a target network | matching a tree-shaped subnetwork (a route tree, a sensor cone) at point or segment resolution |
+| **Tree/DAG-to-network (Tree-DTW)** | `match_tree()` | a validated matching **relation** `M` of a directed source *tree or DAG* onto a target network | matching a tree- or DAG-shaped subnetwork (a route tree, a sensor cone, a divided road that rejoins) at point or segment resolution |
 
 ---
 
@@ -159,12 +159,12 @@ meters) is the primary quality score. `match_type` is `1:1_SYMMETRIC`, `1:N_SPLI
 
 ---
 
-## Mode 3 — Tree-to-network matching (Tree-DTW)
+## Mode 3 — Tree/DAG-to-network matching (Tree-DTW)
 
-An **exact** matcher for the case where the source is a directed **tree** (branches and merges,
-never a loop) — or, with `allow_dag=True`, a **subdivided DAG** (reconvergences/diamonds allowed;
-the cell engine is verified exact there, 195/195 vs full-space brute force) — and the target is any
-directed network (cycles allowed). Standalone: plain `networkx.DiGraph` inputs whose nodes carry
+An **exact** matcher for a directed source **tree** (branches and merges, never a loop) or —
+with `allow_dag=True` — any **subdivided DAG** (reconvergences/diamonds allowed; the cell engine
+is verified exact there, 195/195 vs full-space brute force), against any directed target network
+(cycles allowed). Standalone: plain `networkx.DiGraph` inputs whose nodes carry
 projected `x, y` in meters — no DuckDB involved. The source must be **subdivided** (≥ 1 interior
 point per real edge); weights `alpha ∈ (0, 1]` (1:N coverage discount), `beta ∈ [1, ∞)` (N:1 stall
 penalty).
