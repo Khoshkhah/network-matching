@@ -61,9 +61,12 @@ To build a general and reusable tool, we decouple the **storage format** from th
 
 ---
 
-**Beside this DuckDB flow** sits one standalone matcher: **DAG-DTW** (`match_dag`,
-`network_matching/dag_dtw.py`) — pure `networkx`, no database; a directed source *tree or subdivided DAG* matched
-exactly onto a directed target network, with three cross-validating extraction engines. See
+Two more modes ride on this flow. **Point-to-edge** (`match_points`, Mode 4) reuses Tier 1
+unchanged (POINT vs LINESTRING `ST_DWithin`) with a plain-geometry Tier 2/3 — no DTW; see
+`docs/point_matching.md`. **DAG-DTW** (Mode 3) is exposed both as
+`DuckDBMapMatcher.match_dag()` (same sources/CRS, converts to `networkx` internally) and as a
+standalone `networkx` API (`network_matching/dag_dtw.py`) — a directed source DAG matched
+exactly onto a directed target network, with three cross-validating extraction engines; see
 `docs/dag_dtw_matching.md`.
 
 ## 3. Class API Reference: `DuckDBMapMatcher`

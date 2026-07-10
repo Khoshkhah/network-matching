@@ -5,7 +5,7 @@ import duckdb
 import pandas as pd
 import numpy as np
 from shapely.wkt import loads as load_wkt
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 from typing import Optional
 
 from .dtw import dtw_align
@@ -402,14 +402,20 @@ class DuckDBMapMatcher:
             return results
 
         nan = float("nan")
+        # Metric columns come from the results frame itself, so the same appender serves every
+        # per-pair schema (Mode 2's DTW metrics, Mode 4's point metrics, ...).
+        metric_cols = [c for c in results.columns if c not in ("source_id", "rank", "match_type")] \
+            if len(results.columns) else ["dest_id", "dtw_distance", "max_dtw_distance",
+                                          "min_dtw_distance", "bearing_diff", "overlap_pct"]
+
+        def _fill(c):
+            if c == "dest_id" or (not results.empty and results[c].dtype == object):
+                return None                      # id / WKT columns stay object, not float NaN
+            return nan
+
         unmatched_rows = pd.DataFrame({
             "source_id": list(unmatched_ids),
-            "dest_id": None,
-            "dtw_distance": nan,
-            "max_dtw_distance": nan,
-            "min_dtw_distance": nan,
-            "bearing_diff": nan,
-            "overlap_pct": nan,
+            **{c: _fill(c) for c in metric_cols},
             "rank": pd.array([pd.NA] * len(unmatched_ids), dtype="Int64"),
             "match_type": "NO_MATCH",
         })
@@ -417,7 +423,8 @@ class DuckDBMapMatcher:
         combined = pd.concat([results, unmatched_rows], ignore_index=True)
         # Keep overlap_pct an integer percentage even though NO_MATCH rows add NaN
         # (use a nullable Int64 so unmatched rows stay NULL rather than forcing floats).
-        combined["overlap_pct"] = combined["overlap_pct"].round().astype("Int64")
+        if "overlap_pct" in combined.columns:
+            combined["overlap_pct"] = combined["overlap_pct"].round().astype("Int64")
         return combined
 
     def match(self) -> pd.DataFrame:
@@ -453,7 +460,8 @@ class DuckDBMapMatcher:
         Apply a cardinality DECISION to the ranked candidate table produced by ``match()``.
 
         ``match()`` only generates and scores candidates -- for every source it keeps
-        *every* qualifying destination, ranked by ``dtw_distance``. It does not decide which
+        *every* qualifying destination, ranked by ``dtw_distance`` (for a :meth:`match_points`
+        table the score column is ``distance_m``; auto-detected). It does not decide which
         single pairing is "the" match, because that decision depends on the problem. This
         method makes that decision according to ``strategy``:
 
@@ -502,6 +510,12 @@ class DuckDBMapMatcher:
         if results.empty:
             return results
 
+        # Ranking score: Mode 2 tables carry ``dtw_distance``, Mode 4 (point-to-edge) tables
+        # carry ``distance_m`` -- auto-detect so the same decision step serves both.
+        score = "dtw_distance" if "dtw_distance" in results.columns else "distance_m"
+        if score not in results.columns:
+            raise ValueError("results has neither 'dtw_distance' nor 'distance_m' to rank by.")
+
         # All sources we must account for (includes sources that were already NO_MATCH).
         all_src = pd.DataFrame({"id_a": results["source_id"].dropna().unique()})
 
@@ -512,15 +526,15 @@ class DuckDBMapMatcher:
             decided = matched
         elif strategy == "best_per_source":
             # Each source keeps its closest destination.
-            decided = (matched.sort_values("dtw_distance")
+            decided = (matched.sort_values(score)
                               .drop_duplicates(subset="source_id", keep="first"))
         elif strategy == "best_per_dest":
             # Each destination keeps its closest source.
-            decided = (matched.sort_values("dtw_distance")
+            decided = (matched.sort_values(score)
                               .drop_duplicates(subset="dest_id", keep="first"))
         else:  # "one_to_one" -- greedy global assignment
             used_src, used_dst, keep_idx = set(), set(), []
-            for idx, src, dst in matched.sort_values("dtw_distance")[
+            for idx, src, dst in matched.sort_values(score)[
                 ["source_id", "dest_id"]
             ].itertuples():
                 if src in used_src or dst in used_dst:
@@ -531,8 +545,65 @@ class DuckDBMapMatcher:
             decided = matched.loc[keep_idx]
 
         # Re-append a NO_MATCH row for every source that ended up unassigned.
-        decided = decided.sort_values(["source_id", "dtw_distance"]).reset_index(drop=True)
+        decided = decided.sort_values(["source_id", score]).reset_index(drop=True)
         return self._append_unmatched(decided, all_src)
+
+    # Columns returned by match_points().
+    POINT_COLUMNS = ["source_id", "dest_id", "distance_m", "position_pct",
+                     "edge_bearing_deg", "snap_wkt", "rank", "match_type"]
+
+    def match_points(self) -> pd.DataFrame:
+        """Mode 4 -- point-to-edge matching: assign each Source-A **POINT** (a sensor, a
+        measurement station, a stop) to the nearby Source-B edges. The simple sibling of
+        :meth:`match`: same configured sources and ``max_distance`` candidate search, but the
+        score is plain geometry -- no DTW (see ``docs/point_matching.md``).
+
+        Returns one row per (point, candidate edge) with columns ``POINT_COLUMNS``:
+        ``distance_m`` (lateral point->edge distance), ``position_pct`` (snap position along the
+        edge, 0 = start .. 100 = end), ``edge_bearing_deg`` (the edge's direction at the snap
+        point, degrees clockwise from north), ``snap_wkt`` (the snapped point, POINT WKT in
+        ``utm_srid`` meters), ``rank`` (1 = nearest edge for this point) and ``match_type``
+        (``1:1`` / ``1:N_CANDIDATES`` / ``NO_MATCH``). Points with no edge within
+        ``max_distance`` come back as ``NO_MATCH`` rows.
+
+        Commit to an assignment with :meth:`resolve` (it ranks by ``distance_m`` here)::
+
+            points     = m.match_points()
+            assignment = m.resolve(points, strategy="best_per_source")
+        """
+        all_ids_a = self._get_all_ids_a()
+        candidates = self.generate_candidate_pairs()
+
+        rows = []
+        for _, row in candidates.iterrows():
+            try:
+                pt = load_wkt(row["wkt_a"])
+                edge = load_wkt(row["wkt_b"])
+            except Exception:
+                continue
+            if not isinstance(pt, Point) or not isinstance(edge, LineString):
+                continue
+            s = edge.project(pt)                                # arc-length of the snap point
+            snap = edge.interpolate(s)
+            t0 = edge.interpolate(max(0.0, s - 1.0))            # local tangent over +-1 m
+            t1 = edge.interpolate(min(edge.length, s + 1.0))
+            rows.append({
+                "source_id": row["id_a"],
+                "dest_id": row["id_b"],
+                "distance_m": float(pt.distance(edge)),
+                "position_pct": float(100.0 * s / edge.length) if edge.length > 0 else 0.0,
+                "edge_bearing_deg": bearing_between((t0.x, t0.y), (t1.x, t1.y)),
+                "snap_wkt": snap.wkt,
+            })
+
+        if not rows:
+            return self._append_unmatched(pd.DataFrame(columns=self.POINT_COLUMNS), all_ids_a)
+
+        df = pd.DataFrame(rows).sort_values(["source_id", "distance_m"]).reset_index(drop=True)
+        df["rank"] = (df.groupby("source_id").cumcount() + 1).astype("Int64")
+        n_cand = df.groupby("source_id")["dest_id"].transform("size")
+        df["match_type"] = np.where(n_cand > 1, "1:N_CANDIDATES", "1:1")
+        return self._append_unmatched(df, all_ids_a)
 
     # Columns returned by reconcile_symmetric()/match_symmetric().
     SYMMETRIC_COLUMNS = ["a_id", "b_id", "dtw", "bearing_diff", "ov_ab", "ov_ba",

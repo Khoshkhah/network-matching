@@ -6,15 +6,17 @@ segmented differently. It combines **Dynamic Time Warping (DTW)** for shape alig
 **DuckDB Spatial** for fast candidate search, and works in a local projected CRS so all distances
 are in meters.
 
-The library offers **three matchers**, all behind the same `DuckDBMapMatcher` class — same
-inputs (WKT CSV / geofiles / DuckDB tables), same CRS handling, same two-table output shape.
-Mode 3 (DAG-DTW) additionally has a standalone `networkx` API:
+The library offers **four matchers**, all behind the same `DuckDBMapMatcher` class — same
+inputs (WKT CSV / geofiles / DuckDB tables), same CRS handling, same output conventions
+(ranked rows, `match_type`, `NO_MATCH`). Mode 3 (DAG-DTW) additionally has a standalone
+`networkx` API:
 
 | Mode | Entry point | Produces | Best for |
 |------|-------------|----------|----------|
 | **Route-based (graph-DTW)** | `m.match_routes()` | each A-edge → a connected **route** of B-edges | conflating networks split differently; the recommended default |
-| **Edge-to-edge** | `m.match()` + `m.resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning points/edges to a single nearest segment; fine-grained control |
+| **Edge-to-edge** | `m.match()` + `m.resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning edges to a single nearest segment; fine-grained control |
 | **DAG-to-network (DAG-DTW)** | `m.match_dag()` | an **exact**, validity-checked matching of the whole source DAG onto the target, as Mode-1-style tables | matching a DAG-shaped subnetwork (a route tree, a sensor cone, a divided road that rejoins) in one globally consistent pass |
+| **Point-to-edge** | `m.match_points()` + `m.resolve()` | each A-**point** → ranked nearby B-edges, with snap position and local road bearing | assigning sensors / stations / stops to the road they sit on |
 
 ---
 
@@ -228,6 +230,32 @@ python scripts/test_dag_point.py                        # three-engine cross-val
 
 ---
 
+## Mode 4 — Point-to-edge matching
+
+The simple sibling of Mode 2 for **POINT** sources: assign each point (a sensor, a measurement
+station, a stop) to the road edges near it. Same three-tier flow — DuckDB candidate search within
+`max_distance`, plain-geometry scoring (no DTW), ranking — and the same `resolve()` decision step
+(it ranks by `distance_m` here):
+
+```python
+from network_matching import DuckDBMapMatcher
+
+m = DuckDBMapMatcher.from_wkt_csv(
+    "data/sensors.csv", "data/osm_edges.csv",              # A = POINT WKT, B = LINESTRING WKT
+    id_a="sensor_id", id_b="edge_id", utm_srid=3006, max_distance=25)
+
+points     = m.match_points()                              # all ranked candidates (+ NO_MATCH rows)
+assignment = m.resolve(points, strategy="best_per_source")  # each sensor -> its nearest road
+```
+
+One row per (point, candidate edge): `distance_m` (lateral drift), `position_pct` (where along
+the edge the point snaps, 0–100), `edge_bearing_deg` (the road's direction at the snap point —
+use it to pick the right edge of a divided road), `snap_wkt` (the snapped point, `utm_srid`
+meters), `rank` (1 = nearest), `match_type` (`1:1` / `1:N_CANDIDATES` / `NO_MATCH`). Reference:
+[docs/point_matching.md](docs/point_matching.md).
+
+---
+
 ## Inputs
 
 Geometry is assumed lon/lat (EPSG:4326) and transformed to your local projected `utm_srid`
@@ -270,6 +298,7 @@ m.set_parameters(max_distance=25)
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
+| [docs/point_matching.md](docs/point_matching.md) | Point-to-edge matching (Mode 4) — pipeline, output schema, `resolve`. |
 | [docs/algorithm.md](docs/algorithm.md) | The three-tier edge-to-edge architecture. |
 | [docs/symmetric_matching.md](docs/symmetric_matching.md) | Symmetric (two-way) split/merge reconciliation. |
 | [docs/threshold_estimation.md](docs/threshold_estimation.md) | Data-driven match-quality thresholds (`suggest_thresholds`). |
