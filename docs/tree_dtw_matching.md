@@ -5,7 +5,7 @@ Tree-DTW aligns a **directed tree** — a road structure that branches and merge
 | piece | status |
 |---|---|
 | forward table with V3 coupling (§4) | implemented — `forward` |
-| extraction (§5) | **two cross-validating engines**: `extract` (branching, cell-resolution) and `extract_join` (junction-join, exact per `docs/junction_join_extraction.md`) |
+| extraction (§5) | **three cross-validating engines**: `extract` (branching), `extract_join` (vertex join), **`extract_cell`** (cell-level join — exact over the full space, 384/384 on the envelope; `docs/junction_join_extraction.md` §8) |
 | validation & diagnostics (§6) | implemented |
 | segment mode (§8) | implemented; a merge+split junction is still rejected upstream (`NotATree` on `L(A)`'s cluster) |
 | known validator limit on cyclic B (§7) | documented, pinned by test |
@@ -156,12 +156,14 @@ cheapest `C(M)` wins. If no candidate of any label survives, raise the feasibili
 branching is capped (default 4096 states, `max_states`) and **exceeding the cap raises** — never a
 silent truncation.
 
-**A second engine — `extract_join`.** The junction-join extraction (spec:
+**Further engines.** The junction-join extraction (spec:
 `docs/junction_join_extraction.md`) computes the optimal sink/split labels by a recursive table join
 over the split hierarchy — forward-only, exact over the stored-history family, polynomial, no caps.
-The two engines **cross-validate**: run both, take the cheaper valid `M`; the join can lose to the
-branching only through intra-vertex coverage alternatives (cell resolution — see the spec's §6a),
-never otherwise.
+**`extract_cell`** (spec §8) is the **cell-level join** — built from scratch upstream out of `E`
+alone, exact over the *full* space including coverage runs; on the structured envelope it is valid
+384/384 and never costlier than either other engine. The three engines **cross-validate**: run
+them, take the cheapest valid `M`; `C(cell) ≤ C(branching)` and `C(cell) ≤ C(vertex-join)` always —
+a violation is an exactness bug by definition (pinned in the suite).
 
 ## 6. Verification & Diagnostics
 
@@ -206,7 +208,7 @@ Everything — layering, the recurrence, the coupling, the extraction, `check_ru
   | candidates & cells (§1) | `prepare` |
   | vertex order (§4.0) | `layer_order` |
   | forward pass incl. V3 coupling (§4.1–§4.1a) | `forward` |
-  | extraction (§5) | `extract` (branching) · `extract_join` (junction-join) |
+  | extraction (§5) | `extract` (branching) · `extract_join` (vertex join) · `extract_cell` (cell join) |
   | judge (§6) | `check_rules` |
   | diagnostics (§6) | `backward`, `extract_two_table`, `validate_tables`, `check_reciprocity`, `check_reachability`, `check_forward`, `check_backward_v2`, `check_split_exits` |
   | segment lift (§8) | `line_digraph` |

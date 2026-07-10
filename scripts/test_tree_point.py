@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import networkx as nx
 
-from network_matching.tree_dtw import prepare, forward, extract, extract_join, check_rules, _cost_of
+from network_matching.tree_dtw import prepare, forward, extract, extract_join, extract_cell, check_rules, _cost_of
 
 
 def densify(waypoints, step):
@@ -88,30 +88,37 @@ def run_case(struct, a_step, b_step, shift, noise, alpha, beta, seed):
 
     Mb, why_b = run_engine(extract)
     Mj, why_j = run_engine(extract_join)
-    cross = True
-    if Mb is not None and Mj is not None:                       # cross-validation: join is exact
-        cross = _cost_of(A, B, Mj, alpha, beta) <= _cost_of(A, B, Mb, alpha, beta) + 1e-6
-    why = "" if (Mb is not None and Mj is not None) else f"branch[{why_b}] join[{why_j}]"
-    return (Mb is not None, Mj is not None, cross), why
+    Mc, why_c = run_engine(extract_cell)
+    cost = lambda M: _cost_of(A, B, M, alpha, beta)
+    cross = True                                                # THE invariant: cell <= both, always
+    if Mc is not None:
+        if Mb is not None:
+            cross &= cost(Mc) <= cost(Mb) + 1e-6
+        if Mj is not None:
+            cross &= cost(Mc) <= cost(Mj) + 1e-6
+    ok_all = Mb is not None and Mj is not None and Mc is not None
+    why = "" if ok_all and cross else f"branch[{why_b}] join[{why_j}] cell[{why_c}] cell<=both={cross}"
+    return (Mb is not None, Mj is not None, Mc is not None, cross), why
 
 
 if __name__ == "__main__":
-    nb = nj = nx_ = n_tot = 0
+    nb = nj = nc = nx_ = n_tot = 0
     fails = []
     for struct in STRUCTURES:
         for a_step, b_step in [(2.0, 2.0), (2.0, 1.0), (1.0, 2.0), (3.0, 1.5)]:   # equal / B-fine / A-fine
             for shift in (0.0, 0.5, 2.0, 5.0):
                 for noise in (0.0, 0.3):
                     for alpha, beta in ((1.0, 1.0), (0.7, 1.0), (0.5, 1.5)):
-                        (ok_b, ok_j, cross), why = run_case(struct, a_step, b_step, shift, noise,
-                                                            alpha, beta, seed=7)
+                        (ok_b, ok_j, ok_c, cross), why = run_case(struct, a_step, b_step, shift,
+                                                                  noise, alpha, beta, seed=7)
                         n_tot += 1
                         nb += ok_b
                         nj += ok_j
+                        nc += ok_c
                         nx_ += cross
                         if why:
                             fails.append((struct, a_step, b_step, shift, noise, alpha, beta, why))
     for f in fails[:12]:
         print("  FAIL", f)
-    print(f"POINT-mode sweep: branching {nb}/{n_tot} valid | junction-join {nj}/{n_tot} valid | "
-          f"cross-consistent {nx_}/{n_tot}")
+    print(f"POINT-mode sweep: branching {nb}/{n_tot} | vertex-join {nj}/{n_tot} | "
+          f"CELL-join {nc}/{n_tot} valid | cell<=both {nx_}/{n_tot}")

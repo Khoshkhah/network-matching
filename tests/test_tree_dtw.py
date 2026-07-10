@@ -6,10 +6,11 @@ import networkx as nx
 import pytest
 
 from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward,
-                                       extract, extract_join, extract_two_table, check_reciprocity,
-                                       check_reachability, check_forward_v3, check_backward_v2,
-                                       check_rules, check_split_exits, layer_order, _advance_anchor,
-                                       _cost_of, _reconstruct_from_sinks, INF)
+                                       extract, extract_join, extract_cell, extract_two_table,
+                                       check_reciprocity, check_reachability, check_forward_v3,
+                                       check_backward_v2, check_rules, check_split_exits,
+                                       layer_order, _advance_anchor, _cost_of,
+                                       _reconstruct_from_sinks, INF)
 
 
 def make(name):
@@ -581,3 +582,128 @@ def test_extractions_cross_validate(alpha, beta):
                            for M in (Mj, Mb) for a in {x for x, _ in M})
                 assert runs, (f"seed {seed}: join ({cj:.3f}) > branching ({cb:.3f}) "
                               f"WITHOUT coverage -- a real exactness bug")
+
+
+# ---------------------------------------------------------------------------------------------------
+# The cell-level join (docs/junction_join_extraction.md §8) + the three-way cross-validation
+# ---------------------------------------------------------------------------------------------------
+def _full_space_brute(A, B, alpha, beta, run_cap=3, cap=200_000):
+    """Ground truth over the FULL space: every (entry, run) combination per vertex, judged by
+    check_rules, costed by C(M). Tiny cases only."""
+    import itertools
+    def runs(a, e):
+        cand = A.nodes[a]["cand"]
+        out, stack = [], [(e,)]
+        while stack:
+            path = stack.pop()
+            out.append(path)
+            if len(path) > run_cap:
+                continue
+            for w in B.successors(path[-1]):
+                if w in cand and not cand[w].get("forbidden") and w not in path:
+                    stack.append(path + (w,))
+        return out
+    per_vertex = []
+    for a in A.nodes:
+        opts = [r for e, c in A.nodes[a]["cand"].items()
+                if not c.get("forbidden") and c["D"] < INF for r in runs(a, e)]
+        if not opts:
+            return None
+        per_vertex.append(opts)
+    n = 1
+    for o in per_vertex:
+        n *= len(o)
+        assert n <= cap, "brute too big for a suite test"
+    best, verts = None, list(A.nodes)
+    for combo in itertools.product(*per_vertex):
+        M = {(a, v) for a, run in zip(verts, combo) for v in run}
+        if any(check_rules(M, A, B)):
+            continue
+        cost = _cost_of(A, B, M, alpha, beta)
+        if best is None or cost < best - 1e-12:
+            best = cost
+    return best
+
+
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", IN_DOMAIN)
+def test_extract_cell_scenarios_valid(name, alpha, beta):
+    """extract_cell returns a legal, fully-covering, deterministic matching on every scenario and
+    in-domain weighting."""
+    A, B = make(name)
+    prepare(A, B, r=20.0)
+    forward(A, B, alpha=alpha, beta=beta)
+    M, committed = extract_cell(A, B, alpha=alpha, beta=beta)
+    assert not any(check_rules(M, A, B))
+    assert set(committed) == set(A.nodes)
+    M2, c2 = extract_cell(A, B, alpha=alpha, beta=beta)
+    assert M2 == M and c2 == committed
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.3, 1.5)])
+def test_extract_cell_segment_mode(alpha, beta):
+    A, B = make("split")
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0)
+    forward(LA, LB, alpha=alpha, beta=beta)
+    M, committed = extract_cell(LA, LB, alpha=alpha, beta=beta)
+    assert not any(check_rules(M, LA, LB))
+    assert set(committed) == set(LA.nodes)
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (0.3, 1.5)])
+def test_extract_cell_equals_full_space_brute(alpha, beta):
+    """On a tiny dense-B chain (the coverage regime), extract_cell equals the FULL-SPACE brute-force
+    optimum -- all entry+run combinations, not just the sink-label family."""
+    A = digraph({0: (0, 0), 1: (9, 0), 2: (18, 0)}, [(0, 1), (1, 2)])
+    B = digraph({f"b{i}": (3 * i, .4) for i in range(7)},
+                [(f"b{i}", f"b{i+1}") for i in range(6)])
+    prepare(A, B, r=25.0)
+    forward(A, B, alpha=alpha, beta=beta)
+    M, _ = extract_cell(A, B, alpha=alpha, beta=beta, run_cap=3)
+    bf = _full_space_brute(A, B, alpha, beta, run_cap=3)
+    assert bf is not None
+    assert abs(_cost_of(A, B, M, alpha, beta) - bf) < 1e-6
+
+
+def test_extract_cell_beats_vertex_join_on_divergence():
+    """The §6a/§8 closure, pinned: on this dense-B split (hunted divergence case), the cell join is
+    strictly cheaper than the vertex-level join, equals the full-space optimum, and stays valid."""
+    A = digraph({0: (0, 0), 1: (7, 0.371), 2: (14, 4.368), 3: (14, -3.301)},
+                [(0, 1), (1, 2), (1, 3)])
+    B = digraph({"b0": (0.0, 0.743), "b1": (2.2, 0.766), "b2": (4.4, 1.091), "b3": (6.6, 0.726),
+                 "b4": (8.8, -0.0), "b5": (11.0, -0.187), "b6": (13.2, 1.053)},
+                [(f"b{i}", f"b{i+1}") for i in range(6)])
+    prepare(A, B, r=20.0)
+    forward(A, B, alpha=0.5, beta=1.0)
+    Mc, _ = extract_cell(A, B, alpha=0.5, beta=1.0, run_cap=3)
+    Mv, _ = extract_join(A, B, alpha=0.5, beta=1.0)
+    cc = _cost_of(A, B, Mc, 0.5, 1.0)
+    cv = _cost_of(A, B, Mv, 0.5, 1.0)
+    assert cc < cv - 1e-6                                       # strictly cheaper than the vertex join
+    bf = _full_space_brute(A, B, 0.5, 1.0, run_cap=3)
+    assert abs(cc - bf) < 1e-6                                  # and equal to the full-space optimum
+    assert not any(check_rules(Mc, A, B))
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
+def test_three_way_cross_validation(alpha, beta):
+    """The standing harness: whenever engines succeed they are valid, and the cell join is never
+    costlier than EITHER other engine -- no coverage exception (it is exact over the full space)."""
+    for seed in range(14):
+        A, B = _rand_polytree_case(seed)
+        prepare(A, B, r=40.0)
+        forward(A, B, alpha=alpha, beta=beta)
+        results = {}
+        for tag, fn in (("cell", extract_cell), ("branch", extract), ("vtx", extract_join)):
+            try:
+                M, _ = fn(A, B, alpha, beta)
+                assert not any(check_rules(M, A, B)), f"seed {seed}: {tag} returned invalid M"
+                results[tag] = _cost_of(A, B, M, alpha, beta)
+            except ValueError:
+                results[tag] = None
+        if results["cell"] is not None:
+            for other in ("branch", "vtx"):
+                if results[other] is not None:
+                    assert results["cell"] <= results[other] + 1e-6, \
+                        f"seed {seed}: cell join costlier than {other} -- exactness bug"

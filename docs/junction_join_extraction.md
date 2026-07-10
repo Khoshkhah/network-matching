@@ -169,7 +169,7 @@ confined to coverage regimes (§6a). Both engines stay — they cross-validate e
 
 ---
 
-## 8. Cell-Level Join — full resolution (PROTOTYPE-VERIFIED)
+## 8. Cell-Level Join — full resolution (IMPLEMENTED: `extract_cell`)
 
 The §6a gap closed at the source: run the same recursion with **cells, not vertex labels**, as the
 propagating object. No stored history is replayed — the engine needs only `prepare`'s `E` (and
@@ -267,6 +267,27 @@ cells map is the full `M`.
 | §6a closure — divergence hunt (200 random dense-B cases) | 4 cases where **cell-join < vertex-join**; in each, cell-join == branching, and where the full brute is computable, **cell-join == full-space optimum** (e.g. 15.382 vs vertex-join 15.407) |
 
 The cell-level engine is exact over the **full** cell-level space — runs included — and closes the
-§6a gap by construction and by measurement. Status: prototype; wiring it in as `extract_cell` (or as
-the replacement for the vertex-level join) is the remaining implementation step, after which the
-three-way cross-validation of §8.3 becomes the standing verification harness.
+§6a gap by construction and by measurement.
+
+### 8.5 Library wiring — `extract_cell`
+
+Implemented as `extract_cell(A, B, α, β, run_cap=8, max_rows=50000)`: deterministic ordering
+throughout, loud caps (`run_cap` bounds cover runs, `max_rows` raises — never truncates silently),
+joined rows tried cheapest-first with the unchanged `check_rules` judge, and the root join
+**contracts per pending-key** after each fold (only the pendings matter for future folds — the
+blowup on dense merge structures collapses to `Π |merge entries|`). Suite: 211 passing, including
+equality with the full-space brute force on tiny dense cases, the pinned divergence case (cell
+strictly beats the vertex join and equals the full-space optimum), and the three-way harness.
+
+**Structured envelope (384 cases, all three engines on the same tables):**
+
+| engine | valid |
+|---|---|
+| branching `extract` | 376/384 (state-cap on deep×dense) |
+| vertex `extract_join` | 379/384 |
+| **cell `extract_cell`** | **384/384** |
+| invariant `C(cell) ≤ C(branching)` and `≤ C(vertex-join)` | **384/384** |
+
+The cell engine is strictly dominant on this envelope: valid everywhere, never costlier than either
+other engine, no caps hit. The three-way cross-validation is the standing harness
+(`test_three_way_cross_validation`, `scripts/test_tree_point.py`).

@@ -836,6 +836,196 @@ def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 
 
 # ---------------------------------------------------------------------------------------
+# The cell-level join (docs/junction_join_extraction.md §8) -- full resolution, from scratch
+# ---------------------------------------------------------------------------------------
+def _cell_reachable(A: nx.DiGraph, B: nx.DiGraph) -> set:
+    """§8.2 cell-removal pre-pass: one reverse search from ALL sink cells over the cell-move graph
+    (cover reversed inside a vertex, advance/stall reversed across edges). Cells never seen cannot
+    appear on any chain to a sink and are removed up front, in every role."""
+    seen, stack = set(), []
+    for X in A.nodes:
+        if A.out_degree(X) == 0:
+            for v, c in A.nodes[X]["cand"].items():
+                if not c.get("forbidden"):
+                    seen.add((X, v))
+                    stack.append((X, v))
+    while stack:
+        X, v = stack.pop()
+        cand = A.nodes[X]["cand"]
+        for u in B.predecessors(v):                             # cover reversed (same vertex)
+            if u in cand and not cand[u].get("forbidden") and (X, u) not in seen:
+                seen.add((X, u))
+                stack.append((X, u))
+        for P in A.predecessors(X):                             # advance/stall reversed (to the parent)
+            pc = A.nodes[P]["cand"]
+            for u in [v] + list(B.predecessors(v)):
+                if u in pc and not pc[u].get("forbidden") and (P, u) not in seen:
+                    seen.add((P, u))
+                    stack.append((P, u))
+    return seen
+
+
+def _cell_runs(A: nx.DiGraph, B: nx.DiGraph, a: Hashable, e: Hashable, seen: set,
+               cap: int, border: Dict[Hashable, int]):
+    """All directed cover paths from entry ``e`` inside cand(a) (simple, <= ``cap`` cover cells);
+    removed cells cannot be covered. Deterministic order."""
+    cand = A.nodes[a]["cand"]
+    out, stack = [], [(e,)]
+    while stack:
+        path = stack.pop()
+        out.append(path)
+        if len(path) > cap:
+            continue
+        for w in sorted(B.successors(path[-1]), key=lambda t: border.get(t, 0)):
+            if (w in cand and not cand[w].get("forbidden") and w not in path
+                    and (a, w) in seen):
+                stack.append(path + (w,))
+    return out
+
+
+def _pend_union(p0: dict, p1: dict):
+    """Union two pending dicts; None on a separator-cell conflict; stall flags OR."""
+    out = dict(p0)
+    for (c, ce), flag in p1.items():
+        for (c2, ce2) in out:
+            if c2 == c and ce2 != ce:
+                return None
+        out[(c, ce)] = out.get((c, ce), False) or flag
+    return out
+
+
+def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
+                 run_cap: int = 8, max_rows: int = 50000):
+    """**The cell-level join** (docs/junction_join_extraction.md §8) -- exact over the FULL
+    cell-level space, runs included. Built from scratch upstream: only ``prepare``'s ``E`` and the
+    ``forbidden``/``D<inf`` filters (pruning) are used -- the stored propagation is never consulted.
+    A row is ``(entry, value, pending, cells)``; the E-multiplier ledger is {1 advance/source,
+    beta stall, alpha cover}; a vertex's entry-E is DEFERRED to its parent step (at a merge, to the
+    root join -- beta if ANY arm stalls); a merge child is absorbed by one parent line
+    (consumed-once), the other lines carry pending separators matched at the root join. ``M``
+    travels with the rows -- the winning row's cells map IS the relation, no traceback.
+
+    Joined rows are tried cheapest-first; the first whose ``M`` passes ``check_rules`` wins. Raises
+    ``ValueError`` on infeasibility (a vertex with no surviving cell -- located precisely), when no
+    root row is valid, or when a table exceeds ``max_rows`` (loud, never a silent truncation).
+    ``run_cap`` bounds cover-run length. Requires :func:`prepare` + :func:`forward`. Returns
+    ``(M, committed)``."""
+    border = _b_order(B)
+    seen = _cell_reachable(A, B)
+    for X in A.nodes:
+        if not any((X, v) in seen and A.nodes[X]["cand"][v]["D"] < INF
+                   for v in A.nodes[X]["cand"]):
+            raise ValueError(f"vertex {X!r} has no surviving cell (sink-search + D-filter) -- "
+                             "increase match_radius_m")
+    M_all: set = set()
+    committed_all: Dict[Hashable, Hashable] = {}
+    for comp in nx.weakly_connected_components(A):
+        comp = set(comp)
+        order = [n for n in nx.topological_sort(A) if n in comp]
+        tables: Dict[Hashable, list] = {}
+        absorbed_by: Dict[Hashable, Hashable] = {}
+        for X in reversed(order):
+            cand = A.nodes[X]["cand"]
+            rows: Dict[tuple, tuple] = {}
+            entries = sorted((v for v in cand
+                              if (X, v) in seen and cand[v]["D"] < INF), key=lambda t: border[t])
+            for e in entries:
+                for R in _cell_runs(A, B, X, e, seen, run_cap, border):
+                    u = R[-1]
+                    combos = [(sum(alpha * cand[c]["E"] for c in R[1:]), {}, {X: R})]
+                    dead = False
+                    for c in sorted(A.successors(X), key=str):
+                        if c not in comp:
+                            continue
+                        if c in absorbed_by and absorbed_by[c] != X:
+                            child_rows = [(ce, 0.0, {(c, ce): False}, {})
+                                          for ce in sorted(A.nodes[c]["cand"], key=lambda t: border[t])
+                                          if (c, ce) in seen]
+                            deferred = True
+                        else:
+                            absorbed_by[c] = X
+                            child_rows = tables[c]
+                            deferred = A.in_degree(c) > 1
+                        opts = []
+                        for (ce, cval, cpend, ccells) in child_rows:
+                            stall = (ce == u)
+                            if not stall and ce not in B.successors(u):
+                                continue                        # children connect at the run end only
+                            add = cval if deferred else \
+                                cval + (beta if stall else 1.0) * A.nodes[c]["cand"][ce]["E"]
+                            pend = dict(cpend)
+                            if deferred:
+                                pend[(c, ce)] = pend.get((c, ce), False) or stall
+                            opts.append((add, pend, ccells))
+                        if not opts:
+                            dead = True
+                            break
+                        nxt = []
+                        for (v0, p0, c0) in combos:
+                            for (av, ap, ac) in opts:
+                                p = _pend_union(p0, ap)
+                                if p is not None:
+                                    nxt.append((v0 + av, p, {**c0, **ac}))
+                        combos = nxt
+                        if not combos:
+                            dead = True
+                            break
+                    if dead:
+                        continue
+                    for (val, pend, cells) in combos:
+                        key = (e, frozenset(pend.items()))
+                        if key not in rows or val < rows[key][1] - 1e-12:
+                            rows[key] = (e, val, pend, cells)
+                    if len(rows) > max_rows:
+                        raise ValueError(f"cell-join table at {X!r} exceeded {max_rows} rows -- "
+                                         "raise max_rows")
+            if not rows:
+                raise ValueError(f"vertex {X!r}: no feasible row -- increase match_radius_m")
+            tables[X] = sorted(rows.values(), key=lambda r: (r[1], border[r[0]]))
+        roots = []
+        for X in sorted(comp, key=str):                         # sources pay their own entry (full E)
+            if A.in_degree(X) == 0:
+                roots.append([(e, val + A.nodes[X]["cand"][e]["E"], pend, cells)
+                              for (e, val, pend, cells) in tables[X]])
+        joined = [(0.0, {}, {})]
+        for root in roots:
+            folded: Dict[frozenset, tuple] = {}
+            for (v0, p0, c0) in joined:
+                for (_e, val, pend, cells) in root:
+                    p = _pend_union(p0, pend)
+                    if p is None:
+                        continue
+                    key = frozenset(p.items())                  # contract per pending-key: only the
+                    v = v0 + val                                # pendings matter for future folds
+                    if key not in folded or v < folded[key][0] - 1e-12:
+                        folded[key] = (v, p, {**c0, **cells})
+            joined = list(folded.values())
+            if len(joined) > max_rows:
+                raise ValueError(f"cell-join root join exceeded {max_rows} rows -- raise max_rows")
+        finals = []
+        for (val, pend, cells) in joined:
+            for (c, ce), flag in pend.items():                  # pay every deferred merge entry once
+                val += (beta if flag else 1.0) * A.nodes[c]["cand"][ce]["E"]
+            finals.append((val, cells))
+        best = None
+        for val, cells in sorted(finals, key=lambda t: (t[0], str(sorted(t[1].items(), key=str)))):
+            Mc = {(a, v) for a, run in cells.items() for v in run}
+            if {a for a, _ in Mc} != comp:
+                continue
+            v1, v2, v3 = check_rules(Mc, A, B)
+            if v1 or v2 or v3:
+                continue                                        # judge: invalid rows are skipped
+            best = (Mc, {a: run[0] for a, run in cells.items()})
+            break
+        if best is None:
+            raise ValueError(f"cell-join: no valid root row in component of {order[0]!r} -- "
+                             "increase match_radius_m")
+        M_all |= best[0]
+        committed_all.update(best[1])
+    return M_all, committed_all
+
+
+# ---------------------------------------------------------------------------------------
 # Table validation -- V1/V2/V3 per cell, by following the REAL stored back-pointers (docs §6)
 # ---------------------------------------------------------------------------------------
 def _reconstruct(A: nx.DiGraph, a: Hashable, v: Hashable, bpkey: str) -> set:
