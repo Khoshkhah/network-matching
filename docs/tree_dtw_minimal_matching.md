@@ -294,9 +294,12 @@ first-wins, so `M` depends only on (anchor, rules) — not on exploration order.
   alternative) — covered by the open item below.
 * **Honest boundary** (unchanged from §3): the result is the best of the **enumerated** matchings —
   `≤ |cand(a₀)|` of them — not a proven global optimum.
-* **Open**: aligning the exploration step with the dictated protocol (the greedy `y*`/`w_s` picks are
-  not part of it), sink-side coverage (forward cover only), and label exhaustion on dense-target
-  chains (in-domain, heavy 1:N — the one robustness gap the corrected weight domain leaves standing).
+* **Resolved — branching (decided 2026-07-10)**: the exploration keeps every alternative alive
+  (one candidate per entry-cell option, no greedy picks anywhere) and the judge discards invalid
+  candidates and takes the cheapest valid `C(M)`. Implemented as the default `extract`; structured
+  envelope moved 276/384 → **367/384 valid, 0 invalid outputs** (all residuals are explicit
+  refusals). Still open: sink-side coverage (forward cover only), the state-cap on deep×dense
+  extremes.
   *Historical note:* the "greedy pick rides a back-arc" genuine-failure exhibit existed only at
   `β < 1`, which the later weight-domain correction (`α ∈ (0,1]`, `β ∈ [1,∞)`) excluded; an in-domain
   240-run scan found no genuine failure, and the strict-xfail exhibit test was removed with it.

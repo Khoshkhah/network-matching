@@ -406,23 +406,22 @@ def test_extract_random_sweep(alpha, beta):
         assert set(committed) == set(A.nodes)
 
 
-def test_smallest_invalid_output_two_cycle():
-    """The SMALLEST input on which the algorithm's output is reported invalid: a 2-vertex chain over a
-    2-cycle target (|A|=2, |B|=2). The extraction returns the geometrically correct M =
-    {(0,p),(1,q)} — and check_rules flags V1, because with p⇄q the legal forward step p→q is *also*
-    readable backward through q→p; the local V1 predicate cannot orient a step on a 2-cycle. This is
-    a property of the VALIDATOR on cyclic targets, not of the extraction: the two-table extraction
-    returns the identical M with the identical flag, and EVERY matching separating the two vertices
-    (including the mirror image) fires V1 here — no algorithm choosing distinct cells can pass."""
+def test_two_cycle_judge_prefers_valid():
+    """The SMALLEST adversarial input: a 2-vertex chain over a 2-cycle target (|A|=2, |B|=2). On p⇄q
+    the local V1 predicate cannot orient a step, so EVERY matching separating the two vertices —
+    including the geometrically nicest {(0,p),(1,q)} — is flagged. The judge discards them (validity
+    IS the definition of a matching) and returns a VALID candidate instead — here a stall, both
+    vertices on one cell. The separating alternative stays flagged, documenting the validator's
+    2-cycle limit; the extraction no longer *returns* anything invalid."""
     A = digraph({0: (0, 0), 1: (10, 0)}, [(0, 1)])
     B = digraph({"p": (0, 1), "q": (10, 1)}, [("p", "q"), ("q", "p")])
     prepare(A, B, r=20.0)
     forward(A, B)
     M, _ = extract(A, B)
-    assert M == {(0, "p"), (1, "q")}                            # the correct matching...
     v1, v2, v3 = check_rules(M, A, B)
-    assert v1 and not v2 and not v3                             # ...flagged V1, and only V1
-    assert check_rules({(0, "q"), (1, "p")}, A, B)[0]           # the mirror fires too: unavoidable
+    assert not (v1 or v2 or v3)                                 # the judge only returns VALID matchings
+    assert check_rules({(0, "p"), (1, "q")}, A, B)[0]           # the separating matching is flagged ...
+    assert check_rules({(0, "q"), (1, "p")}, A, B)[0]           # ... and so is its mirror: 2-cycle limit
 
 
 

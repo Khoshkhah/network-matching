@@ -5,7 +5,7 @@ Tree-DTW aligns a **directed tree** — a road structure that branches and merge
 | piece | status |
 |---|---|
 | forward table with V3 coupling (§4) | implemented — `forward` |
-| anchored extraction (§5) | implemented — `extract`; **selection semantics inside one label's exploration still to be aligned with §5 (open decisions below)** |
+| anchored extraction (§5) | implemented — `extract` (branching exploration, valid-only judge) |
 | validation & diagnostics (§6) | implemented |
 | segment mode (§8) | implemented; a merge+split junction is still rejected upstream (`NotATree` on `L(A)`'s cluster) |
 | known validator limit on cyclic B (§7) | documented, pinned by test |
@@ -143,13 +143,18 @@ one. Conjecture (to verify empirically): at the fixed point, each explored cell 
 most **one** of the two directions — the other direction only re-reaches what the arriving leg
 already collected.
 
-**The one open decision.** When a direction step offers **several cells of the same child vertex**
-(e.g. two cells of one successor both point at the same explored cell — a stall cell and an advance
-cell), does the exploration take **all of them**, or must each vertex enter `M` through **one** cell
-(plus its contiguous run)? This single choice decides between a genuinely many-to-many `M` and a
-run-per-vertex `M`, and is the last unspecified atom of the protocol.
+**Branching — decided.** When a step offers **several cells of the same child vertex** (e.g. a
+stall cell and an advance cell both pointing at the explored cell), the exploration does **not**
+choose: it **branches** — one candidate continuation per option, every alternative kept alive until
+a decision is forced. Same-vertex cover pairs are *not* alternatives (they are one run and are
+pulled in by whichever cells the connections actually reference); only **entry cells of a child**
+branch. Each completed branch is one candidate relation `M`.
 
-> The current `extract` implements a *selective* variant (one cell per vertex, chosen greedily by `argmin D` inside the flood, cost-only selection). That deviates from the protocol above — it introduces choice rules this section does not contain. Inside the §3 weight domain (`α ≤ 1 ≤ β`) a 240-run scan found **no** case where it returns an invalid `M` while an equal-or-cheaper valid one exists (such cases arose only at out-of-domain `β < 1`); its remaining in-domain gap is **label exhaustion on dense-target chains** (heavy 1:N, see the `scripts/test_tree_point.py` envelope). The implementation is to be aligned once the three decisions are made.
+**The judge.** Every candidate from every label goes to the same judge: candidates violating
+(V1)–(V4) are discarded — validity *is* the definition of a matching — and among the valid ones the
+cheapest `C(M)` wins. If no candidate of any label survives, raise the feasibility error. The
+branching is capped (default 4096 states, `max_states`) and **exceeding the cap raises** — never a
+silent truncation.
 
 ## 6. Verification & Diagnostics
 
@@ -166,7 +171,7 @@ run-per-vertex `M`, and is the last unspecified atom of the protocol.
 * **Best of the enumerated labels** — the extraction returns the cheapest matching among the anchor's `≤ |cand(anchor)|` labels. This is deliberate (generation is cheap and honest scoring judges); it is **not** a proven global optimum. The two-table traceback's old "exact optimum" claim was disproven (its arbitrary seed is unsound at a merge — `D+B−E` is not constant across vertices); the anchored extraction fixed that case.
 * **Feasibility, never silent breakage**: an unreachable vertex, an emptied split, or an all-invalid enumeration raises `ValueError` telling you to increase `match_radius_m`.
 * **Validator limit on cyclic B**: on a 2-cycle `p⇄q` the local (V1) predicate cannot orient a step — the *smallest* case is a 2-vertex chain over `p⇄q`, where the geometrically correct matching (and every separating alternative, in both directions) is flagged. This is a property of the predicate, not of the matcher; pinned by `test_smallest_invalid_output_two_cycle`.
-* **Interim extraction (open)**: the current in-flood selection deviates from the §5 protocol; inside the weight domain its known gap is label exhaustion on dense-target chains (§5 note), not invalid output.
+* **The extraction never returns an invalid matching**: candidates violating (V1)–(V4) are discarded by the judge, so the result is valid-by-check or the call raises (no-valid-candidate / state-cap — both explicit). Structured point-mode envelope: 367/384 valid returns, 17 refusals, 0 invalid outputs (`scripts/test_tree_point.py`; dense-target + heavy-shift regimes refuse).
 * **Complexity**: table `O(|A| × band)` plus the per-row (H) relaxation and the (rare, bounded) §4.1a rebuilds; extraction `O(labels × |A|)`; all linear-ish in practice.
 
 ## 8. Segment Mode — the Same Algorithm on the Line Graphs
