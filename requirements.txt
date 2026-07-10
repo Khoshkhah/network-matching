@@ -5,6 +5,7 @@ numpy>=1.20.0
 pandas>=1.3.0
 shapely>=2.0.0
 geopandas>=0.10.0
+networkx>=3.0        # Mode 3 (tree/DAG matcher) graphs
 joblib>=1.0.0          # parallel route matching (match_routes n_jobs)
 scipy>=1.7.0           # optional: faster endpoint-gap validation (has a pure-numpy fallback)
 scikit-learn>=1.0      # optional: IsolationForest threshold estimator (guarded import)

@@ -43,3 +43,4 @@ output/*
 
 # network_matching run logs
 logs/
+docs/tree-dtw-paper.html

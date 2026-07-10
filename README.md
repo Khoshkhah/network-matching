@@ -193,9 +193,12 @@ costlier than either other engine. Spec (algorithm + all three engines):
 **Play with it interactively** — scenarios, the historical failure demos and their fixes:
 
 ```bash
-jupyter lab notebooks/tree_dtw_playground.ipynb        # interactive Plotly playground
-python scripts/test_tree_point.py                      # three-engine cross-validation sweep
-                                                       # (structure × density × shift × noise × weights)
+jupyter lab notebooks/tree_dtw_playground.ipynb          # interactive Plotly playground
+python scripts/tree_dtw_debug_viz.py --case diamond --dag   # debug view: cell states (alive /
+                                                            # forbidden / removed / D=∞) + engine
+                                                            # comparison with a dropdown (HTML to output/)
+python scripts/test_tree_point.py                        # three-engine cross-validation sweep
+                                                         # (structure × density × shift × noise × weights)
 ```
 
 ---
@@ -253,7 +256,7 @@ m.set_parameters(max_distance=25)
 
 ```
 network_matching/   library — matcher, graph_dtw, tree_dtw (Mode 3), synthetic (test cases), bgraph_prep, dtw
-scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, test_tree_point.py (Mode 3 sweep), ...
+scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, tree_dtw_debug_viz.py + test_tree_point.py (Mode 3), ...
 notebooks/          playgrounds — graph_dtw_playground.ipynb (Mode 1), tree_dtw_playground.ipynb (Mode 3)
 docs/               documentation
 tests/              pytest suite

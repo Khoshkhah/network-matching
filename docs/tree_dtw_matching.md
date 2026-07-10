@@ -1,6 +1,6 @@
-# Tree-DTW: Matching a Directed Tree to a Directed Network
+# Tree-DTW: Matching a Directed Tree or DAG to a Directed Network
 
-Tree-DTW aligns a **directed tree** — a road structure that branches and merges but never loops — onto a **directed target network**, generalizing DTW from sequences to trees. The output is a **matching relation** `M ⊆ V(A) × V(B)`: valid by the four warping rules (§3), selected by direct cost. The algorithm is **one forward table** (with the split coupling built in, §4.1a) plus an **anchored extraction** over it (§5); no backward pass is needed to match. Two modes share all of it: **point** (vertices of `A`,`B`) and **segment** (the same algorithm on the line graphs `L(A)`,`L(B)`, §8).
+Tree-DTW aligns a **directed tree** — a road structure that branches and merges but never loops — or, opt-in, any **subdivided DAG** (reconvergences allowed, §10.4) onto a **directed target network**, generalizing DTW from sequences to trees and DAGs. The output is a **matching relation** `M ⊆ V(A) × V(B)`: valid by the four warping rules (§3), selected by direct cost. The algorithm is **one forward table** (with the split coupling built in, §4.1a) plus an **anchored extraction** over it (§5); no backward pass is needed to match. Two modes share all of it: **point** (vertices of `A`,`B`) and **segment** (the same algorithm on the line graphs `L(A)`,`L(B)`, §8).
 
 | piece | status |
 |---|---|

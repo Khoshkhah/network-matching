@@ -1,4 +1,5 @@
-"""Tree-DTW -- exact matcher of a directed source tree to a directed network, on networkx
+"""Tree-DTW -- exact matcher of a directed source tree OR subdivided DAG (allow_dag) to a
+directed network, on networkx
 (spec: ``docs/tree_dtw_matching.md``; the implementation is documented there as Parts 1-6).
 
 Both the source tree ``A`` and the target network ``B`` are plain ``networkx.DiGraph`` objects:
@@ -27,7 +28,8 @@ INF = float("inf")
 
 
 class NotATree(ValueError):
-    """Raised when the source graph ``A`` is not a tree (its undirected graph has a cycle)."""
+    """Raised when the source graph ``A`` has a directed cycle, or a reconvergence (undirected
+    cycle) without ``allow_dag=True``."""
 
 
 # ---------------------------------------------------------------------------------------
