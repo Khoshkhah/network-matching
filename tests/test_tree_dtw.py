@@ -5,7 +5,7 @@ import math
 import networkx as nx
 import pytest
 
-from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward,
+from network_matching.tree_dtw import (digraph, line_digraph, prepare, forward, backward, match_tree,
                                        extract, extract_join, extract_cell, extract_two_table,
                                        check_reciprocity, check_reachability, check_forward_v3,
                                        check_backward_v2, check_rules, check_split_exits,
@@ -707,3 +707,58 @@ def test_three_way_cross_validation(alpha, beta):
                 if results[other] is not None:
                     assert results["cell"] <= results[other] + 1e-6, \
                         f"seed {seed}: cell join costlier than {other} -- exactness bug"
+
+
+@pytest.mark.parametrize("name", ["chain", "split", "merge"])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0)])
+def test_three_way_cross_validation_segment(name, alpha, beta):
+    """SEGMENT mode: the same three-way harness on the line graphs -- every returning engine is
+    valid on L(A)/L(B), and the cell join is never costlier than either other engine."""
+    A, B = make(name)
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=20.0, bearing_weight=2.0)
+    forward(LA, LB, alpha=alpha, beta=beta)
+    results = {}
+    for tag, fn in (("cell", extract_cell), ("branch", extract), ("vtx", extract_join)):
+        try:
+            M, _ = fn(LA, LB, alpha, beta)
+            assert not any(check_rules(M, LA, LB)), f"{name} {tag}: invalid segment M"
+            assert {a for a, _ in M} == set(LA.nodes)
+            results[tag] = _cost_of(LA, LB, M, alpha, beta)
+        except ValueError:
+            results[tag] = None
+    assert results["cell"] is not None, f"{name}: cell join infeasible in segment mode"
+    for other in ("branch", "vtx"):
+        if results[other] is not None:
+            assert results["cell"] <= results[other] + 1e-6, \
+                f"{name}: segment cell join costlier than {other} -- exactness bug"
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 1.0), (0.3, 1.5)])
+def test_extract_cell_segment_equals_full_space_brute(alpha, beta):
+    """SEGMENT mode ground truth: on a dense-B chain lifted to the line graphs (bearing term
+    active), extract_cell equals the FULL-SPACE brute force over all arc entry+run combinations."""
+    A = digraph({0: (0, 0), 1: (9, 0), 2: (18, 0)}, [(0, 1), (1, 2)])
+    B = digraph({f"b{i}": (3 * i, .4) for i in range(7)},
+                [(f"b{i}", f"b{i+1}") for i in range(6)])
+    LA, LB = line_digraph(A), line_digraph(B)
+    prepare(LA, LB, r=25.0, bearing_weight=2.0)
+    forward(LA, LB, alpha=alpha, beta=beta)
+    M, _ = extract_cell(LA, LB, alpha=alpha, beta=beta, run_cap=3)
+    bf = _full_space_brute(LA, LB, alpha, beta, run_cap=3)
+    assert bf is not None
+    assert abs(_cost_of(LA, LB, M, alpha, beta) - bf) < 1e-6
+
+
+@pytest.mark.parametrize("engine", ["cell", "branch", "join", "all"])
+def test_match_tree_pipeline_wrapper(engine):
+    """The one-call pipeline entry: prepare -> forward -> extraction, every engine, both modes."""
+    A, B = make("split")
+    M, com = match_tree(A, B, r=20.0, engine=engine)
+    assert not any(check_rules(M, A, B))
+    assert set(com) == set(A.nodes)
+
+    A2, B2 = make("split")
+    M_seg, com_seg = match_tree(A2, B2, r=20.0, mode="segment", engine=engine, bearing_weight=2.0)
+    assert all(isinstance(a, tuple) and isinstance(v, tuple) for a, v in M_seg)   # arcs = edge tuples
+    assert len(com_seg) == A2.number_of_edges()

@@ -275,9 +275,12 @@ Implemented as `extract_cell(A, B, α, β, run_cap=8, max_rows=50000)`: determin
 throughout, loud caps (`run_cap` bounds cover runs, `max_rows` raises — never truncates silently),
 joined rows tried cheapest-first with the unchanged `check_rules` judge, and the root join
 **contracts per pending-key** after each fold (only the pendings matter for future folds — the
-blowup on dense merge structures collapses to `Π |merge entries|`). Suite: 211 passing, including
-equality with the full-space brute force on tiny dense cases, the pinned divergence case (cell
-strictly beats the vertex join and equals the full-space optimum), and the three-way harness.
+blowup on dense merge structures collapses to `Π |merge entries|`). Suite: 220 passing, including
+equality with the full-space brute force on tiny dense cases **in both point and segment mode**
+(the segment check runs on the line graphs with the bearing term active), the pinned divergence
+case (cell strictly beats the vertex join and equals the full-space optimum), and the three-way
+harness in both modes. One-call pipeline entry: `match_tree(A, B, r, α, β, mode, engine)`
+(`engine="all"` runs all three and returns the cheapest valid matching).
 
 **Structured envelope (384 cases, all three engines on the same tables):**
 

@@ -1026,6 +1026,49 @@ def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 
 
 # ---------------------------------------------------------------------------------------
+# One-call pipeline entry point
+# ---------------------------------------------------------------------------------------
+def match_tree(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
+               beta: float = 1.0, mode: str = "point", engine: str = "cell",
+               bearing_weight: float = 1.0, k_min: int = 1):
+    """One-call Tree-DTW pipeline (docs/tree_dtw_matching.md): ``prepare`` -> ``forward`` (the
+    coupled pass) -> extraction, on ``A``/``B`` (``mode="point"``, ``M`` over vertices) or on their
+    directed line graphs (``mode="segment"``, ``M`` over arcs — nodes are ``(u, v)`` edge tuples of
+    the originals, so the result is self-describing).
+
+    ``engine``: ``"cell"`` (the cell-level join — exact over the full space; default),
+    ``"branch"`` (the branching exploration), ``"join"`` (the vertex-level junction join), or
+    ``"all"`` — run all three and return the **cheapest valid** matching, the cross-validating
+    choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). Returns ``(M, committed)``;
+    raises ``ValueError`` on infeasibility (increase ``r``)."""
+    if mode == "segment":
+        A2, B2 = line_digraph(A), line_digraph(B)
+    elif mode == "point":
+        A2, B2 = A, B
+    else:
+        raise ValueError(f"unknown mode {mode!r} (use 'point' or 'segment')")
+    prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight)
+    forward(A2, B2, alpha=alpha, beta=beta)
+    engines = {"cell": extract_cell, "branch": extract, "join": extract_join}
+    if engine in engines:
+        return engines[engine](A2, B2, alpha, beta)
+    if engine == "all":                                         # the cross-validating choice
+        best = None
+        for fn in (extract_cell, extract, extract_join):
+            try:
+                M, com = fn(A2, B2, alpha, beta)
+            except ValueError:
+                continue
+            c = _cost_of(A2, B2, M, alpha, beta)
+            if best is None or c < best[0] - 1e-12:
+                best = (c, M, com)
+        if best is None:
+            raise ValueError("all three extraction engines infeasible -- increase match_radius_m")
+        return best[1], best[2]
+    raise ValueError(f"unknown engine {engine!r} (use 'cell', 'branch', 'join' or 'all')")
+
+
+# ---------------------------------------------------------------------------------------
 # Table validation -- V1/V2/V3 per cell, by following the REAL stored back-pointers (docs §6)
 # ---------------------------------------------------------------------------------------
 def _reconstruct(A: nx.DiGraph, a: Hashable, v: Hashable, bpkey: str) -> set:

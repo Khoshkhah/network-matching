@@ -6,13 +6,14 @@ segmented differently. It combines **Dynamic Time Warping (DTW)** for shape alig
 **DuckDB Spatial** for fast candidate search, and works in a local projected CRS so all distances
 are in meters.
 
-The library offers **two matching modes**, both built on the same `DuckDBMapMatcher` class,
-inputs, and CRS handling:
+The library offers **three matchers**. The first two share the `DuckDBMapMatcher` class, inputs,
+and CRS handling; the third (Tree-DTW) is a standalone `networkx`-based matcher:
 
 | Mode | Entry point | Produces | Best for |
 |------|-------------|----------|----------|
 | **Route-based (graph-DTW)** | `match_routes()` | each A-edge → a connected **route** of B-edges | conflating networks split differently; the recommended default |
 | **Edge-to-edge** | `match()` + `resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning points/edges to a single nearest segment; fine-grained control |
+| **Tree-to-network (Tree-DTW)** | `match_tree()` | a validated matching **relation** `M` of a directed source *tree* onto a target network | matching a tree-shaped subnetwork (a route tree, a sensor cone) at point or segment resolution |
 
 ---
 
@@ -157,6 +158,33 @@ meters) is the primary quality score. `match_type` is `1:1_SYMMETRIC`, `1:N_SPLI
 
 ---
 
+## Mode 3 — Tree-to-network matching (Tree-DTW)
+
+An **exact** matcher for the case where the source is a directed **tree** (branches and merges,
+never a loop) and the target is any directed network (cycles allowed). Standalone: plain
+`networkx.DiGraph` inputs whose nodes carry projected `x, y` in meters — no DuckDB involved. The
+source must be **subdivided** (≥ 1 interior point per real edge); weights `alpha ∈ (0, 1]`
+(1:N coverage discount), `beta ∈ [1, ∞)` (N:1 stall penalty).
+
+```python
+import networkx as nx
+from network_matching import match_tree
+
+# A: source TREE (nodes carry x, y; subdivided). B: target network (may cycle).
+M, committed = match_tree(A, B, r=20.0)                              # point mode, M ⊆ V(A)×V(B)
+M_seg, _     = match_tree(A, B, r=20.0, mode="segment",              # arc mode: nodes are (u, v)
+                          bearing_weight=2.0, engine="all")          # edge tuples of the originals
+```
+
+Three **cross-validating extraction engines** share one validity judge (rules V1–V4) and one cost:
+`engine="cell"` (the cell-level join — exact over the full space; default), `"branch"` (branching
+exploration), `"join"` (vertex-level junction join), or `"all"` (run all three, return the cheapest
+valid matching). On the structured 384-case envelope the cell engine is valid **384/384** and never
+costlier than either other engine. Spec: [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md);
+extraction engines: [docs/junction_join_extraction.md](docs/junction_join_extraction.md).
+
+---
+
 ## Inputs
 
 Geometry is assumed lon/lat (EPSG:4326) and transformed to your local projected `utm_srid`
@@ -196,7 +224,9 @@ m.set_parameters(max_distance=25)
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
 | [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) | DAG-DTW — DTW generalized so the *source* is a topologically-ordered DAG, matched jointly with consistent junctions (spec + point-to-point v1; demo `notebooks/dag_dtw_playground.ipynb`). |
-| [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md) | Tree-DTW — exact DTW matching when the *source* is a directed **tree** (branches and merges, no loops); single forward + backward pass, one number per cell. |
+| [docs/tree_dtw_matching.md](docs/tree_dtw_matching.md) | Tree-DTW (Mode 3) — the algorithm: one forward table with the split (V3) coupling built in, anchored extraction, validity rules V1–V4, point & segment modes. |
+| [docs/junction_join_extraction.md](docs/junction_join_extraction.md) | Tree-DTW extraction engines — the junction join and the **cell-level join** (exact over the full space; verified against full-space brute force). |
+| [docs/tree_dtw_minimal_matching.md](docs/tree_dtw_minimal_matching.md) | Tree-DTW design record — anchored minimal matchings, the enumerate-and-score architecture, decisions and history. |
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
@@ -209,7 +239,7 @@ m.set_parameters(max_distance=25)
 ## Project layout
 
 ```
-network_matching/   library — matcher, graph_dtw, synthetic (test cases), bgraph_prep, dtw
+network_matching/   library — matcher, graph_dtw, tree_dtw (Mode 3), synthetic (test cases), bgraph_prep, dtw
 scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, graph_dtw_perturb_test.py, ...
 notebooks/          demos — route tables, real-data plots, synthetic cases
 docs/               documentation

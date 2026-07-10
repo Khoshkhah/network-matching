@@ -61,6 +61,11 @@ To build a general and reusable tool, we decouple the **storage format** from th
 
 ---
 
+**Beside this DuckDB flow** sits one standalone matcher: **Tree-DTW** (`match_tree`,
+`network_matching/tree_dtw.py`) — pure `networkx`, no database; a directed source *tree* matched
+exactly onto a directed target network, with three cross-validating extraction engines. See
+`docs/tree_dtw_matching.md`.
+
 ## 3. Class API Reference: `DuckDBMapMatcher`
 
 Below is the complete, reusable interface for the map matching module.

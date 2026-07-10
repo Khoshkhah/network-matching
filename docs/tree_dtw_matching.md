@@ -7,7 +7,7 @@ Tree-DTW aligns a **directed tree** — a road structure that branches and merge
 | forward table with V3 coupling (§4) | implemented — `forward` |
 | extraction (§5) | **three cross-validating engines**: `extract` (branching), `extract_join` (vertex join), **`extract_cell`** (cell-level join — exact over the full space, 384/384 on the envelope; `docs/junction_join_extraction.md` §8) |
 | validation & diagnostics (§6) | implemented |
-| segment mode (§8) | implemented; a merge+split junction is still rejected upstream (`NotATree` on `L(A)`'s cluster) |
+| segment mode (§8) | implemented & verified (three-way + full-space brute on the line graphs, bearing active); a merge+split junction is still rejected upstream (`NotATree` on `L(A)`'s cluster) |
 | known validator limit on cyclic B (§7) | documented, pinned by test |
 
 ---
@@ -209,6 +209,7 @@ Everything — layering, the recurrence, the coupling, the extraction, `check_ru
   | vertex order (§4.0) | `layer_order` |
   | forward pass incl. V3 coupling (§4.1–§4.1a) | `forward` |
   | extraction (§5) | `extract` (branching) · `extract_join` (vertex join) · `extract_cell` (cell join) |
+  | one-call pipeline | `match_tree(A, B, r, α, β, mode, engine)` — `engine="all"` = cheapest valid of the three |
   | judge (§6) | `check_rules` |
   | diagnostics (§6) | `backward`, `extract_two_table`, `validate_tables`, `check_reciprocity`, `check_reachability`, `check_forward`, `check_backward_v2`, `check_split_exits` |
   | segment lift (§8) | `line_digraph` |
