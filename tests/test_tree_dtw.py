@@ -455,6 +455,32 @@ def test_smallest_invalid_output_two_cycle():
     assert check_rules({(0, "q"), (1, "p")}, A, B)[0]           # the mirror fires too: unavoidable
 
 
+@pytest.mark.xfail(strict=True, reason="known open item (design doc, Fork B): the greedy per-child "
+                   "w_s pick (argmin D) can ride a cycle back-arc into an invalid M although a "
+                   "cheaper VALID matching exists; remove this marker when the rule is improved")
+def test_known_defect_greedy_pick_rides_back_arc():
+    """Minimal GENUINE failure (|A|=3, |B|=3): split 0→{1,2} over B = v1⇄v2, v2→v3 at α,β=(0.3,0.7).
+    extract() returns {(0,v2),(1,v2),(2,v1)} — child 2 greedily takes the nearest cell v1 through the
+    back-arc v2→v1, which crosses (V1) — although {(0,v2),(1,v3),(2,v3)} is VALID and CHEAPER
+    (ΣE 34.51 < 34.89). Unlike the 2-cycle sample above, this is a real algorithm defect: the flood's
+    per-child argmin-D rule never generates the valid alternative, and the anchor enumeration does
+    not vary per-child picks."""
+    A = digraph({0: (26.5, 22.5), 1: (18.5, 29.1), 2: (5.6, 8.6)}, [(0, 1), (0, 2)])
+    B = digraph({"v1": (11.1, 1.5), "v2": (21.8, 13.6), "v3": (10.2, 19.0)},
+                [("v1", "v2"), ("v2", "v1"), ("v2", "v3")])
+    prepare(A, B, r=40.0)
+    forward_v3(A, B, 0.3, 0.7)
+    M, _ = extract(A, B, 0.3, 0.7)
+    alt = {(0, "v2"), (1, "v3"), (2, "v3")}
+    a1, a2, a3 = check_rules(alt, A, B)
+    assert not (a1 or a2 or a3)                                 # the alternative IS valid ...
+    eM = sum(A.nodes[a]["cand"][v]["E"] for a, v in M)
+    eA = sum(A.nodes[a]["cand"][v]["E"] for a, v in alt)
+    assert eA <= eM + 1e-9                                      # ... and no more expensive
+    r1, r2, r3 = check_rules(M, A, B)
+    assert not (r1 or r2 or r3), "extract returned an invalid M although a cheaper valid one exists"
+
+
 def test_extract_forward_raises_when_infeasible():
     """A vertex whose row is all-infinite (gate severed between two far-apart target chains) leaves
     the anchor without a usable cell -> ValueError, never a broken matching."""
