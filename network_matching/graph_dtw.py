@@ -457,26 +457,39 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
     return pairs
 
 
-def _interior_part(records, route_edges):
+def _interior_part(records):
     """Interior end-trim for part_drift / part_bearing_diff (both emission modes).
 
-    ``records`` is the ordered per-unit list ``[(osm_edge_id, drift, bearing_diff, a_len), ...]`` along
-    the A-edge. Keep the route's interior units PLUS the LAST unit on the first OSM edge and the FIRST
-    unit on the last OSM edge (a first/last edge with a SINGLE unit is kept whole); leave the rest of
-    the first / last edge out of the AVERAGES. Returns ``(kept_indices, part_drift)`` or ``None`` (route
-    < 2 distinct edges) so the caller keeps the full-measure fallback; the caller derives part_bearing
-    from ``kept_indices`` (segment mode only). overlap is deliberately NOT trimmed here -- it stays a
-    coverage measure (covered_A / total_A), decoupled from this end-trimming."""
-    if not records or len(route_edges) < 2:
+    ``records`` is the ordered per-unit list ``[(osm_edge_id, drift, bearing_diff, a_len, unit), ...]``
+    along the A-edge, where ``unit`` is the matched B-**arc** (segment mode) or B-**vertex** (point
+    mode) -- NOT the OSM edge. The LEADING run of A-units that pile on the route's FIRST unit is the
+    leading overhang; the TRAILING run on the LAST unit is the trailing overhang (``a1..a5`` -> first
+    arc: drop ``a1..a4`` keep ``a5``; ``b1..b5`` -> last arc: drop ``b2..b5`` keep ``b1``). Drop those
+    two overhang runs from the AVERAGES, keep everything else -- so an edge with no end-overhang trims
+    nothing (part == full) and one that overhangs trims exactly the overhang. Works cleanly for a
+    single-OSM-edge route (its first arc != its last arc). Returns ``(kept_indices, part_drift)`` or
+    ``None`` (route spans a single unit -> nothing to trim; caller keeps the full-measure fallback);
+    the caller derives part_bearing from ``kept_indices`` (segment mode only). overlap is deliberately
+    NOT trimmed here -- it stays a coverage measure (covered_A / total_A), decoupled from this."""
+    if not records:
         return None
-    first_eid, last_eid = route_edges[0]["dest_id"], route_edges[-1]["dest_id"]
-    if first_eid == last_eid:
+    first_u, last_u = records[0][4], records[-1][4]
+    if first_u == last_u:                          # whole route on ONE arc/vertex -- nothing to trim
         return None
-    fpos = [i for i, r in enumerate(records) if r[0] == first_eid]
-    lpos = [i for i, r in enumerate(records) if r[0] == last_eid]
-    if not fpos or not lpos:
-        return None
-    drop = set(fpos[:-1]) | set(lpos[1:])          # keep a5 (last on first edge) + b1 (first on last)
+    fpos: List[int] = []                           # LEADING consecutive run on the first unit
+    for i, r in enumerate(records):
+        if r[4] == first_u:
+            fpos.append(i)
+        else:
+            break
+    lpos: List[int] = []                           # TRAILING consecutive run on the last unit
+    for i in range(len(records) - 1, -1, -1):
+        if records[i][4] == last_u:
+            lpos.append(i)
+        else:
+            break
+    lpos.reverse()
+    drop = set(fpos[:-1]) | set(lpos[1:])          # keep a5 (last of leading run) + b1 (first of trailing)
     kept = [i for i in range(len(records)) if i not in drop]
     if not kept:
         return None
@@ -835,7 +848,7 @@ def graph_dtw_align(
         rid = seg_dbg["ridable"]
         mid_stats = {}
         seg_bearing_diffs: List[float] = []
-        seg_records = []                                       # (osm_edge_id, dist, bearing_diff, a_len) per state
+        seg_records = []                                       # (osm_edge_id, dist, bearing_diff, a_len, arc) per state
         for t, (i, k, _mv) in enumerate(seg_dbg["arc_path"]):
             if not (lo <= t + 1 <= hi) or not rid[k]:
                 continue
@@ -850,7 +863,7 @@ def graph_dtw_align(
             _al = float(np.hypot(ax[i + 1] - ax[i], ay[i + 1] - ay[i]))
             mid_stats.setdefault(eid, []).append(d)
             seg_bearing_diffs.append(_bd)
-            seg_records.append((eid, d, _bd, _al))
+            seg_records.append((eid, d, _bd, _al, k))          # unit = the B-ARC k (leading/trailing overhang stalls on one arc)
         all_d = [d for ds in mid_stats.values() for d in ds]
         if all_d:
             average = float(np.mean(all_d))
@@ -865,23 +878,23 @@ def graph_dtw_align(
         if seg_bearing_diffs:
             bearing_diff = float(np.mean(seg_bearing_diffs))
 
-    # part_drift / part_bearing_diff on the INTERIOR end-trim (BOTH emission modes): keep the route
-    # interior + the last unit on the first OSM edge + the first unit on the last OSM edge, leaving the
-    # rest of the first/last edge out of the AVERAGES. overlap stays coverage-based (decoupled, above).
-    part_drift, part_bearing_diff = average, bearing_diff     # fallback = full measures, seeded AFTER the
-    #   segment recompute so a 1-edge / <2-edge route has part_drift == drift exactly (not the stale point drift)
+    # part_drift / part_bearing_diff: drop the LEADING and TRAILING overhang (the A-units that stall on
+    # the route's first / last B-arc), keeping everything else -- see _interior_part. The unit is the
+    # B-ARC (segment mode) or B-VERTEX (point mode), NOT the OSM edge, so a single-OSM-edge route still
+    # trims its end-overhang. overlap stays coverage-based (decoupled, above).
+    part_drift, part_bearing_diff = average, bearing_diff     # fallback = full measures (route on one unit)
     if seg_records is not None:
-        _recs = seg_records                                    # segment mode: per (A-segment, B-arc) state
+        _recs = seg_records                                    # segment mode: per (A-segment, B-arc) state; unit = arc
     else:
-        _recs = []                                             # point mode: per warping step in the kept span
+        _recs = []                                             # point mode: per warping step in the kept span; unit = vertex
         for _t in range(lo + 1, hi + 1):                       # (bearing left 0.0 -- point mode has no per-unit heading)
             _e = step_e[_t]
             if not (0 <= _e < len(gb.edge_ids)):
                 continue
             (_pa0, _pb0), (_pa1, _pb1) = warping_all[_t - 1], warping_all[_t]
             _recs.append((gb.edge_ids[_e], drift_all[_t], 0.0,
-                          float(np.hypot(_pa1[0] - _pa0[0], _pa1[1] - _pa0[1]))))
-    _po = _interior_part(_recs, route_edges)
+                          float(np.hypot(_pa1[0] - _pa0[0], _pa1[1] - _pa0[1])), pairs[_t][1]))
+    _po = _interior_part(_recs)
     if _po is not None:                                        # overlap already set (coverage-based, above);
         _kept, part_drift = _po                                # only part_drift / part_bearing are end-trimmed
         if emission == "segment":                              # per-segment part bearing; point mode has none
