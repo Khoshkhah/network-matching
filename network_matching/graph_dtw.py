@@ -458,19 +458,21 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
 
 
 def _interior_part(records):
-    """Interior end-trim for part_drift / part_bearing_diff (both emission modes).
+    """Interior end-trim defining the OVERLAP PART -- the basis of ``overlap_pct`` / ``part_drift``
+    / ``part_bearing_diff`` (both emission modes; docs/graph_dtw_matching.md §4.1).
 
     ``records`` is the ordered per-unit list ``[(osm_edge_id, drift, bearing_diff, a_len, unit), ...]``
     along the A-edge, where ``unit`` is the matched B-**arc** (segment mode) or B-**vertex** (point
     mode) -- NOT the OSM edge. The LEADING run of A-units that pile on the route's FIRST unit is the
     leading overhang; the TRAILING run on the LAST unit is the trailing overhang (``a1..a5`` -> first
     arc: drop ``a1..a4`` keep ``a5``; ``b1..b5`` -> last arc: drop ``b2..b5`` keep ``b1``). Drop those
-    two overhang runs from the AVERAGES, keep everything else -- so an edge with no end-overhang trims
-    nothing (part == full) and one that overhangs trims exactly the overhang. Works cleanly for a
-    single-OSM-edge route (its first arc != its last arc). Returns ``(kept_indices, part_drift)`` or
-    ``None`` (route spans a single unit -> nothing to trim; caller keeps the full-measure fallback);
-    the caller derives part_bearing from ``kept_indices`` (segment mode only). overlap is deliberately
-    NOT trimmed here -- it stays a coverage measure (covered_A / total_A), decoupled from this."""
+    two overhang runs, keep everything else -- the kept records ARE the edge's overlap part, so an
+    edge with no end-overhang trims nothing (part == full, overlap == 100) and one that overhangs
+    trims exactly the overhang. Works cleanly for a single-OSM-edge route (its first arc != its last
+    arc). Returns ``(kept_indices, part_drift)`` or ``None`` (route spans a single unit -> nothing to
+    trim; caller keeps the full-measure fallback and counts every record as overlap); the caller
+    derives part_bearing (segment mode only) and overlap_pct (kept A-length share) from
+    ``kept_indices``."""
     if not records:
         return None
     first_u, last_u = records[0][4], records[-1][4]
@@ -806,20 +808,9 @@ def graph_dtw_align(
     route = [(re["dest_id"], re["direction"], re["seq"]) for re in route_edges]
     matched_len = float(sum(re["matched_len"] for re in route_edges))
 
-    # A coverage: the warping spans all of A, but A-length where A OVERHANGS past the first/last
-    # edge's endpoint (a run of A-points collapsing onto a single B vertex) is uncovered.
-    # overlap_pct = covered A / A; it is < 100 whenever A's ends stick out past B's corridor
-    # (a segmentation/overhang effect that can happen on any network -- not a dead-end).
     total_a_len = LineString([p[:2] for p in a_pool]).length if N > 1 else 0.0
-    kept_a = float(sum(re["a_len"] for re in route_edges))
-    # overlap = the fraction of the A-edge that maps onto the matched route (covered_A / total_A). A
-    # segment is "covered" when it aligns with the corridor -- including mid-corridor stalls where A is
-    # denser than B -- and drops out only where A OVERHANGS past the route ends. So a DRA edge that lies
-    # fully along the route reads 100% even when it is longer than a single short OSM edge (the excess
-    # stalls mid-corridor, it does not overhang). NOT capped by matched_len (the B-length walked): that
-    # conflated "longer than this B-edge" with "not covered". Shared code -> both emission modes.
-    overlap_pct = int(min(100, round(100.0 * kept_a / total_a_len))) if total_a_len > 0 else 0
-    # per-edge A coverage as % of the WHOLE A-edge (raw a_len; sums to the uncapped coverage)
+    # per-edge A coverage as % of the WHOLE A-edge (raw advancing-coverage a_len -- a per-edge
+    # diagnostic; the summary overlap_pct is derived from the end-trimmed overlap part, below)
     for re in route_edges:
         re["cover_pct"] = round(100.0 * re["a_len"] / total_a_len, 1) if total_a_len > 0 else 0.0
 
@@ -878,10 +869,11 @@ def graph_dtw_align(
         if seg_bearing_diffs:
             bearing_diff = float(np.mean(seg_bearing_diffs))
 
-    # part_drift / part_bearing_diff: drop the LEADING and TRAILING overhang (the A-units that stall on
-    # the route's first / last B-arc), keeping everything else -- see _interior_part. The unit is the
-    # B-ARC (segment mode) or B-VERTEX (point mode), NOT the OSM edge, so a single-OSM-edge route still
-    # trims its end-overhang. overlap stays coverage-based (decoupled, above).
+    # The OVERLAP PART: drop the LEADING and TRAILING overhang (the A-units that pile on the route's
+    # first / last B-arc, keeping the boundary member of each run) -- see _interior_part. The unit is
+    # the B-ARC (segment mode) or B-VERTEX (point mode), NOT the OSM edge, so a single-OSM-edge route
+    # still trims its end-overhang. overlap_pct / part_drift / part_bearing_diff are ALL statistics
+    # of this one span: its A-length share, its mean drift, its mean heading diff (docs §4.1).
     part_drift, part_bearing_diff = average, bearing_diff     # fallback = full measures (route on one unit)
     if seg_records is not None:
         _recs = seg_records                                    # segment mode: per (A-segment, B-arc) state; unit = arc
@@ -895,10 +887,14 @@ def graph_dtw_align(
             _recs.append((gb.edge_ids[_e], drift_all[_t], 0.0,
                           float(np.hypot(_pa1[0] - _pa0[0], _pa1[1] - _pa0[1])), pairs[_t][1]))
     _po = _interior_part(_recs)
-    if _po is not None:                                        # overlap already set (coverage-based, above);
-        _kept, part_drift = _po                                # only part_drift / part_bearing are end-trimmed
+    if _po is not None:
+        _kept, part_drift = _po
         if emission == "segment":                              # per-segment part bearing; point mode has none
             part_bearing_diff = float(np.mean([_recs[i][2] for i in _kept]))
+        _part_a = float(sum(_recs[i][3] for i in _kept))
+    else:
+        _part_a = float(sum(r[3] for r in _recs))              # nothing to trim -> every record overlaps
+    overlap_pct = int(min(100, round(100.0 * _part_a / total_a_len))) if total_a_len > 0 else 0
 
     metrics = {
         "average": average,

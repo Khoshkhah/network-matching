@@ -15,7 +15,7 @@ ones by upper/lower bounds on a few quality signals:
 |----------------------------------|---------|-----------|------------------------|
 | `dtw_distance`     | average match distance (m) | lower better | `max_match_dist` |
 | `bearing_diff`     | route bearing difference (°)| lower better | `max_bearing_diff` |
-| `overlap_pct`      | A-edge coverage (%)        | higher better| `min_overlap_pct` |
+| `overlap_pct`      | overlap-part share of A (%) — `graph_dtw_matching.md` §4.1 | higher better| `min_overlap_pct` |
 
 Hand-picking values like `25 / 45 / 95` is fragile — the right cut depends on the data. On a real
 network each metric forms a tight **"good" cluster** (distances/bearing near 0, overlap near 100)

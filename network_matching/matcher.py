@@ -1063,13 +1063,16 @@ class DuckDBMapMatcher:
         :meth:`match_dag`; defaults ``1``/``1`` = unweighted). See
         ``docs/weighted_emission.md`` §12.
 
-        ``routes_summary`` also carries **``part_drift``** and **``part_bearing_diff``** (segment
-        emission): the same mean-per-segment drift / heading diff as ``dtw_distance`` / ``bearing_diff``
-        but computed over the route's INTERIOR only — the states on the first and last OSM edge are
-        dropped, since the entry/exit edges carry the overhang / partial-match noise. They enable a
-        *partial-match* tier: an A-edge whose full metrics fail but whose ``part_*`` pass has an
-        interior that follows B, only its ends diverging. Falls back to the full value in point mode
-        or when the route has < 3 edges."""
+        ``routes_summary`` also carries **``part_drift``** and **``part_bearing_diff``**: the same
+        mean drift / heading diff as ``dtw_distance`` / ``bearing_diff`` but restricted to the
+        edge's **overlap part** -- the end-trimmed span that also defines ``overlap_pct``. Of the
+        leading run of A-units piled on the route's first B-arc/vertex only the last member
+        overlaps, of the trailing run on its last unit only the first; the rest of the edge is the
+        overlap part (``docs/graph_dtw_matching.md`` §4.1). They enable a *partial-match* tier: an
+        A-edge whose full metrics fail but whose ``part_*`` pass has an interior that follows B,
+        only its ends diverging. ``part_bearing_diff`` is per-segment and segment-emission only
+        (equals ``bearing_diff`` in point mode); both fall back to the full measures when the route
+        lives on a single arc/vertex."""
         candidates_df = self.generate_candidate_pairs()
         return self.compute_graph_dtw_routes(
             candidates_df, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,

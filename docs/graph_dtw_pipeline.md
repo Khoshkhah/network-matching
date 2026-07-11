@@ -99,9 +99,9 @@ routes_summary, routes_long = m.resolve_routes(
 
 Any threshold left `None` is not applied. A route that fails is reset to a `NO_MATCH` row (route
 cleared, metrics `NaN`) and its rows are removed from `routes_long`; every A-edge still appears.
-(`min_overlap_pct` drops edges whose ends **overhang** too far past B's corridor — coverage < 100
-where A's first/last samples pile onto a single B-edge endpoint; common on differently-segmented
-networks.)
+(`min_overlap_pct` drops edges whose ends **overhang** too far past B's corridor — the overlap
+part shrinks below 100% of A where A's first/last records pile onto the route's first/last
+B-arc/vertex; common on differently-segmented networks. See `graph_dtw_matching.md` §4.1.)
 
 #### Estimating the thresholds (`suggest_thresholds`)
 
@@ -148,7 +148,9 @@ the thresholds for surfacing jointly-weird matches to inspect. Needs `scikit-lea
 | `dtw_distance`                  | average match distance (m) over the whole edge — main quality signal |
 | `max_dtw_distance` / `min_dtw_distance` | max / min match distance |
 | `bearing_diff`                  | whole-route bearing difference (degrees) |
-| `overlap_pct`                   | **% of A covered** (matched to advancing B geometry); < 100 where A overhangs past the route's first/last B-edge endpoint |
+| `part_drift`                    | mean match distance (m) over the end-trimmed **overlap part** (`graph_dtw_matching.md` §4.1) |
+| `part_bearing_diff`             | mean per-segment heading diff (°) over the overlap part — segment emission only; equals `bearing_diff` in point mode |
+| `overlap_pct`                   | **A-length share of the overlap part** (%); < 100 where A's ends pile up on the route's first/last B-arc/vertex |
 | `matched_len`                   | total B-length (m) traversed |
 | `route_geom_wkt`                | matched corridor geometry, WKT in **UTM (`utm_srid`)** |
 | `match_type`                    | `1:1` (single edge) · `1:N_ROUTE` (multi-edge) · `NO_MATCH` |
@@ -238,8 +240,9 @@ the package installed editable + a registered Jupyter kernel "Python (network-ma
 
 ## 8. Scope
 
-Directed A→B; deterministic (candidate edges sorted by id). Coverage (`overlap_pct`) is < 100 where
-A overhangs past B's first/last edge endpoint (end-trimming off by default).
+Directed A→B; deterministic (candidate edges sorted by id). `overlap_pct` (the overlap-part share
+of A) is < 100 where A overhangs past the route's first/last B-arc/vertex (end-edge trimming via
+`trim_ends_m` off by default).
 The cost is count-weighted (route choice depends on `step_meters` density); a density-independent
 objective and symmetric (B→A) reconciliation are future work — see
 [`graph_dtw_matching.md`](graph_dtw_matching.md) §7.

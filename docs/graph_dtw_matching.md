@@ -184,8 +184,10 @@ shape as `dtw_align`, so existing plotting code works unchanged. The public prim
 | `average`      | mean match distance (m) over the warping path — main quality signal     |
 | `max` / `min`  | max / min match distance along the path                                |
 | `matched_len`  | total length (m) traversed in B along the route                        |
-| `overlap_pct`  | **% of A covered** (A-length matched to *advancing* B geometry); < 100 where A overhangs past the route's first/last B-edge endpoint |
+| `overlap_pct`  | **A-length share of the overlap part** (§4.1); < 100 where A's ends pile up on the route's first/last B-arc/vertex |
 | `bearing_diff` | whole-route bearing difference over the matched span (degrees)         |
+| `part_drift`   | mean match distance (m) over the **overlap part** only (§4.1)          |
+| `part_bearing_diff` | mean per-segment heading diff (°) over the overlap part — segment mode only; equals `bearing_diff` in point mode (§4.1) |
 | `route`        | ordered `[(b_edge_id, 'forward', seq), …]` (`seq` = order of matching)  |
 | `n_edges`      | number of B-edges in the route                                         |
 | `route_edges`  | **per-B-edge breakdown** (below)                                        |
@@ -208,35 +210,55 @@ shape as `dtw_align`, so existing plotting code works unchanged. The public prim
 | `n_points`       | A sample points matched onto this edge                             |
 
 The two coverage axes are independent: **`cover_pct`** is how much of *A* this edge covers, while
-**`b_cover_pct`** is how much of *this B-edge* A uses. The per-edge `cover_pct` sum to `overlap_pct`.
+**`b_cover_pct`** is how much of *this B-edge* A uses. The per-edge `cover_pct` are a raw
+advancing-coverage diagnostic; the summary `overlap_pct` is defined on the end-trimmed **overlap
+part** (§4.1) and can read slightly higher (it keeps one boundary unit per end).
 
-### 4.1 Coverage and overhang
+### 4.1 The overlap part (`overlap_pct`, `part_drift`, `part_bearing_diff`)
 
-A-coverage is all of A **except the leading run on the route's entry vertex and the trailing run on
-its terminal vertex** — i.e. only where A **overhangs** past the route's first/last B-edge endpoint
-(a run of A-points collapsing onto that single end vertex, with no more B to walk). This is a
-segmentation/overhang effect (A and B don't start/end at the same place) and happens on any network;
-it is *not* a dead-end concept.
+Both emission modes reduce the alignment to an ordered list of per-**unit** match records along A,
+where the unit is the matched B-**arc** (segment mode) or B-**vertex** (point mode) — *not* the
+B-edge, so a single-B-edge route still has distinct first/last units. Where A is longer than the
+route, its ends pile up on the route's first / last unit:
 
-Crucially, only the **ends** count: a *mid-corridor* stall — where A is simply denser than B so the
-warping advances A while the B vertex momentarily waits (drift stays low, A is on the corridor) — is
-**still covered**. Earlier the metric counted every non-advancing step as uncovered and so
-under-reported coverage on real data; it now charges overhang only at the two ends.
+- **leading overhang** — of the run of A-records matched to the route's *first* unit, all but the
+  **last** member (`a1..a5` on the first arc → `a1..a4` out, `a5` in);
+- **trailing overhang** — of the run matched to the route's *last* unit, all but the **first**
+  member (`b1..b4` on the last arc → `b2..b4` out, `b1` in).
+
+Everything else is the edge's **overlap part**, and the three summary metrics are statistics of
+that one span:
+
+| metric | definition |
+|--------|------------|
+| `overlap_pct` | A-length of the overlap part / total A-length (%) |
+| `part_drift` | mean match distance (m) over the overlap part |
+| `part_bearing_diff` | mean per-segment heading diff (°) over the overlap part — segment mode only (point mode has no per-unit heading; it reports the whole-route `bearing_diff`) |
+
+Only the two **end** runs are overhang: a *mid-corridor* stall — A denser than B, so the warping
+advances A while the B unit momentarily waits (drift stays low, A is on the corridor) — is inside
+the overlap part. Overhang is a segmentation effect (A and B don't start/end at the same place) and
+happens on any network; it is *not* a dead-end concept. A route that lives on a **single** unit has
+no distinct first/last unit and nothing to trim: `part_drift`/`part_bearing_diff` fall back to the
+full-span `average`/`bearing_diff` and `overlap_pct` counts all matched records.
 
 *Example.* A is 60 m; the route is `B1 → B2` but B only covers A's middle 20–40 m (A overhangs
-0–20 m and 40–60 m):
+0–20 m and 40–60 m). Point mode, samples every 10 m — each record is a step, its unit the step's
+B-vertex:
 
 ```
 A:  0────10────20────30────40────50────60        (samples every 10 m)
               └─ B1 ─┘└─ B2 ─┘                    (B covers only 20..40)
-a0,a1,a2  ── all map to B1's start vertex  (overhang 0..20 → uncovered)
-a2→a3→a4  ── B advances along B1 then B2   (covered 20..40)
-a4,a5,a6  ── all map to B2's end vertex    (overhang 40..60 → uncovered)
+ 0→10, 10→20  ── stall on B1's start vertex   (leading run: 0→10 out, 10→20 kept)
+20→30          ── B advances to B1's end       (overlap)
+30→40          ── B advances to B2's end       (first record on the last vertex → kept)
+40→50, 50→60  ── stall on B2's end vertex     (rest of the trailing run → out)
 ```
 
-Result: `overlap_pct = 20/60 = 33%`. Per edge: `B1` and `B2` each **cover 10 m of A** (`cover_pct`
-≈ 17% each, summing to 33%), yet each is **100% used** (`b_cover_pct = 100`) because A walks their
-full geometry. So a B-edge can be fully used while A is only partly covered.
+Result: the overlap part is A's 10–40 m, `overlap_pct = 30/60 = 50%`, and `part_drift` averages
+only those three steps. Per edge: `B1` and `B2` each **cover 10 m of A** (`cover_pct` ≈ 17% each —
+the raw advancing-coverage), yet each is **100% used** (`b_cover_pct = 100`) because A walks their
+full geometry. So a B-edge can be fully used while A only partly overlaps the route.
 
 ---
 
@@ -323,9 +345,9 @@ then an independent unit fanned out with **joblib**.
   used), `edge_bearing_diff, n_points, route_match_dist, n_edges`. `seq` is the **order of
   matching** along the route.
 - **`routes_summary`** — one row per A-edge: `source_id, n_edges, dest_ids, dtw_distance` (avg),
-  `max/min_dtw_distance, bearing_diff, overlap_pct, matched_len, route_geom_wkt`,
-  `match_type` ∈ {`1:1`, `1:N_ROUTE`, `NO_MATCH`}. Every A-edge appears; unmatched ones as a
-  single `NO_MATCH` row.
+  `max/min_dtw_distance, bearing_diff, part_drift, part_bearing_diff, overlap_pct, matched_len,
+  route_geom_wkt`, `match_type` ∈ {`1:1`, `1:N_ROUTE`, `NO_MATCH`}. Every A-edge appears;
+  unmatched ones as a single `NO_MATCH` row.
 - **`validate_b_geometry(b_edges)`** reports the endpoint-gap distribution to choose
   `snap_tolerance_m`; `setup_logging()` records progress/timing to a log file.
 
@@ -344,10 +366,10 @@ network map via [`scripts/graph_dtw_map.py`](../scripts/graph_dtw_map.py).
   arcs are synthesized: A matches whichever twin agrees with its direction, traversed `forward`.
 - Each vertex carries its owning edge (`vert_edge`), so the route is unambiguous at junctions and
   a **U-turn onto a side edge is structurally impossible**.
-- The warping path spans the entire A-edge, but **coverage** (`overlap_pct`) is the A-length
-  matched to *advancing* B geometry — it drops below 100% wherever A **overhangs** past the
-  route's first/last B-edge endpoint (see §4.1). Match distance is the other primary quality
-  signal. (`trim_ends_m`, an optional end-edge remover, is **off by default**.)
+- The warping path spans the entire A-edge, but `overlap_pct` is the A-length share of the
+  **overlap part** — it drops below 100% wherever A's ends pile up on the route's first/last
+  B-arc/vertex (see §4.1). Match distance is the other primary quality signal. (`trim_ends_m`,
+  an optional end-edge remover, is **off by default**.)
 - **Cost is count-weighted** (a sum over discrete vertices), so route choice depends on
   `step_meters` density; a length-weighted / per-step-projection objective (density-independent)
   and symmetric (B→A) reconciliation remain future work.

@@ -272,3 +272,41 @@ def test_beta_penalizes_route_collapse():
         # the reported drift stays RAW geometry of whichever alignment was chosen (beta may
         # legitimately move the stalls, so no equality across weights -- just sanity):
         assert 0.0 < res5["avg_distance"] < 25.0
+
+
+# --------------------------------------------------------------------------------------
+# OVERLAP PART: overlap_pct / part_drift / part_bearing_diff share one end-trimmed span
+# --------------------------------------------------------------------------------------
+def test_overlap_part_end_trim():
+    """A overhangs 20 m past each end of a 20 m corridor (docs/graph_dtw_matching.md §4.1).
+    Of the leading run of A-units piled on the route's FIRST B-arc/vertex only the LAST member
+    overlaps; of the trailing run on the LAST unit only the FIRST. overlap_pct is the kept
+    A-length share, part_drift/part_bearing_diff average only the kept records."""
+    coords_a = [(0.0, 0.0), (60.0, 0.0)]
+    b_edges = [
+        ("B1", LineString([(20.0, 0.2), (30.0, 0.2)])),
+        ("B2", LineString([(30.0, 0.2), (40.0, 0.2)])),
+    ]
+
+    # point mode: records are steps on B-VERTICES -> kept part = A 10..40 -> 50%
+    res = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=10.0)
+    m = res["metrics"]
+    assert _route_ids(res) == ["B1", "B2"]
+    assert m["overlap_pct"] == 50
+    assert m["part_drift"] < 0.5 < m["average"]          # overhang out of the part average
+    assert m["part_bearing_diff"] == m["bearing_diff"]   # point mode: no per-unit heading
+
+    # segment mode: records are (A-segment, B-ARC) states -> kept part = A 20..40 -> 33%
+    res = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=10.0,
+                               emission="segment", bearing_weight=2.0)
+    m = res["metrics"]
+    assert _route_ids(res) == ["B1", "B2"]
+    assert m["overlap_pct"] == 33
+    assert m["part_drift"] < 0.5 < m["average"]
+    assert m["part_bearing_diff"] < 1.0
+
+    # no overhang -> the end runs are single records, nothing trimmed, overlap stays 100
+    for emission in ("point", "segment"):
+        res = match_edge_to_bgraph([(20.0, 0.0), (40.0, 0.0)], b_edges, snap_tolerance_m=0.5,
+                                   step_meters=10.0, emission=emission, bearing_weight=2.0)
+        assert res["metrics"]["overlap_pct"] == 100, emission
