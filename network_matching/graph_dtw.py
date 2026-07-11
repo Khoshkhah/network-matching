@@ -773,8 +773,15 @@ def graph_dtw_align(
     # (a segmentation/overhang effect that can happen on any network -- not a dead-end).
     total_a_len = LineString([p[:2] for p in a_pool]).length if N > 1 else 0.0
     kept_a = float(sum(re["a_len"] for re in route_edges))
+    # Cap covered-A by matched_len (the B-length actually traversed): you cannot cover more of A than
+    # the corridor you walked. Without this, a long A stretched onto a short B via interior stalls (A
+    # much denser than B) inflates coverage toward 100%, and the DTW's stall-vs-overhang choice differs
+    # by traversal direction -- so forward and reverse of the SAME edge get different overlap. The cap
+    # is direction-symmetric and a no-op for normal matches (covered_A ~= matched_len). Shared coverage
+    # code, so it applies to BOTH "point" and "segment" emission.
+    kept_a = min(kept_a, matched_len)
     overlap_pct = int(min(100, round(100.0 * kept_a / total_a_len))) if total_a_len > 0 else 0
-    # per-edge A coverage as % of the WHOLE A-edge (these sum to overlap_pct)
+    # per-edge A coverage as % of the WHOLE A-edge (raw a_len; sums to the uncapped coverage)
     for re in route_edges:
         re["cover_pct"] = round(100.0 * re["a_len"] / total_a_len, 1) if total_a_len > 0 else 0.0
 
