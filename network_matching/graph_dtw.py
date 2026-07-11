@@ -799,13 +799,12 @@ def graph_dtw_align(
     # (a segmentation/overhang effect that can happen on any network -- not a dead-end).
     total_a_len = LineString([p[:2] for p in a_pool]).length if N > 1 else 0.0
     kept_a = float(sum(re["a_len"] for re in route_edges))
-    # Cap covered-A by matched_len (the B-length actually traversed): you cannot cover more of A than
-    # the corridor you walked. Without this, a long A stretched onto a short B via interior stalls (A
-    # much denser than B) inflates coverage toward 100%, and the DTW's stall-vs-overhang choice differs
-    # by traversal direction -- so forward and reverse of the SAME edge get different overlap. The cap
-    # is direction-symmetric and a no-op for normal matches (covered_A ~= matched_len). Shared coverage
-    # code, so it applies to BOTH "point" and "segment" emission.
-    kept_a = min(kept_a, matched_len)
+    # overlap = the fraction of the A-edge that maps onto the matched route (covered_A / total_A). A
+    # segment is "covered" when it aligns with the corridor -- including mid-corridor stalls where A is
+    # denser than B -- and drops out only where A OVERHANGS past the route ends. So a DRA edge that lies
+    # fully along the route reads 100% even when it is longer than a single short OSM edge (the excess
+    # stalls mid-corridor, it does not overhang). NOT capped by matched_len (the B-length walked): that
+    # conflated "longer than this B-edge" with "not covered". Shared code -> both emission modes.
     overlap_pct = int(min(100, round(100.0 * kept_a / total_a_len))) if total_a_len > 0 else 0
     # per-edge A coverage as % of the WHOLE A-edge (raw a_len; sums to the uncapped coverage)
     for re in route_edges:
