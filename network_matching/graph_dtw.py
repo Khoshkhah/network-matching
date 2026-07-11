@@ -299,7 +299,7 @@ def build_local_digraph(
 
 
 def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
-                      bearing_weight: float = 0.0,
+                      bearing_weight: float = 0.0, alpha: float = 1.0, beta: float = 1.0,
                       dbg: Optional[Dict[str, Any]] = None) -> Optional[List[Tuple[int, int]]]:
     """True segment-to-segment DP (``emission="segment"``): states are (A-segment i, B-arc u->v).
 
@@ -311,9 +311,11 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
     free (pure connectivity: a zero-length junction connector is not a segment, so crossing it
     carries no cost) and can never host a state. Moves: A-advance on the same arc (N segments :
     1 arc), arc-advance within a row (1 segment : N arcs; Dijkstra, each arc entered pays), or
-    both. Returns the vertex-level ``(a_index, vertex)`` pairs of the best alignment -- the same
-    format the point-state backtrack yields, so all downstream grouping/metrics are shared -- or
-    ``None`` if no finite alignment exists.
+    both. Each entered state pays its emission weighted by the move that enters it -- ``beta`` on
+    the N:1 stall, ``alpha`` on the 1:N arc-advance, ``1`` on the diagonal (docs §12; defaults
+    reproduce the unweighted recurrence). Returns the vertex-level ``(a_index, vertex)`` pairs of
+    the best alignment -- the same format the point-state backtrack yields, so all downstream
+    grouping/metrics are shared -- or ``None`` if no finite alignment exists.
 
     ``dbg``: optional dict populated with the DP internals (``arcs``, ``ridable``, ``D``, ``E``,
     ``arc_path``, ``terminal_state``, ``final_cost``) for algorithm debugging -- see
@@ -350,6 +352,7 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
     # only be passed through within a row (H); they carry no (A-segment : arc) state of their own.
     ridable = arc_len >= 0.5
     bw = float(bearing_weight)
+    al, be = float(alpha), float(beta)                # §12 step weights (1, 1 = unweighted)
     if bw > 0.0:
         arc_bear = (np.degrees(np.arctan2(hx - ux, hy - uy)) + 360.0) % 360.0
         seg_bear = (np.degrees(np.arctan2(np.diff(ax), np.diff(ay))) + 360.0) % 360.0
@@ -377,7 +380,8 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
         return e
 
     def relax_row(i: int, ei: np.ndarray) -> None:
-        # 1 A-segment : N arcs -- Dijkstra within the row; every arc entered pays its emission.
+        # 1 A-segment : N arcs (coverage) -- Dijkstra within the row; every arc entered pays
+        # alpha * its emission (§12).
         heap = [(D[i][k], k) for k in range(NA)]
         heapq.heapify(heap)
         while heap:
@@ -385,7 +389,7 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
             if c > D[i][k]:
                 continue
             for nb in arcs_from[av[k]]:
-                cand = D[i][k] + ei[nb]
+                cand = D[i][k] + al * ei[nb]
                 if cand < D[i][nb]:
                     D[i][nb] = cand
                     back[i][nb] = ("H", k)
@@ -402,14 +406,15 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
         for k in range(NA):
             if not ridable[k]:                      # stitches are reachable only via H (pass-through)
                 continue
-            best = D[i - 1][k]                      # A-advance: next segment stays on this arc
+            cand = be * ei[k] + D[i - 1][k]         # V: next segment stays -- N:1 stall, beta*E
             bmove: Tuple = ("V", k)
-            for p in arcs_to[au[k]]:                # both advance: arrive from a predecessor arc
-                if D[i - 1][p] < best:
-                    best = D[i - 1][p]
+            for p in arcs_to[au[k]]:                # D: both advance -- full E
+                c2 = ei[k] + D[i - 1][p]
+                if c2 < cand:
+                    cand = c2
                     bmove = ("D", p)
-            if np.isfinite(best):
-                D[i][k] = ei[k] + best
+            if np.isfinite(cand):
+                D[i][k] = cand
                 back[i][k] = bmove
         relax_row(i, ei)
 
@@ -462,6 +467,8 @@ def graph_dtw_align(
     trim_ends_m: float = 0.0,
     emission: str = "point",
     bearing_weight: float = 0.0,
+    alpha: float = 1.0,
+    beta: float = 1.0,
     debug: bool = False,
     min_gap_m: float = 0.0,
 ) -> Tuple[float, List[Tuple[Coord, Coord]], Dict[str, Any]]:
@@ -480,17 +487,23 @@ def graph_dtw_align(
       whether each matched B / A point is an original node (point-to-point) or a projection
       (point-to-projection).
 
-    Dynamic table (monotonic in A, free in the B-graph)::
+    Dynamic table (monotonic in A, free in the B-graph); each state pays its emission weighted
+    by the move that ENTERS it (``alpha``/``beta``, docs/weighted_emission.md §12)::
 
-        D[i][v] = dist(a_i, v) + min(
-            D[i-1][v],                          # vertical : advance A, stay at v
-            min over u in pred(v) of D[i][u],   # horizontal: advance B along an arc, A stays
-            min over u in pred(v) of D[i-1][u]  # diagonal : advance both
+        D[i][v] = min(
+            beta  * dist(a_i, v) + D[i-1][v],                        # vertical  : N:1 stall
+            alpha * dist(a_i, v) + min over u in pred(v) of D[i][u], # horizontal: 1:N coverage
+            1     * dist(a_i, v) + min over u in pred(v) of D[i-1][u]  # diagonal: advance both
         )
 
-    Row 0 is free-entry (``D[0][v] = dist(a_0, v)``). The horizontal term is resolved per row by
-    a Dijkstra relaxation over the (non-negative-weight) arcs, exact even with cycles.
-    Termination covers all of A (``min_v D[N-1][v]``); backtrack for the best matching.
+    Row 0 is free-entry (``D[0][v] = dist(a_0, v)``, then a row-0 horizontal relaxation so a
+    LEADING coverage run is priced like any other -- a no-op at ``alpha = 1``). The horizontal
+    term is resolved per row by a Dijkstra relaxation over the (non-negative-weight) arcs, exact
+    even with cycles. Termination covers all of A (``min_v D[N-1][v]``); backtrack for the best
+    matching. Domain ``alpha in (0, 1]``, ``beta in [1, inf)``, defaults ``1``/``1`` -- the
+    unweighted recurrence, byte-for-byte (same names and semantics as ``match_dag``, Mode 3).
+    The weights shape the CHOICE; the reported ``average``/``max``/``min`` stay raw geometry of
+    the chosen warping.
 
     ``emission`` selects the local cost MODEL. ``"point"`` (default): the recurrence above --
     states are (A-point, B-vertex), each cell adds ``dist(a_i, v)``. ``"segment"``: true
@@ -521,12 +534,14 @@ def graph_dtw_align(
     """
     if emission == "midpoint":                # deprecated alias -> the one segment mode
         emission = "segment"
+    al, be = float(alpha), float(beta)                # §12 step weights (1, 1 = unweighted)
     a_pool = _node_projection_pool(list(coords_a), gb.b_raw_nodes, step_meters, min_gap_m)
     N = len(a_pool)
     V = gb.n_vertices
     dbg: Optional[Dict[str, Any]] = None
     if debug:
         dbg = {"params": {"emission": emission, "bearing_weight": float(bearing_weight),
+                          "alpha": al, "beta": be,
                           "step_meters": step_meters, "trim_ends_m": trim_ends_m},
                "a_pool": a_pool}
 
@@ -553,7 +568,7 @@ def graph_dtw_align(
         # format as the point DP. Always collect the state path -- the metrics are computed from
         # it (the reported distances ARE the middle-to-middle state costs).
         seg_dbg = dbg if dbg is not None else {}
-        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight), dbg=seg_dbg)
+        seg_pairs = _segment_dp_pairs(gb, ax, ay, float(bearing_weight), al, be, dbg=seg_dbg)
         if seg_pairs is None:
             return _fail("no_finite_alignment")
         pairs: List[Tuple[int, int]] = seg_pairs
@@ -564,26 +579,9 @@ def graph_dtw_align(
         def emit(i: int) -> np.ndarray:
             return np.hypot(ax[i] - vx, ay[i] - vy)  # length-V vector of A[i]->vertex distances
 
-        # Row 0 -- free choice of B entry vertex.
-        e0 = emit(0)
-        for v in range(V):
-            D[0][v] = e0[v]
-            back[0][v] = ("START", -1)
-
-        for i in range(1, N):
-            ei = emit(i)
-            # base = vertical + diagonal (depend only on row i-1)
-            for v in range(V):
-                best = D[i - 1][v]
-                bmove: Tuple = ("V", v)
-                for u in gb.pred_arcs[v]:
-                    if D[i - 1][u] < best:
-                        best = D[i - 1][u]
-                        bmove = ("D", u)
-                D[i][v] = ei[v] + best
-                back[i][v] = bmove
-
-            # horizontal relaxation within row i (Dijkstra; arc weight = emission at landed vertex)
+        def relax_h(i: int, ei: np.ndarray) -> None:
+            # horizontal (1:N coverage) relaxation within row i -- Dijkstra; every vertex
+            # entered pays alpha * its emission (§12).
             heap = [(D[i][v], v) for v in range(V)]
             heapq.heapify(heap)
             while heap:
@@ -591,11 +589,34 @@ def graph_dtw_align(
                 if c > D[i][v]:
                     continue
                 for w in gb.succ_arcs[v]:
-                    cand = D[i][v] + ei[w]
+                    cand = D[i][v] + al * ei[w]
                     if cand < D[i][w]:
                         D[i][w] = cand
                         back[i][w] = ("H", v)
                         heapq.heappush(heap, (cand, w))
+
+        # Row 0 -- free choice of B entry vertex; the relaxation prices a LEADING coverage run
+        # (free entry dominates at alpha = 1, so this is a no-op on the default).
+        e0 = emit(0)
+        for v in range(V):
+            D[0][v] = e0[v]
+            back[0][v] = ("START", -1)
+        relax_h(0, e0)
+
+        for i in range(1, N):
+            ei = emit(i)
+            # base: V = N:1 stall (beta * E), D = both advance (full E) -- §12 step weights
+            for v in range(V):
+                cand = be * ei[v] + D[i - 1][v]
+                bmove: Tuple = ("V", v)
+                for u in gb.pred_arcs[v]:
+                    c2 = ei[v] + D[i - 1][u]
+                    if c2 < cand:
+                        cand = c2
+                        bmove = ("D", u)
+                D[i][v] = cand
+                back[i][v] = bmove
+            relax_h(i, ei)
 
         v_best = int(np.argmin(D[N - 1]))
         if dbg is not None:
@@ -832,6 +853,8 @@ def match_edge_to_bgraph(
     trim_ends_m: float = 0.0,
     emission: str = "point",
     bearing_weight: float = 0.0,
+    alpha: float = 1.0,
+    beta: float = 1.0,
     debug: bool = False,
     min_pool_gap_m: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -869,6 +892,13 @@ def match_edge_to_bgraph(
         Optional λ for a length-independent heading penalty (segment mode only); ``0`` = off.
         Recommended with ``emission="segment"`` (λ ≈ 1-5): a middle-to-middle distance is blind
         to a segment rotating about its own middle, so the bearing term is what pins heading.
+    alpha, beta:
+        Step weights, both emission modes (``docs/weighted_emission.md`` §12; same names and
+        semantics as ``match_dag``): each state pays its emission weighted by the move entering
+        it -- ``alpha`` on a 1:N coverage step (B advances, A stays; domain ``(0, 1]``),
+        ``beta`` on an N:1 stall (A advances, B stays; domain ``[1, inf)``), ``1`` on a 1:1
+        advance. Defaults ``1``/``1`` reproduce the unweighted recurrence byte-for-byte; the
+        reported distance metrics stay raw geometry either way.
     debug:
         ``True`` additionally returns the raw DP internals (cost/emission tables, backtracked
         path with move types, trim window) under the ``debug`` key -- see
@@ -895,8 +925,8 @@ def match_edge_to_bgraph(
     )
     avg, warping, metrics = graph_dtw_align(
         coords_a, gb, step_meters=step_meters, trim_ends_m=trim_ends_m,
-        emission=emission, bearing_weight=bearing_weight, debug=debug,
-        min_gap_m=min_pool_gap_m)
+        emission=emission, bearing_weight=bearing_weight, alpha=alpha, beta=beta,
+        debug=debug, min_gap_m=min_pool_gap_m)
     res = {
         "route": metrics["route"],
         "warping_path": warping,

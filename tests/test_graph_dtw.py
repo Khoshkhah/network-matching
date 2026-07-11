@@ -204,3 +204,71 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("     ALL GRAPH-DTW TESTS PASSED")
     print("=" * 60)
+
+
+# --------------------------------------------------------------------------------------
+# 7. Step weights alpha/beta (docs/weighted_emission.md §12), both emission modes
+# --------------------------------------------------------------------------------------
+def _weights_case():
+    """A straight A-edge over a connected, slightly offset B-chain (both modes align it)."""
+    coords_a = [(0.0, 0.0), (30.0, 0.0)]
+    b_edges = [
+        ("B1", LineString([(0.0, 0.3), (10.0, 0.3)])),
+        ("B2", LineString([(10.0, 0.3), (20.0, 0.3)])),
+        ("B3", LineString([(20.0, 0.3), (30.0, 0.3)])),
+    ]
+    return coords_a, b_edges
+
+
+def test_alpha_beta_defaults_are_identity():
+    """alpha=1, beta=1 passed explicitly must reproduce the default call exactly -- route,
+    warping, reported drift, and the DP's decision cost -- in BOTH emission modes."""
+    coords_a, b_edges = _weights_case()
+    for emission in ("point", "segment"):
+        base = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=2.0,
+                                    emission=emission, bearing_weight=2.0, debug=True)
+        expl = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=2.0,
+                                    emission=emission, bearing_weight=2.0,
+                                    alpha=1.0, beta=1.0, debug=True)
+        assert _route_ids(base) == _route_ids(expl)
+        assert base["warping_path"] == expl["warping_path"]
+        assert base["avg_distance"] == expl["avg_distance"]
+        assert base["debug"]["final_cost"] == expl["debug"]["final_cost"]
+
+
+def test_alpha_beta_monotone_decision_cost():
+    """Every candidate alignment's weighted cost is non-decreasing in beta and non-increasing
+    as alpha drops, so the DP minimum must be too -- in BOTH emission modes."""
+    coords_a, b_edges = _weights_case()
+    for emission in ("point", "segment"):
+        def cost(alpha=1.0, beta=1.0):
+            res = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5,
+                                       step_meters=2.0, emission=emission,
+                                       alpha=alpha, beta=beta, debug=True)
+            return res["debug"]["final_cost"]
+
+        c11 = cost()
+        assert cost(alpha=0.5) <= c11 + 1e-9, f"{emission}: alpha discount raised the cost"
+        assert cost(alpha=0.2) <= cost(alpha=0.5) + 1e-9, emission
+        assert cost(beta=2.0) >= c11 - 1e-9, f"{emission}: beta penalty lowered the cost"
+        assert cost(beta=5.0) >= cost(beta=2.0) - 1e-9, emission
+
+
+def test_beta_penalizes_route_collapse():
+    """A LONGER dense A over a SHORT B edge forces stalls -- the overhang's projections clamp
+    onto B's end vertex, so several A-points share one B-state. Raising beta must raise the
+    weighted decision cost, while the reported drift stays the raw geometry of the (here
+    forced) alignment."""
+    coords_a = [(float(x), 0.0) for x in range(0, 31, 3)]      # 11 points over 30 m
+    b_edges = [("B1", LineString([(0.0, 0.3), (10.0, 0.3)]))]  # B covers only the first 10 m
+    for emission in ("point", "segment"):
+        res1 = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=30.0,
+                                    emission=emission, alpha=1.0, beta=1.0, debug=True)
+        res5 = match_edge_to_bgraph(coords_a, b_edges, snap_tolerance_m=0.5, step_meters=30.0,
+                                    emission=emission, alpha=1.0, beta=5.0, debug=True)
+        assert _route_ids(res1) == ["B1"] and _route_ids(res5) == ["B1"]
+        assert res5["debug"]["final_cost"] > res1["debug"]["final_cost"], \
+            f"{emission}: stalls are forced here, beta must bite"
+        # the reported drift stays RAW geometry of whichever alignment was chosen (beta may
+        # legitimately move the stalls, so no equality across weights -- just sanity):
+        assert 0.0 < res5["avg_distance"] < 25.0

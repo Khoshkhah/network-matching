@@ -249,3 +249,37 @@ never a centimeter sliver whose position/heading is noise.
 
 `emission="midpoint"` is accepted as a **deprecated alias** for `"segment"` (it named this mode
 during development). `"point"` remains the shipped default and is byte-for-byte unchanged.
+
+## 12. Step weights `alpha` / `beta` — 1:N and N:1 pricing (2026-07-10)
+
+Both emission modes gain the Mode-3 step weights (same names, domain, and semantics as
+`match_dag`, docs/dag_dtw_matching.md §3): **each DP state pays its emission weighted by the move
+that enters it**.
+
+| move | meaning | weight |
+|---|---|---|
+| `D` (diagonal) | A and B both advance — 1:1 | `1 · E` |
+| `V` (vertical) | A advances, B stays — **N:1 stall** (the route compresses onto one vertex/arc) | **`β · E`** |
+| `H` (horizontal Dijkstra) | B advances, A stays — **1:N coverage** (one A-point/segment covers a run) | **`α · E`** |
+
+Identical mapping in both modes — point states are (A-point, B-vertex), segment states are
+(A-segment, B-arc), the `V`/`D`/`H` structure is shared. The first row's entry stays free-choice
+and pays full `E` (a source entry, weight 1). Segment mode's stitch arcs stay free (`α·0 = 0`).
+
+**Domain `α ∈ (0, 1]`, `β ∈ [1, ∞)`, defaults `α = β = 1`** — covering a finely-sampled target may
+be *discounted*, stacking route points on one target state is *never* discounted, only penalized,
+so the matcher spreads the route rather than collapsing it. At the defaults every branch collapses
+to the previous recurrence: **byte-for-byte the pre-weights behavior** (pinned by test).
+
+**Reporting convention (same as Mode 3):** the DP's `final_cost` is the *weighted decision cost* —
+what was minimized; the per-state/per-edge distance statistics (`average`/`max`/`min`, §11.3)
+remain **raw geometry** read off the chosen warping. Weights shape the choice, never the reported
+distances.
+
+One structural completion that ships with the weights: point mode now runs the row-0 horizontal
+relaxation (segment mode always did). At `α = 1` it can never win (free entry dominates), so the
+default is unaffected; with `α < 1` it lets a *leading* coverage run be discounted like any other.
+
+API: `alpha=1.0, beta=1.0` on `graph_dtw_align`, `match_edge_to_bgraph`, and the
+`DuckDBMapMatcher` route pipeline (`compute_graph_dtw_routes`, `match_routes`) — one weight
+vocabulary across Modes 2–3.
