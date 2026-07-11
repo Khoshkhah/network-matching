@@ -829,7 +829,6 @@ def graph_dtw_align(
     # Segment mode: the reported distances ARE the segment-state costs -- one distance per
     # matched (A-segment, B-arc) state, middle to middle. Kept states are those whose produced
     # alignment pair (state t -> pair t+1) lies in the kept span; free stitches are skipped.
-    part_drift, part_bearing_diff = average, bearing_diff   # default: full measures (short routes / fallback)
     mid_stats: Optional[Dict[Any, List[float]]] = None
     seg_records: Optional[List[Tuple[Any, float, float, float]]] = None
     if emission == "segment" and seg_dbg is not None and "arc_path" in seg_dbg:
@@ -870,6 +869,8 @@ def graph_dtw_align(
     # part_drift / part_bearing_diff on the INTERIOR end-trim (BOTH emission modes): keep the route
     # interior + the last unit on the first OSM edge + the first unit on the last OSM edge, leaving the
     # rest of the first/last edge out of the AVERAGES. overlap stays coverage-based (decoupled, above).
+    part_drift, part_bearing_diff = average, bearing_diff     # fallback = full measures, seeded AFTER the
+    #   segment recompute so a 1-edge / <2-edge route has part_drift == drift exactly (not the stale point drift)
     if seg_records is not None:
         _recs = seg_records                                    # segment mode: per (A-segment, B-arc) state
     else:
