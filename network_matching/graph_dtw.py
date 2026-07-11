@@ -457,6 +457,32 @@ def _segment_dp_pairs(gb: LocalBGraph, ax: np.ndarray, ay: np.ndarray,
     return pairs
 
 
+def _interior_part(records, route_edges):
+    """Interior end-trim for part_drift / part_bearing_diff (both emission modes).
+
+    ``records`` is the ordered per-unit list ``[(osm_edge_id, drift, bearing_diff, a_len), ...]`` along
+    the A-edge. Keep the route's interior units PLUS the LAST unit on the first OSM edge and the FIRST
+    unit on the last OSM edge (a first/last edge with a SINGLE unit is kept whole); leave the rest of
+    the first / last edge out of the AVERAGES. Returns ``(kept_indices, part_drift)`` or ``None`` (route
+    < 2 distinct edges) so the caller keeps the full-measure fallback; the caller derives part_bearing
+    from ``kept_indices`` (segment mode only). overlap is deliberately NOT trimmed here -- it stays a
+    coverage measure (covered_A / total_A), decoupled from this end-trimming."""
+    if not records or len(route_edges) < 2:
+        return None
+    first_eid, last_eid = route_edges[0]["dest_id"], route_edges[-1]["dest_id"]
+    if first_eid == last_eid:
+        return None
+    fpos = [i for i, r in enumerate(records) if r[0] == first_eid]
+    lpos = [i for i, r in enumerate(records) if r[0] == last_eid]
+    if not fpos or not lpos:
+        return None
+    drop = set(fpos[:-1]) | set(lpos[1:])          # keep a5 (last on first edge) + b1 (first on last)
+    kept = [i for i in range(len(records)) if i not in drop]
+    if not kept:
+        return None
+    return kept, float(np.mean([records[i][1] for i in kept]))
+
+
 # --------------------------------------------------------------------------------------
 # Graph-DTW alignment (the dynamic table)
 # --------------------------------------------------------------------------------------
@@ -803,14 +829,15 @@ def graph_dtw_align(
     # Segment mode: the reported distances ARE the segment-state costs -- one distance per
     # matched (A-segment, B-arc) state, middle to middle. Kept states are those whose produced
     # alignment pair (state t -> pair t+1) lies in the kept span; free stitches are skipped.
-    part_drift, part_bearing_diff = average, bearing_diff   # default: full measures (point mode / short routes)
+    part_drift, part_bearing_diff = average, bearing_diff   # default: full measures (short routes / fallback)
     mid_stats: Optional[Dict[Any, List[float]]] = None
+    seg_records: Optional[List[Tuple[Any, float, float, float]]] = None
     if emission == "segment" and seg_dbg is not None and "arc_path" in seg_dbg:
         arcs_l = seg_dbg["arcs"]
         rid = seg_dbg["ridable"]
         mid_stats = {}
         seg_bearing_diffs: List[float] = []
-        seg_records: List[Tuple[Any, float, float]] = []      # (osm_edge_id, dist, bearing_diff) per state
+        seg_records = []                                       # (osm_edge_id, dist, bearing_diff, a_len) per state
         for t, (i, k, _mv) in enumerate(seg_dbg["arc_path"]):
             if not (lo <= t + 1 <= hi) or not rid[k]:
                 continue
@@ -822,9 +849,10 @@ def graph_dtw_align(
             _delta = abs(_bearing((ax[i], ay[i]), (ax[i + 1], ay[i + 1]))
                          - _bearing((vx[u], vy[u]), (vx[w], vy[w])))
             _bd = min(_delta, 360.0 - _delta)
+            _al = float(np.hypot(ax[i + 1] - ax[i], ay[i + 1] - ay[i]))
             mid_stats.setdefault(eid, []).append(d)
             seg_bearing_diffs.append(_bd)
-            seg_records.append((eid, d, _bd))
+            seg_records.append((eid, d, _bd, _al))
         all_d = [d for ds in mid_stats.values() for d in ds]
         if all_d:
             average = float(np.mean(all_d))
@@ -838,17 +866,26 @@ def graph_dtw_align(
         # mean per-segment distance above), not the single start->end chord angle used by point mode.
         if seg_bearing_diffs:
             bearing_diff = float(np.mean(seg_bearing_diffs))
-        # part_* : the SAME means but DROPPING states on the route's FIRST and LAST OSM edge (interior
-        # only) -- the entry/exit edges carry overhang / partial-match noise. Falls back to the full
-        # measure when the route has < 3 OSM edges (no interior state remains).
-        if route_edges and seg_records:
-            _first, _last = route_edges[0]["dest_id"], route_edges[-1]["dest_id"]
-            _mid = [(d, bd) for (eid, d, bd) in seg_records if eid != _first and eid != _last]
-            if _mid:
-                part_drift = float(np.mean([d for d, _ in _mid]))
-                part_bearing_diff = float(np.mean([bd for _, bd in _mid]))
-            else:
-                part_drift, part_bearing_diff = average, bearing_diff
+
+    # part_drift / part_bearing_diff on the INTERIOR end-trim (BOTH emission modes): keep the route
+    # interior + the last unit on the first OSM edge + the first unit on the last OSM edge, leaving the
+    # rest of the first/last edge out of the AVERAGES. overlap stays coverage-based (decoupled, above).
+    if seg_records is not None:
+        _recs = seg_records                                    # segment mode: per (A-segment, B-arc) state
+    else:
+        _recs = []                                             # point mode: per warping step in the kept span
+        for _t in range(lo + 1, hi + 1):                       # (bearing left 0.0 -- point mode has no per-unit heading)
+            _e = step_e[_t]
+            if not (0 <= _e < len(gb.edge_ids)):
+                continue
+            (_pa0, _pb0), (_pa1, _pb1) = warping_all[_t - 1], warping_all[_t]
+            _recs.append((gb.edge_ids[_e], drift_all[_t], 0.0,
+                          float(np.hypot(_pa1[0] - _pa0[0], _pa1[1] - _pa0[1]))))
+    _po = _interior_part(_recs, route_edges)
+    if _po is not None:                                        # overlap already set (coverage-based, above);
+        _kept, part_drift = _po                                # only part_drift / part_bearing are end-trimmed
+        if emission == "segment":                              # per-segment part bearing; point mode has none
+            part_bearing_diff = float(np.mean([_recs[i][2] for i in _kept]))
 
     metrics = {
         "average": average,
