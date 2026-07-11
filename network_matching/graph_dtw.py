@@ -796,18 +796,28 @@ def graph_dtw_align(
     # Segment mode: the reported distances ARE the segment-state costs -- one distance per
     # matched (A-segment, B-arc) state, middle to middle. Kept states are those whose produced
     # alignment pair (state t -> pair t+1) lies in the kept span; free stitches are skipped.
+    part_drift, part_bearing_diff = average, bearing_diff   # default: full measures (point mode / short routes)
     mid_stats: Optional[Dict[Any, List[float]]] = None
     if emission == "segment" and seg_dbg is not None and "arc_path" in seg_dbg:
         arcs_l = seg_dbg["arcs"]
         rid = seg_dbg["ridable"]
         mid_stats = {}
+        seg_bearing_diffs: List[float] = []
+        seg_records: List[Tuple[Any, float, float]] = []      # (osm_edge_id, dist, bearing_diff) per state
         for t, (i, k, _mv) in enumerate(seg_dbg["arc_path"]):
             if not (lo <= t + 1 <= hi) or not rid[k]:
                 continue
             u, w = arcs_l[k]
+            eid = gb.edge_ids[gb.vert_edge[u]]
             d = float(np.hypot(0.5 * (ax[i] + ax[i + 1]) - 0.5 * (vx[u] + vx[w]),
                                0.5 * (ay[i] + ay[i + 1]) - 0.5 * (vy[u] + vy[w])))
-            mid_stats.setdefault(gb.edge_ids[gb.vert_edge[u]], []).append(d)
+            # per-segment heading diff: A micro-segment vs its matched B-arc (circular, degrees)
+            _delta = abs(_bearing((ax[i], ay[i]), (ax[i + 1], ay[i + 1]))
+                         - _bearing((vx[u], vy[u]), (vx[w], vy[w])))
+            _bd = min(_delta, 360.0 - _delta)
+            mid_stats.setdefault(eid, []).append(d)
+            seg_bearing_diffs.append(_bd)
+            seg_records.append((eid, d, _bd))
         all_d = [d for ds in mid_stats.values() for d in ds]
         if all_d:
             average = float(np.mean(all_d))
@@ -817,6 +827,21 @@ def graph_dtw_align(
                     re["match_dist_avg"] = float(np.mean(ds))
                     re["match_dist_max"] = float(np.max(ds))
                     re["match_dist_min"] = float(np.min(ds))
+        # segment mode: report bearing_diff as the MEAN per-segment heading diff (parallel to the
+        # mean per-segment distance above), not the single start->end chord angle used by point mode.
+        if seg_bearing_diffs:
+            bearing_diff = float(np.mean(seg_bearing_diffs))
+        # part_* : the SAME means but DROPPING states on the route's FIRST and LAST OSM edge (interior
+        # only) -- the entry/exit edges carry overhang / partial-match noise. Falls back to the full
+        # measure when the route has < 3 OSM edges (no interior state remains).
+        if route_edges and seg_records:
+            _first, _last = route_edges[0]["dest_id"], route_edges[-1]["dest_id"]
+            _mid = [(d, bd) for (eid, d, bd) in seg_records if eid != _first and eid != _last]
+            if _mid:
+                part_drift = float(np.mean([d for d, _ in _mid]))
+                part_bearing_diff = float(np.mean([bd for _, bd in _mid]))
+            else:
+                part_drift, part_bearing_diff = average, bearing_diff
 
     metrics = {
         "average": average,
@@ -830,6 +855,8 @@ def graph_dtw_align(
         "route_edges": route_edges,
         "n_edges": len(route),
         "bearing_diff": bearing_diff,
+        "part_drift": part_drift,
+        "part_bearing_diff": part_bearing_diff,
         "warp_vertices": warp_vertices,
         "warp_is_node": [bool(gb.is_node[v]) for v in warp_vertices],
         "warp_a_is_node": warp_a_is_node,

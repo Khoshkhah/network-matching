@@ -780,6 +780,7 @@ class DuckDBMapMatcher:
                            "route_match_dist", "n_edges"]
     ROUTES_SUMMARY_COLUMNS = ["source_id", "n_edges", "dest_ids", "dtw_distance",
                               "max_dtw_distance", "min_dtw_distance", "bearing_diff",
+                              "part_drift", "part_bearing_diff",
                               "overlap_pct", "matched_len", "route_geom_wkt", "match_type"]
 
     # Column type schema for the two output tables. Ids/counts are plain int64 -- they are always
@@ -796,6 +797,7 @@ class DuckDBMapMatcher:
     ROUTES_SUMMARY_DTYPES = {
         "source_id": "int64", "n_edges": "int64", "dtw_distance": "float64",
         "max_dtw_distance": "float64", "min_dtw_distance": "float64", "bearing_diff": "float64",
+        "part_drift": "float64", "part_bearing_diff": "float64",
         "overlap_pct": "Int64", "matched_len": "float64", "match_type": "string",
     }  # dest_ids (list) and route_geom_wkt (WKT/None) stay object
 
@@ -924,6 +926,7 @@ class DuckDBMapMatcher:
                 "dest_ids": [d for (d, _dir, _s) in route],
                 "dtw_distance": m["average"], "max_dtw_distance": m["max"],
                 "min_dtw_distance": m["min"], "bearing_diff": m["bearing_diff"],
+                "part_drift": m["part_drift"], "part_bearing_diff": m["part_bearing_diff"],
                 "overlap_pct": m["overlap_pct"], "matched_len": m["matched_len"],
                 "route_geom_wkt": route_geom_wkt,
                 "match_type": "1:1" if m["n_edges"] == 1 else "1:N_ROUTE",
@@ -939,7 +942,8 @@ class DuckDBMapMatcher:
             nm = pd.DataFrame([{
                 "source_id": i, "n_edges": 0, "dest_ids": None, "dtw_distance": float("nan"),
                 "max_dtw_distance": float("nan"), "min_dtw_distance": float("nan"),
-                "bearing_diff": float("nan"), "overlap_pct": pd.NA, "matched_len": float("nan"),
+                "bearing_diff": float("nan"), "part_drift": float("nan"),
+                "part_bearing_diff": float("nan"), "overlap_pct": pd.NA, "matched_len": float("nan"),
                 "route_geom_wkt": None, "match_type": "NO_MATCH",
             } for i in unmatched], columns=self.ROUTES_SUMMARY_COLUMNS)
             routes_summary = pd.concat([routes_summary, nm], ignore_index=True)
@@ -1057,7 +1061,15 @@ class DuckDBMapMatcher:
         ``bearing_weight``); default ``"point"`` is unchanged. ``alpha``/``beta`` weight the
         1:N coverage / N:1 stall steps in BOTH emission modes (same semantics as
         :meth:`match_dag`; defaults ``1``/``1`` = unweighted). See
-        ``docs/weighted_emission.md`` §12."""
+        ``docs/weighted_emission.md`` §12.
+
+        ``routes_summary`` also carries **``part_drift``** and **``part_bearing_diff``** (segment
+        emission): the same mean-per-segment drift / heading diff as ``dtw_distance`` / ``bearing_diff``
+        but computed over the route's INTERIOR only — the states on the first and last OSM edge are
+        dropped, since the entry/exit edges carry the overhang / partial-match noise. They enable a
+        *partial-match* tier: an A-edge whose full metrics fail but whose ``part_*`` pass has an
+        interior that follows B, only its ends diverging. Falls back to the full value in point mode
+        or when the route has < 3 edges."""
         candidates_df = self.generate_candidate_pairs()
         return self.compute_graph_dtw_routes(
             candidates_df, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
