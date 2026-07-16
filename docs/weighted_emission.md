@@ -1,13 +1,15 @@
 # Segment-to-Segment Emission for Graph-DTW
 
-A design proposal to generalize the graph-DTW **local cost** from *point-to-point* (a single
-point-to-vertex distance) to *segment-to-segment* — using an **endpoint-average distance** that is
-already direction-aware, with an **optional** bearing term that is **off by default**. Builds on the
-algorithm in [`graph_dtw_matching.md`](graph_dtw_matching.md); the cost lives in `emit(i)` inside
-[`network_matching/graph_dtw.py`](../network_matching/graph_dtw.py).
+Generalizes the graph-DTW **local cost** from *point-to-point* (a single point-to-vertex
+distance) to *segment-to-segment*. Builds on the algorithm in
+[`graph_dtw_matching.md`](graph_dtw_matching.md).
 
-Status: **proposed** (design). Default behaviour is a strict improvement over point-to-point with no
-new hyperparameter; the optional bearing term defaults to `λ = 0`, so it is fully backward-compatible.
+Status: **implemented** — `emission="segment"` (`_segment_dp_pairs` in
+[`network_matching/graph_dtw.py`](../network_matching/graph_dtw.py)). The final form is a
+**middle-to-middle** segment distance (§11) with an optional bearing term (recommended λ ≈ 1–5
+in segment mode) and the `alpha`/`beta` step weights (§12). §§1–8 are the original
+endpoint-average design; §§9–11 record the validation that replaced it with middle-to-middle.
+Point-to-point remains the default (`emission="point"`), so segment mode is fully opt-in.
 
 ---
 

@@ -1,11 +1,13 @@
 # Symmetric (Two-Way) Map Matching & Split-Aware Reconciliation
 
-> **Status: design specification (proposed extension).**
-> The library today ships a **directed** pipeline — `match()` (Source A → Destination B) and
-> the `resolve()` decision layer. This document specifies a **symmetric** reconciliation built
-> *on top of* those primitives: run the directed matcher both ways, then combine the two results
-> into a single undirected matching that correctly preserves **split roads** (1:N) and
-> **merges** (N:1). It is not yet implemented in `match()`; the proposed API is in §7.
+> **Status: implemented** — `match_symmetric()` (one call, both directions) and
+> `reconcile_symmetric()` (the combining step) in
+> [`network_matching/matcher.py`](../network_matching/matcher.py), validated by
+> `tests/test_matching.py`. The core pipeline stays **directed** — `match()` (Source A →
+> Destination B) and the `resolve()` decision layer. This document specifies the **symmetric**
+> reconciliation built *on top of* those primitives: run the directed matcher both ways, then
+> combine the two results into a single undirected matching that correctly preserves **split
+> roads** (1:N) and **merges** (N:1). The API is in §9.
 
 ---
 
@@ -238,7 +240,7 @@ and discards `b1, b3` — the split is destroyed. The per-edge matched-length ru
 
 ---
 
-## 9. Proposed API
+## 9. API
 
 ```python
 def reconcile_symmetric(eval_ab, eval_ba,
