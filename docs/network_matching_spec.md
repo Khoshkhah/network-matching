@@ -1,6 +1,6 @@
 # Directed↔Directed Whole-Network Matching — Specification
 
-**Status:** design spec, ready to implement. Supersedes the "global reconciliation" track sketched in `docs/improvement_plan.md` §3/§4 and corrects decisions **D10** and **D11**.
+**Status:** design spec, ready to implement. Supersedes the "global reconciliation" track sketched in the improvement plan §3/§4 and corrects decisions **D10** and **D11**. *(The improvement plan — the Hootenanny comparison — is product material, not library material; it lives at `~/projects/product/improvement_plan.md`. All `improvement_plan.md` references below point there.)*
 **Scope:** conflating two *whole* road networks (OSM ↔ NVDB today; OSM ↔ DRA/NRN next), directed↔directed, with undirected↔undirected handled by reduction.
 **Audience:** the one developer who will build it, and the reader of the paper who needs to know exactly what is proved and what is measured.
 
