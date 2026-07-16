@@ -962,7 +962,7 @@ class DuckDBMapMatcher:
 
     def match_dag(self, alpha: float = 1.0, beta: float = 1.0, engine: str = "cell",
                   bearing_weight: float = 2.0, max_distance: Optional[float] = None,
-                  step_meters: float = 5.0, snap_decimals: int = 3):
+                  step_meters: float = 5.0, snap_decimals: int = 3, parts: bool = False):
         """Mode 3 — DAG-to-network matching (DAG-DTW), on the SAME configured sources as the other
         modes: source A must form a directed **acyclic** graph (a route tree, a sensor cone, a
         divided road that rejoins); B may cycle. Geometry is transformed to ``utm_srid`` and both
@@ -973,19 +973,29 @@ class DuckDBMapMatcher:
         cross-validation / ``"all"`` = cheapest valid of the two); ``alpha ∈ (0,1]`` discounts 1:N
         coverage, ``beta ∈ [1,∞)`` penalizes N:1 stalls (docs/dag_dtw_matching.md §3).
 
-        Returns ``(dag_long, dag_summary)`` — the Mode-1-style pair:
+        Returns ``(dag_long, dag_summary)`` — the Mode-1-style pair — or, with ``parts=True``,
+        ``(dag_long, dag_summary, dag_parts)`` (docs/dag_dtw_matching.md §11):
 
         - ``dag_long``: one row per (A-edge, B-edge) the matching connects — ``source_id, dest_id,
           seq`` (order along the A-edge), ``n_pairs`` (matched arc pairs), ``avg_dist_m`` (mean
-          midpoint drift, meters).
+          midpoint drift, meters), ``avg_bearing_diff`` (mean circular bearing difference, deg).
         - ``dag_summary``: one row per A-edge — ``source_id, dest_ids`` (ordered ``;``-join),
-          ``n_dest, n_pairs, avg_dist_m, match_type`` (``1:1`` / ``1:N_ROUTE``).
+          ``n_dest, n_parts, n_pairs, avg_dist_m, avg_bearing_diff, a_head_m, a_tail_m,
+          match_type`` (``1:1`` / ``1:N_ROUTE``).
+        - ``dag_parts``: the per-edge decomposition — one row per contiguous **part** of the
+          A-edge matched to one B-edge (re-entry kept separate), plus one row each for the
+          route's **begin/end non-overlap** when present (``part_type`` ``"head"``/``"tail"``,
+          matched parts are ``"match"``): ``part`` order, the covered A span
+          ``a_from_m/a_to_m/a_len_m/a_pct``, per-part ``n_pairs/n_a_arcs/n_b_arcs``,
+          ``drift_m/drift_max_m/bearing_diff_deg`` scores, and the used B span
+          ``b_from_m/b_to_m/b_len_m`` with the non-overlapping ``b_head_m``/``b_tail_m`` ends.
 
         Raises ``NotADAG`` if source A has a directed cycle, and ``ValueError`` on infeasibility
         (increase ``max_distance``)."""
         from shapely import wkt as _shapely_wkt
         from .dag_dtw import (edges_to_digraph, line_digraph, prepare, forward,
-                              extract_join, extract_cell, _cost_of, check_rules)
+                              extract_join, extract_cell, _cost_of, check_rules,
+                              parts_from_matching)
         if not self.source_a or not self.source_b or not self.utm_srid:
             raise ValueError("Sources not configured. Call configure_sources() first.")
         r = float(max_distance if max_distance is not None else (self.max_distance or 30.0))
@@ -1007,6 +1017,7 @@ class DuckDBMapMatcher:
             LA.nodes[(u, v)]["seq"] = A[u][v]["seq"]
         for (u, v) in LB.nodes:
             LB.nodes[(u, v)]["road_id"] = B[u][v]["road_id"]
+            LB.nodes[(u, v)]["seq"] = B[u][v]["seq"]
         prepare(LA, LB, r=r, bearing_weight=bearing_weight)
         forward(LA, LB, alpha=alpha, beta=beta)
         engines = {"cell": extract_cell, "join": extract_join}
@@ -1032,21 +1043,41 @@ class DuckDBMapMatcher:
         for (sa, sb) in M:                                      # arc pair -> input-edge pair + drift
             ax, ay = LA.nodes[sa]["x"], LA.nodes[sa]["y"]
             bx, by = LB.nodes[sb]["x"], LB.nodes[sb]["y"]
+            bdiff = abs(float(LA.nodes[sa]["bearing"]) - float(LB.nodes[sb]["bearing"])) % 360.0
             rows.append(dict(source_id=LA.nodes[sa]["road_id"], dest_id=LB.nodes[sb]["road_id"],
                              a_seq=LA.nodes[sa]["seq"],
-                             dist_m=float(np.hypot(ax - bx, ay - by))))
+                             dist_m=float(np.hypot(ax - bx, ay - by)),
+                             bear=min(bdiff, 360.0 - bdiff)))
         pairs = pd.DataFrame(rows)
         dag_long = (pairs.groupby(["source_id", "dest_id"], as_index=False)
                     .agg(seq=("a_seq", "min"), n_pairs=("a_seq", "size"),
-                         avg_dist_m=("dist_m", "mean")))
+                         avg_dist_m=("dist_m", "mean"), avg_bearing_diff=("bear", "mean")))
         dag_long["seq"] = dag_long.groupby("source_id")["seq"].rank(method="first").astype(int)
         dag_long = dag_long.sort_values(["source_id", "seq"]).reset_index(drop=True)
+        dag_parts = pd.DataFrame(parts_from_matching(M, LA, LB), columns=[
+            "source_id", "part", "part_type", "dest_id", "a_from_m", "a_to_m", "a_len_m",
+            "a_pct", "n_pairs", "n_a_arcs", "n_b_arcs", "drift_m", "drift_max_m",
+            "bearing_diff_deg", "b_from_m", "b_to_m", "b_len_m", "b_head_m", "b_tail_m"])
         summary = (dag_long.sort_values(["source_id", "seq"])
                    .groupby("source_id", as_index=False)
                    .agg(dest_ids=("dest_id", lambda d: ";".join(map(str, d))),
                         n_dest=("dest_id", "nunique"), n_pairs=("n_pairs", "sum"),
-                        avg_dist_m=("avg_dist_m", "mean")))
+                        avg_dist_m=("avg_dist_m", "mean"),
+                        avg_bearing_diff=("avg_bearing_diff", "mean")))
+        is_match = dag_parts["part_type"] == "match"
+        summary["n_parts"] = (summary["source_id"]
+                              .map(dag_parts[is_match].groupby("source_id").size())
+                              .fillna(0).astype(int))
+        for col, ptype in (("a_head_m", "head"), ("a_tail_m", "tail")):
+            summary[col] = (summary["source_id"]
+                            .map(dag_parts[dag_parts["part_type"] == ptype]
+                                 .groupby("source_id")["a_len_m"].sum())
+                            .fillna(0.0))
+        summary = summary[["source_id", "dest_ids", "n_dest", "n_parts", "n_pairs",
+                           "avg_dist_m", "avg_bearing_diff", "a_head_m", "a_tail_m"]]
         summary["match_type"] = np.where(summary["n_dest"] > 1, "1:N_ROUTE", "1:1")
+        if parts:
+            return dag_long, summary, dag_parts
         return dag_long, summary
 
     def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,

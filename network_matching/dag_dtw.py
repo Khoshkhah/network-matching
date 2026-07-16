@@ -110,7 +110,7 @@ def prepare(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, k_min: int = 1,
             v = b_nodes[i]
             e = _emit(ax, ay, abear, float(b_xy[i, 0]), float(b_xy[i, 1]), b_bear[i], bearing_weight)
             cand[v] = {"E": float(e), "D": INF, "bpD": [], "B": INF, "bpB": [],
-                       "forbidden": False}                  # §4.1a: a forbidden cell takes no pointer
+                       "forbidden": False}                  # §4.1a: not a valid run END (role-aware)
         A.nodes[a]["cand"] = cand
     return A
 
@@ -131,6 +131,7 @@ def line_digraph(G: nx.DiGraph) -> nx.DiGraph:
         L.nodes[(u, v)]["x"] = 0.5 * (xu + xv)
         L.nodes[(u, v)]["y"] = 0.5 * (yu + yv)
         L.nodes[(u, v)]["bearing"] = (math.degrees(math.atan2(xv - xu, yv - yu)) + 360.0) % 360.0
+        L.nodes[(u, v)]["length"] = math.hypot(xv - xu, yv - yu)
     return L
 
 
@@ -200,10 +201,11 @@ def _fill_row(A: nx.DiGraph, a: Hashable, pred, bpred, bsucc,
     """Fill — or **rebuild** (docs §4.1a) — ONE vertex's row: the Part 3 three-way min — (D) advance,
     (V) β-stall, (H) α-coverage — reading only the already-final neighbour rows and the row itself.
     ``border`` breaks argmin ties by a fixed B-vertex order, identically in both passes (Part 4b).
-    A cell whose ``forbidden`` flag is set (§4.1a) is skipped everywhere a neighbour cell is *linked to*
-    — as an advance source, a stall source, or a same-row coverage source — so no back-pointer is ever
-    created to it; the cell's own value is still computed. With no flags set (plain :func:`forward` /
-    :func:`backward`) the behaviour is byte-for-byte the unconstrained recurrence."""
+    A cell whose ``forbidden`` flag is set (§4.1a) cannot be a **run end**, so it is skipped where a
+    NEIGHBOUR row attaches to it — as an advance source or a stall source; it remains a legal
+    same-row coverage source (a run may pass THROUGH it; role-aware forbidding). The cell's own
+    value is still computed. With no flags set (plain :func:`forward` / :func:`backward`) the
+    behaviour is byte-for-byte the unconstrained recurrence."""
     cand = A.nodes[a]["cand"]
     preds = list(pred(a))
     base: Dict[Hashable, float] = {}
@@ -257,7 +259,8 @@ def _fill_row(A: nx.DiGraph, a: Hashable, pred, bpred, bsucc,
     # from D. α·E ≥ 0 ⇒ a monotone descent to the unique least fixed point (correct even when B is
     # cyclic, where a single pass would leave cells un-relaxed). Equal-cost coverage ties keep the
     # smaller-`border` predecessor, matching the advance step's tie-break (Part 4b). A forbidden cell
-    # (§4.1a) may not be a coverage SOURCE -- no pointer [(a, v)] may be created to it.
+    # (§4.1a) IS a legal coverage source: the flag means "no child may attach here" (not a valid run
+    # END), and a within-row cover step just passes THROUGH the cell -- the run ends elsewhere.
     D = dict(base)
     bp = dict(base_bp)
     changed = True
@@ -265,7 +268,7 @@ def _fill_row(A: nx.DiGraph, a: Hashable, pred, bpred, bsucc,
         changed = False
         for v in cand:
             dv = D[v]
-            if dv == INF or cand[v].get("forbidden"):
+            if dv == INF:
                 continue
             for w in bsucc(v):                              # v -> w a B-arc; a extends its run onto w
                 if w not in cand:
@@ -294,12 +297,16 @@ def backward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0
 def forward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0) -> nx.DiGraph:
     """**The forward pass** (docs §4): fill ``D``/``bpD`` in the §4.0 longest-path layer order with the
     §4.1a split (V3) coupling built in. As each split's child is built (**including the first**), every
-    cell of the split it does *not* link to is marked ``forbidden`` — dead as a pointer target for ALL
-    siblings, past and future, in any pass; already-built siblings that leaned on a newly-forbidden exit
-    get a **whole-row rebuild** under the current flags, iterating to a fixed point. At the fixed point
-    every surviving (non-forbidden) exit cell of every split is linked by ALL its children —
-    :func:`check_split_exits` verifies exactly this. Multiple surviving exits are legitimate (the single
-    one is chosen at extraction, which never commits a vertex to a forbidden cell).
+    cell of the split it **cannot use** — no stall or advance transition into any of the child's own
+    candidates (:func:`_feasible_links`) — is marked ``forbidden``: dead as a pointer target for ALL
+    siblings, past and future, in any pass; already-built siblings whose rows leaned on a
+    newly-forbidden exit get a **whole-row rebuild** under the current flags, iterating to a fixed
+    point. At the fixed point every surviving (non-forbidden) exit cell of every split is usable by
+    ALL its children — :func:`check_split_exits` verifies exactly this. The forbid criterion is
+    **feasibility, never optimality** (a child's cheapest row not linking an exit is no ground to kill
+    it — the extraction optimizes over the survivors itself); multiple surviving exits are legitimate
+    (the single one is chosen at extraction, which never lets a run END on a forbidden cell — though
+    a run may still pass THROUGH one: the flag is role-aware, §4.1a).
 
     This pass owns the ``forbidden`` flags and resets them first. **Run before** :func:`backward` when
     the diagnostic backward table is wanted — it reads the flags, so its pointers never target a
@@ -325,7 +332,7 @@ def forward(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0)
     for a in order:
         refill(a)
         built.add(a)
-        _couple(A, a, built, refill)
+        _couple(A, B, a, built, refill)
     return A
 
 
@@ -336,13 +343,41 @@ def _links(A: nx.DiGraph, c: Hashable, p: Hashable) -> set:
             for (q, x) in cell["bpD"] if q == p and x is not None}
 
 
-def _couple(A: nx.DiGraph, trigger: Hashable, built: set, refill) -> None:
+def _feasible_links(A: nx.DiGraph, B: nx.DiGraph, c: Hashable, p: Hashable) -> set:
+    """The cells of split ``p`` that child ``c`` COULD use — a pure transition-existence test, no DP
+    values: ``x`` serves ``c`` iff ``c`` can β-stall on it (``x ∈ cand(c)``) or advance out of it into
+    one of its own candidates (``x ∈ Bpred(w)`` for some ``w ∈ cand(c)``); coverage only extends a row
+    after one of those entries, so it adds no exits. Always a superset of :func:`_links` (a
+    back-pointer is one of these transitions, chosen by cost). The §4.1a forbid criterion — pruning
+    must be sound for the §5 extraction, which optimizes over the surviving cells itself, so an exit
+    may only die when some child CANNOT use it, never because a child's cheapest row happened to
+    prefer another (that optimality-forbidding emptied splits that had valid warpings).
+
+    The flag this feeds is **role-aware** (docs §4.1a): it bars the cell from serving as the
+    split's run END (child attachment, END-state row, sink seed) while leaving it usable as a run
+    entry/interior (same-row coverage source, cover-reversed reachability) — matching exactly what
+    this test judges."""
+    pc = A.nodes[p]["cand"]
+    out = set()
+    for w in A.nodes[c]["cand"]:
+        if w in pc:
+            out.add(w)                                          # β-stall: p ends on w, c stays on it
+        for x in B.predecessors(w):
+            if x in pc:
+                out.add(x)                                      # advance: p ends on x, c steps x -> w
+    return out
+
+
+def _couple(A: nx.DiGraph, B: nx.DiGraph, trigger: Hashable, built: set, refill) -> None:
     """The §4.1a forbid-and-rebuild step, run right after ``trigger``'s row is built. For each split
     parent ``p`` of ``trigger``: mark forbidden every non-forbidden exit cell of ``p`` that ``trigger``
-    does not link to; rebuild (whole row) every already-built sibling that linked a newly-forbidden
-    exit; re-examine rebuilt rows. The forbidden set grows monotonically, so this reaches a fixed point
-    in at most ``|cand(p)|`` rounds; at the fixed point every surviving exit is linked by all built
-    children. Raises the feasibility ``ValueError`` if a split's exits empty out."""
+    **cannot use** (:func:`_feasible_links` — transition-existence, not the row's optimal
+    back-pointers); rebuild (whole row) every already-built sibling whose row linked a
+    newly-forbidden exit, so no back-pointer targets a dead cell; re-examine rebuilt rows. The
+    forbidden set grows monotonically, so this reaches a fixed point in at most ``|cand(p)|`` rounds;
+    at the fixed point every surviving exit is usable by all built children. Raises the feasibility
+    ``ValueError`` iff a split's exits empty out — then some child truly has no entry from any exit
+    cell, so no V3-valid warping exists within ``r``."""
     work = [trigger]
     while work:
         c = work.pop()
@@ -350,8 +385,8 @@ def _couple(A: nx.DiGraph, trigger: Hashable, built: set, refill) -> None:
             if len(list(A.successors(p))) < 2:                  # V3 only bites at a split
                 continue
             pc = A.nodes[p]["cand"]
-            linked = _links(A, c, p)
-            newly = [v for v, cell in pc.items() if not cell["forbidden"] and v not in linked]
+            usable = _feasible_links(A, B, c, p)
+            newly = [v for v, cell in pc.items() if not cell["forbidden"] and v not in usable]
             if not newly:
                 continue
             for v in newly:
@@ -362,7 +397,7 @@ def _couple(A: nx.DiGraph, trigger: Hashable, built: set, refill) -> None:
             for sib in A.successors(p):
                 if sib == c or sib not in built:                # later siblings build under the flags
                     continue
-                if _links(A, sib, p) & newset:                  # sib leaned on a now-dead exit
+                if _links(A, sib, p) & newset:                  # sib's row leaned on a now-dead exit
                     refill(sib)                                 # whole-row rebuild (docs §4.1a step 3)
                     work.append(sib)                            # its links changed -> re-examine
 
@@ -666,7 +701,9 @@ def extract_join(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 def _cell_reachable(A: nx.DiGraph, B: nx.DiGraph) -> set:
     """The §5.2 cell-removal pre-pass: one reverse search from ALL sink cells over the cell-move graph
     (cover reversed inside a vertex, advance/stall reversed across edges). Cells never seen cannot
-    appear on any chain to a sink and are removed up front, in every role."""
+    appear on any chain to a sink and are removed up front. Role-aware ``forbidden`` (§4.1a): the
+    flag bars a cell from being a **run END** — a sink seed or an attachment target across an edge —
+    but a run may pass THROUGH it, so the within-row cover-reversed step traverses flagged cells."""
     seen, stack = set(), []
     for X in A.nodes:
         if A.out_degree(X) == 0:
@@ -677,8 +714,8 @@ def _cell_reachable(A: nx.DiGraph, B: nx.DiGraph) -> set:
     while stack:
         X, v = stack.pop()
         cand = A.nodes[X]["cand"]
-        for u in B.predecessors(v):                             # cover reversed (same vertex)
-            if u in cand and not cand[u].get("forbidden") and (X, u) not in seen:
+        for u in B.predecessors(v):                             # cover reversed (same vertex):
+            if u in cand and (X, u) not in seen:                # through-role -- flags do not bar it
                 seen.add((X, u))
                 stack.append((X, u))
         for P in A.predecessors(X):                             # advance/stall reversed (to the parent)
@@ -713,7 +750,8 @@ def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
     consumed-once + ``pending``, with **early discharge**: a key is paid and dropped at the arms'
     first common ancestor (statically precomputed), which keeps chains of merges linear. Exact
     over the FULL cell-level space; built from ``E`` alone -- the forward table serves only as
-    pruning (``forbidden`` / ``D < inf`` / sink-reach). The E-multiplier ledger is {1
+    pruning (``forbidden`` = not a valid run END, §4.1a role-aware — runs may pass through;
+    ``D < inf`` / sink-reach). The E-multiplier ledger is {1
     advance/source, beta stall, alpha cover}; a vertex's entry-E is deferred to its parent's
     connecting edge (a merge's to its discharge). ``M`` travels with the rows -- the winning
     row's cells map IS the relation, no traceback.
@@ -770,6 +808,8 @@ def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
             END: Dict[Hashable, list] = {}
             my_inbox = inbox.pop(X)                             # consumed this turn, then freed
             for u in sorted(cells_row, key=lambda t: border[t]):
+                if cand[u].get("forbidden"):                    # §4.1a role: not a valid run END --
+                    continue                                    # (the run may still pass through u)
                 combos = [(0.0, {}, {X: (u,)})]
                 dead = False
                 for c in children:
@@ -956,9 +996,12 @@ def edges_to_digraph(edges, step_meters: float = 5.0, snap_decimals: int = 3) ->
     **densified** at ``step_meters`` (this is what supplies the subdivision — interior points on
     every real edge); shared endpoints become one junction node (coordinates snapped to
     ``snap_decimals``); every arc carries ``road_id`` (its input edge id) and ``seq`` (its position
-    along that edge) so segment-mode matchings aggregate back to input-edge level."""
+    along that edge) so segment-mode matchings aggregate back to input-edge level. ``seq`` counts
+    *arcs*, gapless, and **continues across rows that share an edge id** (a multipart geometry
+    exported as several rows), so ``(road_id, seq)`` identifies an arc uniquely."""
     G = nx.DiGraph()
     node_at: Dict[tuple, int] = {}
+    next_seq: Dict[Hashable, int] = {}
 
     def node(pt):
         key = (round(pt[0], snap_decimals), round(pt[1], snap_decimals))
@@ -971,12 +1014,159 @@ def edges_to_digraph(edges, step_meters: float = 5.0, snap_decimals: int = 3) ->
     for eid, coords in edges:
         pts = _densify(coords, step_meters)
         prev = node(pts[0])
-        for k, p in enumerate(pts[1:]):
+        k = next_seq.get(eid, 0)
+        for p in pts[1:]:
             cur = node(p)
             if cur != prev:
                 G.add_edge(prev, cur, road_id=eid, seq=k)
+                k += 1
             prev = cur
+        next_seq[eid] = k
     return G
+
+
+def parts_from_matching(M: set, LA: nx.DiGraph, LB: nx.DiGraph) -> List[dict]:
+    """Edge-level **parts** of a segment-mode matching (docs §11): one dict per maximal run of
+    consecutive A-arcs (by ``seq`` along their input edge) matched to the same B input edge,
+    ordered along each A edge. Re-entry into a B edge yields separate parts. The **route's own
+    begin/end non-overlap** (terminal stall runs, where B stops advancing because the A edge
+    extends past the B coverage) is emitted as separate rows with ``part_type`` ``"head"`` /
+    ``"tail"``; matched parts are ``"match"`` and exclude the overhang pairs. Per row: the covered
+    A span (``a_from_m``/``a_to_m``), pair/arc counts, mean/max midpoint drift, mean circular
+    bearing difference, and the used B span with its non-overlapping ``b_head_m``/``b_tail_m``
+    leftovers. Requires the line-graph nodes to carry ``road_id``/``seq`` (attached by the DuckDB
+    pipeline) and ``length`` (attached by :func:`line_digraph`); raises ``ValueError`` otherwise
+    (point-mode matchings have no arc bookkeeping to aggregate)."""
+    def positions(L):
+        by_road: Dict[Hashable, list] = {}
+        for n, d in L.nodes(data=True):
+            if "road_id" not in d or "seq" not in d or "length" not in d:
+                raise ValueError("parts_from_matching needs 'road_id'/'seq'/'length' node "
+                                 "attributes (segment-mode pipeline line graphs)")
+            by_road.setdefault(d["road_id"], []).append((int(d["seq"]), float(d["length"])))
+        pos, tot = {}, {}
+        for rid, arcs in by_road.items():
+            arcs.sort()
+            c = 0.0
+            for seq, ln in arcs:
+                if (rid, seq) in pos:            # would silently corrupt every span on this road
+                    raise ValueError(f"duplicate (road_id, seq) = ({rid!r}, {seq}) -- arc ids must "
+                                     "be unique per road (see edges_to_digraph)")
+                pos[(rid, seq)] = (c, c + ln)
+                c += ln
+            tot[rid] = c
+        return pos, tot
+
+    apos, atot = positions(LA)
+    bpos, btot = positions(LB)
+
+    def circ(a, b):
+        d = abs(float(a) - float(b)) % 360.0
+        return min(d, 360.0 - d)
+
+    pairs_by_road: Dict[Hashable, list] = {}
+    for sa, sb in M:
+        da, db = LA.nodes[sa], LB.nodes[sb]
+        pairs_by_road.setdefault(da["road_id"], []).append(dict(
+            a_seq=int(da["seq"]), dest_id=db["road_id"], b_seq=int(db["seq"]), b_node=sb,
+            dist_m=math.hypot(da["x"] - db["x"], da["y"] - db["y"]),
+            bear=circ(da["bearing"], db["bearing"])))
+
+    def chain_order(group, prev_node):
+        """Order one A-arc's pairs along B. (V1)-(V3) make the arc's matched B-arcs a directed
+        chain in ``LB``, so walk it — a continuation of ``prev_node`` first, then successors.
+        Ordering by ``dest_id`` instead would compare ids, not geometry (``"10" < "2"``)."""
+        by_node = {p["b_node"]: p for p in group}
+        if len(by_node) < len(group):                       # not a simple chain: keep it stable
+            return sorted(group, key=lambda p: (str(p["dest_id"]), p["b_seq"]))
+        starts = [n for n in by_node if not any(m in by_node for m in LB.predecessors(n))]
+        if prev_node is not None:                           # continue the previous arc's B chain
+            cont = ([n for n in by_node if n == prev_node]
+                    or [n for n in by_node if LB.has_edge(prev_node, n)])
+            starts = cont or starts
+        if len(starts) != 1:
+            return sorted(group, key=lambda p: (str(p["dest_id"]), p["b_seq"]))
+        out, cur = [], starts[0]
+        while cur is not None and cur in by_node:
+            out.append(by_node.pop(cur))
+            nxt = [m for m in LB.successors(cur) if m in by_node]
+            cur = nxt[0] if len(nxt) == 1 else None
+        if by_node:                                         # unreachable leftovers: not one chain
+            return sorted(group, key=lambda p: (str(p["dest_id"]), p["b_seq"]))
+        return out
+
+    rows: List[dict] = []
+    for rid, prs in sorted(pairs_by_road.items(), key=lambda kv: str(kv[0])):
+        prs.sort(key=lambda p: (p["a_seq"], str(p["dest_id"]), p["b_seq"]))
+        ordered, prev_node, i = [], None, 0
+        while i < len(prs):                      # within one A-arc: walk B's chain, continuing first
+            j = i
+            while j < len(prs) and prs[j]["a_seq"] == prs[i]["a_seq"]:
+                j += 1
+            group = chain_order(prs[i:j], prev_node)
+            ordered.extend(group)
+            prev_node = group[-1]["b_node"]
+            i = j
+
+        # Route-terminal stall runs -> head/tail non-overlap rows (docs §11.1): consecutive
+        # begin/end A-arcs all matched to ONE B-arc mean B is not advancing there; the surplus
+        # arcs (all but the geometrically true one) are the A-side overhang.
+        bkey = lambda p: (p["dest_id"], p["b_seq"])
+        n = len(ordered)
+        hi = 0
+        while hi < n and bkey(ordered[hi]) == bkey(ordered[0]):
+            hi += 1
+        tj = n
+        while tj > 0 and bkey(ordered[tj - 1]) == bkey(ordered[-1]):
+            tj -= 1
+        head: List[dict] = []
+        tail: List[dict] = []
+        if hi <= tj:                             # hi > tj: one single stall for the whole edge
+            pre = sorted({p["a_seq"] for p in ordered[:hi]})
+            if len(pre) > 1:
+                head = [p for p in ordered[:hi] if p["a_seq"] != pre[-1]]
+            suf = sorted({p["a_seq"] for p in ordered[tj:]})
+            if len(suf) > 1:
+                tail = [p for p in ordered[tj:] if p["a_seq"] != suf[0]]
+        core = ordered[len(head):n - len(tail)]
+
+        runs: List[list] = []
+        for p in core:                           # split the core into maximal same-dest runs
+            if runs and runs[-1][-1]["dest_id"] == p["dest_id"]:
+                runs[-1].append(p)
+            else:
+                runs.append([p])
+
+        # The rows partition the A edge: an arc whose pairs straddle two runs (a mid-arc advance
+        # across a B junction) belongs to the earlier one, so a running cursor sets every a_from.
+        emit = ([(head, "head")] if head else []) + [(r, "match") for r in runs] \
+            + ([(tail, "tail")] if tail else [])
+        cursor = min(apos[(rid, p["a_seq"])][0] for p in ordered) if ordered else 0.0
+        for k, (run, ptype) in enumerate(emit, start=1):
+            dest = run[0]["dest_id"]
+            a_from = cursor
+            a_to = max(cursor, max(apos[(rid, p["a_seq"])][1] for p in run))
+            cursor = a_to
+            b_segs = tuple(sorted({int(p["b_seq"]) for p in run}))
+            b_from = min(bpos[(dest, p["b_seq"])][0] for p in run)
+            b_to = max(bpos[(dest, p["b_seq"])][1] for p in run)
+            dists = [p["dist_m"] for p in run]
+            rows.append(dict(
+                source_id=rid, part=k, part_type=ptype, dest_id=dest,
+                a_from_m=a_from, a_to_m=a_to, a_len_m=a_to - a_from,
+                a_pct=100.0 * (a_to - a_from) / atot[rid] if atot[rid] > 0 else 0.0,
+                n_pairs=len(run),
+                n_a_arcs=len({p["a_seq"] for p in run}),
+                n_b_arcs=len(b_segs),
+                drift_m=float(np.mean(dists)), drift_max_m=float(max(dists)),
+                bearing_diff_deg=float(np.mean([p["bear"] for p in run])),
+                b_from_m=b_from, b_to_m=b_to, b_len_m=btot[dest],
+                b_head_m=b_from, b_tail_m=btot[dest] - b_to,
+                # The B segments this run ACTUALLY matched. b_from/b_to are only their min/max, so a
+                # run with a gap reads as claiming the whole span between — callers that need the real
+                # claim (e.g. per-segment exclusivity) must use this, not the extent.
+                b_segs=b_segs))
+    return rows
 
 
 # ---------------------------------------------------------------------------------------
@@ -1222,13 +1412,16 @@ def check_backward_v2(A: nx.DiGraph, B: nx.DiGraph):
     return check_rules(_one_sided(A, sources, "B", "bpB"), A, B)[1]
 
 
-def check_split_exits(A: nx.DiGraph):
+def check_split_exits(A: nx.DiGraph, B: nx.DiGraph):
     """The §4.1a invariant, after :func:`forward`: for every split, (i) at least one exit cell
-    survives (non-``forbidden``), (ii) **every** child links to **every** surviving exit, and (iii) no
-    child links to a forbidden cell. Returns the violations ``[(split, exit_or_None, child, why)]`` —
-    empty ⇒ the forward table's split structure is (V3)-consistent. *(Deliberately NOT*
-    :func:`check_forward_v3`: *its independent per-sink decode wrongly flags two different-but-valid
-    surviving options; multiple surviving exits are legitimate, docs §4.1a.)*"""
+    survives (non-``forbidden``), (ii) **every** surviving exit is **usable** by **every** child —
+    the child can stall on it or advance out of it (:func:`_feasible_links`; feasibility, not
+    optimality — a child's cheapest row not *linking* an exit is legitimate, the extraction chooses
+    among survivors), and (iii) no child's row links to a forbidden cell. Returns the violations
+    ``[(split, exit_or_None, child, why)]`` — empty ⇒ the forward table's split structure is
+    (V3)-sound. *(Deliberately NOT* :func:`check_forward_v3`: *its independent per-sink decode
+    wrongly flags two different-but-valid surviving options; multiple surviving exits are
+    legitimate, docs §4.1a.)*"""
     bad = []
     for s in A.nodes:
         children = list(A.successors(s))
@@ -1239,11 +1432,12 @@ def check_split_exits(A: nx.DiGraph):
         if not survivors:
             bad.append((s, None, None, "no surviving exit"))
             continue
+        forbidden = set(pc) - survivors
         for ch in children:
-            linked = _links(A, ch, s)
-            for v in survivors - linked:
-                bad.append((s, v, ch, "surviving exit not linked by child"))
-            for v in linked - survivors:
+            usable = _feasible_links(A, B, ch, s)
+            for v in survivors - usable:
+                bad.append((s, v, ch, "surviving exit unusable by child"))
+            for v in _links(A, ch, s) & forbidden:
                 bad.append((s, v, ch, "child links a forbidden cell"))
     return bad
 
@@ -1340,10 +1534,20 @@ if __name__ == "__main__":
                           for e, c in sorted(cand.items(), key=lambda kv: kv[1]["E"]))
         print(f"  seg {s} -> {cells}")
 
-    # tree guard: a diamond (reconvergence) must be rejected
+    # reconvergent sources are SUPPORTED (docs §7): a subdivided diamond matches end-to-end
+    An = {"S": (0, 0), "s1": (4, 0), "J": (8, 0), "x": (12, 3), "z": (12, -3),
+          "m": (16, 0), "t1": (20, 0), "T": (24, 0)}
+    Ae = [("S", "s1"), ("s1", "J"), ("J", "x"), ("J", "z"), ("x", "m"), ("z", "m"),
+          ("m", "t1"), ("t1", "T")]
+    Ad = digraph(An, Ae)
+    Bd = digraph({k + "'": (v[0], v[1] + 0.4) for k, v in An.items()},
+                 [(a + "'", b + "'") for a, b in Ae])
+    M, _ = match_dag(Ad, Bd, r=4.0)
+    print(f"\ndiamond source matched: {len(M)} pairs (reconvergent DAGs are supported)")
+
+    # the guard that remains: a directed CYCLE in the source is rejected
     try:
-        prepare(digraph({0: (0, 0), 1: (1, 1), 2: (1, -1), 3: (2, 0)},
-                        [(0, 1), (0, 2), (1, 3), (2, 3)]), B, r=20.0)
-        print("\nERROR: diamond was NOT rejected")
+        prepare(digraph({0: (0, 0), 1: (10, 0)}, [(0, 1), (1, 0)]), B, r=20.0)
+        print("ERROR: cyclic source was NOT rejected")
     except NotADAG as e:
-        print(f"\ndiamond correctly rejected: {e}")
+        print(f"cyclic source correctly rejected: {e}")

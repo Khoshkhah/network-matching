@@ -188,10 +188,23 @@ polyline densified at `step_meters` — this supplies the required subdivision; 
 become junctions). Matching runs at **segment resolution** (arc states with a `bearing_weight`
 heading term, default 2.0). Output is the Mode-1-style pair:
 
-- **`dag_summary`** — one row per A-edge: `dest_ids` (ordered `;`-join), `n_dest`, `n_pairs`,
-  `avg_dist_m`, `match_type` (`1:1` / `1:N_ROUTE`).
+- **`dag_summary`** — one row per A-edge: `dest_ids` (ordered `;`-join), `n_dest`, `n_parts`,
+  `n_pairs`, `avg_dist_m`, `avg_bearing_diff`, `match_type` (`1:1` / `1:N_ROUTE`).
 - **`dag_long`** — one row per matched (A-edge, B-edge): `seq` (order along the A-edge),
-  `n_pairs` (matched arc pairs), `avg_dist_m` (mean midpoint drift, meters).
+  `n_pairs` (matched arc pairs), `avg_dist_m` (mean midpoint drift, meters), `avg_bearing_diff`.
+
+Pass `parts=True` for the third table, **`dag_parts`** — the per-edge decomposition into
+contiguous **parts** (one row per stretch of the A-edge matched to one B-edge, in order, re-entry
+kept separate), plus a dedicated row for the route's begin and end **non-overlap** when the
+A-edge extends past the B coverage (`part_type` = `head` / `match` / `tail`, also summarized as
+`a_head_m`/`a_tail_m` on `dag_summary`): `a_from_m/a_to_m` span along A, per-part `n_pairs`,
+`drift_m` and `bearing_diff_deg` scores, and the used B span `b_from_m/b_to_m` with the
+non-overlapping `b_head_m`/`b_tail_m` leftovers — everything needed to compose a whole-edge
+score your own way (see [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) §11):
+
+```python
+dag_long, dag_summary, dag_parts = m.match_dag(alpha=0.5, beta=1.5, parts=True)
+```
 
 **Standalone `networkx` API** — plain `DiGraph` inputs whose nodes carry projected `x, y` in
 meters, no DuckDB involved; the source must be **subdivided** (≥ 1 interior point per real edge):

@@ -30,10 +30,12 @@ freeing**. Everything upstream is unchanged: `prepare`, the forward table with i
 
 ## 1. The Space — the Cell DAG, Swept in Reverse
 
-The DP runs on the **surviving cells**: cells that are non-`forbidden`, have `D < ∞`, and pass the
-§5.2 sink-reachability pre-pass (the forward table's role is exactly this pruning — nothing else
-of it is read). Edges are §5.0's three moves (cover / stall / advance), restricted to surviving
-cells.
+The DP runs on the **surviving cells**: cells that have `D < ∞` and pass the §5.2
+sink-reachability pre-pass (the forward table's role is exactly this pruning — nothing else of it
+is read). The `forbidden` flag is **role-aware** (§4.1a): a flagged cell may not be a **run END**
+(no END-state rows, no attachment from a child, no sink seed), but it stays in the space as a
+cover through-cell — runs may pass through it on the way to a legal end. Edges are §5.0's three
+moves (cover / stall / advance), restricted to surviving cells.
 
 * **Order**: one **reverse topological order of the cells** — by §5.0's grading this is "A's layer
   order reversed, refined inside each row by a reverse topological order of `B[cand(X)]`". Every

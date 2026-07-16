@@ -68,7 +68,7 @@ A.nodes[a]["cand"] = {
         "D": float,               # forward cost -- inf until §4.1 fills it
         "bpD": list,              # back-pointer cells: [] | [(p, x_p), ...] | [(a, v')]
         "B": float, "bpB": list,  # diagnostic backward mirror (§6b) -- untouched here
-        "forbidden": bool}        # §4.1a flag: no pointer may target a True cell
+        "forbidden": bool}        # §4.1a role-aware flag: a True cell cannot be a run END
     for v in cand(a)              # ONLY the radius-gated candidates
 }
 ```
@@ -121,24 +121,28 @@ Every argmin above breaks **exact-cost ties** by one fixed total order on B's ve
 
 Filled independently, two children of a split can link back to **different** cells of the split — a (V3) break the forward sum cannot see (each `min_v D` places the split wherever is cheapest *for that branch alone*; summing such minima can put one vertex in two places at once — a phantom no matching realizes). The coupling closes this **during the build**, in the §4.0 layer order. It acts on **cells, never on vertices**, so it is identical in both modes and indifferent to how many parents a child has.
 
-Each cell carries a **`forbidden`** flag: once set, **no back-pointer may link to that cell** — every place the recurrence reads a neighbour cell (advance source, stall source, same-row coverage source) skips it. Per split `a`, children `a₁, a₂, …` (one layer):
+Each cell carries a **`forbidden`** flag — **role-aware**: once set, the cell can no longer be a **run END**, so every place a NEIGHBOUR row attaches to it (advance source, stall source) skips it; it remains a legal same-row **coverage source**, because a within-row cover step merely passes through the cell on the way to the run's real end. Per split `a`, children `a₁, a₂, …` (one layer):
 
 1. **Build** each child's row with the recurrence, skipping forbidden cells.
-2. **Forbid non-shared exits.** As each child completes — *including the first* — mark forbidden every cell of `a` it does **not** link to. Allowed exits = `∩ᵢ links(aᵢ)`.
-3. **Rebuild whole rows.** A newly-forbidden cell is dead for **all** siblings, past and future; every earlier child that linked it re-runs its **entire row** under the current flags (the within-row (H) chains make a single-cell patch impossible).
-4. **Iterate to the fixed point** — a rebuilt row may re-link to an exit some sibling doesn't share; the forbidden set grows monotonically, so at most `|cand(a)|` rounds.
+2. **Forbid unusable exits.** As each child completes — *including the first* — mark forbidden every cell of `a` the child **cannot use**: no β-stall entry (the cell is not among the child's own candidates) *and* no advance entry (no B-arc from the cell into any of the child's candidates). Allowed exits = `∩ᵢ feasible(aᵢ)` (`_feasible_links`) — a **feasibility** intersection, never an optimality one. Which exits a child's *cheapest* row happens to link (`_links`, its optimal back-pointers) is no ground to kill an exit: the coupling is **pruning** for the §5 extraction, and the extraction optimizes over the survivors itself. *(The earlier rule — forbid whatever the child's optimal row did not link — could empty a split that had a valid warping: each child's cheap private entries forbade the one shared cell, monotonically and irrecoverably. Counterexample pinned in `tests/test_dag_couple_feasibility.py`.)*
+3. **Rebuild whole rows.** A newly-forbidden cell is dead for **all** siblings, past and future; every earlier child whose row **linked** it re-runs its **entire row** under the current flags (the within-row (H) chains make a single-cell patch impossible) — the rebuild keeps back-pointers off dead cells; it no longer decides what dies.
+4. **Iterate to the fixed point** — feasibility per (child, split) is static, so the forbidden set grows monotonically and settles in at most `|cand(a)|` rounds; rebuilds only restore row/bp consistency under the final flags.
 
-At the fixed point **every surviving exit of every split is linked by all its children** — each surviving option is (V3)-valid; keeping several options is legitimate (the extraction chooses among them). If a split's exits empty out, there is no V3-valid warping inside the gate: raise the feasibility error (*increase `match_radius_m`*).
+At the fixed point **every surviving exit of every split is usable by all its children** — each surviving option admits a (V3)-valid attachment; keeping several options is legitimate (the extraction chooses among them). If a split's exits empty out, some child has **no entry from any exit cell** — no cell can serve as the split's **run end** inside the gate: raise the feasibility error (*increase `match_radius_m`*).
 
-Worked trace — split `a`, children `a₁, a₂`, `cand(a) = {v₁, v₂, v₃}`:
+> **The flag is role-aware.** `forbidden` means "**not a valid run END**" — never "not a valid place". V3 binds only the cell a vertex's run *stops* on (§3: the rule is vacuous for a cell the vertex itself continues past), so a cell no child can follow may still be **required** as the split's run *entry/interior*, with the coverage chain walking on to a usable end (canonical case: continuity from the parent forces the run to enter at exactly that cell — pinned in `tests/test_dag_role_aware_forbid.py`). Enforcement is therefore split by role: a flagged cell takes **no attachment** (advance/stall source for a neighbour row, END-state row, sink seed) but remains a legal **coverage source** and reachability through-cell. Historical note: enforcing the flag in every role turned feasible instances infeasible and displaced optima (4/120 random tree cases, worst +24%, 1 spurious raise — under the old optimality rule identically, which forbade a strict superset).
+>
+> **Open (deeper, pre-existing): validity-blind contraction in §5.** `extract_cell` keeps only the *cheapest* row per pending-signature before the terminal `check_rules` judge; on **cyclic** targets a cheap-but-V1-invalid row can evict the valid row sharing its signature → spurious "no valid root row" or a displaced optimum (~2% of adversarial random cases; both enforcement variants; the role change nets 18+1 vs 22+3 per 900). Repro + dissections: `scripts/repro_contraction_eviction/`. Fix direction: validity-aware or top-K contraction. Related: the diagnostic engines (`extract_join`, two-table/reciprocity) still treat cover-through-flagged pointers as severed and disagree with the primary engine on the run-through family — diagnostic-only, but permanent until aligned.
+
+Worked trace — split `a`, children `a₁, a₂`, `cand(a) = {v₁, v₂, v₃}`, `a₁` able to use `{v₁, v₂}`, `a₂` only `{v₁}`:
 
 | round | event | forbidden | allowed |
 |---|---|---|---|
-| 1 | `a₁` links `{v₁,v₂}` → forbid `v₃` | `{v₃}` | `{v₁,v₂}` |
-| 1 | `a₂` links `{v₁}` → forbid `v₂` | `{v₂,v₃}` | `{v₁}` |
-| 2 | `a₁` had linked `v₂` → rebuild `a₁`'s row (skips `v₂,v₃`) → re-links via `v₁` → fixed point | `{v₂,v₃}` | **`{v₁}`** |
+| 1 | `a₁` can use `{v₁,v₂}` → forbid `v₃` | `{v₃}` | `{v₁,v₂}` |
+| 1 | `a₂` can use `{v₁}` → forbid `v₂` | `{v₂,v₃}` | `{v₁}` |
+| 2 | `a₁`'s row had **linked** `v₂` → rebuild `a₁`'s row (skips `v₂,v₃`) → its pointers re-route via `v₁` → fixed point | `{v₂,v₃}` | **`{v₁}`** |
 
-**Invariant** (`check_split_exits`): every surviving exit of every split is linked by every child, none links a forbidden cell, survivors non-empty.
+**Invariant** (`check_split_exits(A, B)`): every surviving exit of every split is usable by every child, no child's row links a forbidden cell, survivors non-empty.
 
 *(Implemented as `forward(A, B, α, β)` — this IS the algorithm's forward pass; the name is historical. `forward()` is the uncoupled recurrence, kept only for the §6 diagnostics.)*
 
@@ -415,3 +419,73 @@ DAG sources it is a judged cross-check even within its family (§7).
 
 The engines cross-validate: `match_dag(engine="all")` runs both and returns the cheapest valid
 `M`; `value == C(M)` is self-checked.
+
+## 11. Edge-Level Outputs — `dag_long`, `dag_summary`, `dag_parts`
+
+The DuckDB pipeline (`DuckDBMapMatcher.match_dag`) aggregates the arc-level matching `M` back to
+**input-edge level**. Three tables:
+
+- **`dag_long`** — one row per (A-edge, B-edge) the matching connects: `source_id, dest_id, seq,
+  n_pairs, avg_dist_m, avg_bearing_diff`. Note this grain *collapses re-entry*: if a route leaves
+  a B-edge and later returns to it, both visits land in one row.
+- **`dag_summary`** — one row per A-edge: `source_id, dest_ids, n_dest, n_parts, n_pairs,
+  avg_dist_m, avg_bearing_diff, match_type` (`1:1` / `1:N_ROUTE`).
+- **`dag_parts`** (returned when `parts=True`) — the full per-edge decomposition, one row per
+  **part**.
+
+### 11.1 Parts
+
+A **part** is a maximal run of consecutive A-arcs (by `seq` along the A-edge) matched to the
+same B-edge. Parts are ordered along the A-edge (`part` = 1, 2, …); the same `dest_id` may appear
+in more than one part (re-entry). When a single A-arc matches two B-edges (an advance across a
+B-junction mid-arc), the arc closes the current part and opens the next — within one arc, pairs
+are ordered by walking B's chain, continuing the previous part's B-edge first (ordering by
+`dest_id` would compare *ids*, not geometry: `"10" < "2"`).
+
+**The rows partition the A-edge.** `a_from_m`/`a_to_m` are contiguous and non-overlapping across
+an edge's rows, and span it end to end — so `Σ a_len_m` is the A-edge's length and `Σ a_pct` is
+100. An arc whose pairs straddle two parts is attributed wholly to the **earlier** one (its
+pairs still count in both parts' `n_pairs` and scores; only the *span* is assigned once).
+
+**Non-overlap at the route's begin/end (`part_type`).** Every A-arc is matched by (V4), so an
+A-edge that starts before or ends after what B covers cannot show a *gap* — instead its terminal
+arcs **stall**: several consecutive A-arcs at the edge's begin/end all match the same single
+B-arc (B does not advance). The decomposition detects these terminal stall runs and emits the
+surplus arcs (all but the geometrically true one) as their own rows with `part_type = "head"` /
+`"tail"`; the matched parts between them are `part_type = "match"` and their scores exclude the
+overhang pairs. On A-edges interior to a larger source DAG, a `head`/`tail` row means B did not
+advance across the edge boundary (an N:1 compression) rather than a true network overhang.
+
+| column | meaning |
+|---|---|
+| `source_id`, `part`, `part_type`, `dest_id` | A-edge, 1-based part order along it, `match`/`head`/`tail`, matched B-edge |
+| `a_from_m`, `a_to_m`, `a_len_m`, `a_pct` | span of the A-edge covered by this part (meters along A / % of A's length) |
+| `n_pairs` | matched (A-arc, B-arc) pairs in the part |
+| `n_a_arcs`, `n_b_arcs` | distinct arcs on each side |
+| `drift_m`, `drift_max_m` | mean / max midpoint distance over the part's pairs (pure geometry — the `bearing_weight` term is never mixed in) |
+| `bearing_diff_deg` | mean circular bearing difference over the part's pairs |
+| `b_from_m`, `b_to_m`, `b_len_m` | used span along the B-edge, and the B-edge's total length |
+| `b_head_m`, `b_tail_m` | the **non-overlapping** begin/end of the B-edge: `b_from_m` and `b_len_m − b_to_m` — the parts of B before/after the used span |
+
+### 11.2 Reading the table
+
+- **A-side non-overlap** is in the `head`/`tail` rows (and summarized per edge as
+  `dag_summary.a_head_m`/`a_tail_m`); **B-side non-overlap** is in `b_head_m`/`b_tail_m` — for
+  the route as a whole, the B network before the entry point is the first part's `b_head_m` and
+  the B network after the exit is the last part's `b_tail_m`.
+- **Whole-edge scores are yours to compose.** The natural aggregate over the `match` parts is
+  the length-weighted mean, e.g. `edge_drift = Σ(a_len_m · drift_m) / Σ(a_len_m)` and likewise
+  for `bearing_diff_deg`; or gate per part first (`drift_m ≤ τ`) and score
+  `matched_pct = Σ(a_len_m | pass) / A-length`, discounting by `a_head_m + a_tail_m`.
+- **Consistency:** `Σ n_pairs` over an edge's rows (all `part_type`s) equals
+  `dag_summary.n_pairs`; `dag_summary.n_parts` counts the `match` rows; `Σ a_len_m` is the
+  A-edge's length (§11.1). An edge whose entire matching is a single stall run — B never advances
+  at all — is left as one `match` part (there is no interior to separate a head/tail from).
+- **Arc identity.** `edges_to_digraph` numbers arcs per input edge id, gapless, **continuing
+  across rows that share an id** (a multipart geometry exported as several rows), so
+  `(road_id, seq)` is unique. Hand-built line graphs violating that raise `ValueError` rather
+  than silently corrupting spans.
+
+The standalone helper is `dag_dtw.parts_from_matching(M, LA, LB)` (segment mode only): it
+requires the line-graph nodes to carry `road_id`/`seq` (attached by the pipeline) and `length`
+(attached by `line_digraph`), and returns the rows as plain dicts.
