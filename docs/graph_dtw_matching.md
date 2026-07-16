@@ -56,8 +56,13 @@ predecessor of point `b_j` is `b_{j-1}`. Graph-DTW replaces that line with a **d
   vertices* (one per incident edge), **not** merged into one shared vertex. Keeping the owning
   edge in the vertex — hence in the DP state — is what makes the route unambiguous at a junction:
   a state is never "at the junction", it is "at edge `u`'s end" or "at edge `w`'s start". This
-  also makes a **U-turn impossible** — an edge that only *ends* at a junction has no arc leaving
-  it, so the path can flow *through* a junction but never dip onto a side edge and return.
+  also makes a **side-edge U-turn impossible** — an edge that only *ends* at a junction has no arc
+  leaving it, so the path can flow *through* a junction but never dip onto a side edge and return.
+  It does **not** forbid the hairpin onto an edge's own **reverse twin**: `end(u) → start(twin(u))`
+  is a legitimate head-to-tail arc, because the twin starts exactly where `u` ends. Measured on
+  Sundbyberg: 18 routes ride an edge and then immediately its own twin (2 of them at <5 m drift,
+  passing every gate silently). Excluding the twin arc requires a B-side twin map; until then this
+  is a known false-positive mode, not a structural guarantee.
 
 So the single predecessor `b_{j-1}` becomes "**any graph-predecessor** `u` of vertex `v`", and a
 matched point on either side is either an original **node** (point-to-point) or a **projection**
@@ -365,7 +370,8 @@ network map via [`scripts/graph_dtw_map.py`](../scripts/graph_dtw_map.py).
 - A road's two travel directions are **separate directed edges** in B, so no reverse/backward
   arcs are synthesized: A matches whichever twin agrees with its direction, traversed `forward`.
 - Each vertex carries its owning edge (`vert_edge`), so the route is unambiguous at junctions and
-  a **U-turn onto a side edge is structurally impossible**.
+  a **U-turn onto a side edge is structurally impossible**. A hairpin onto an edge's own **reverse
+  twin** is *not* excluded by this argument and does occur (see §2) — it needs a twin map to forbid.
 - The warping path spans the entire A-edge, but `overlap_pct` is the A-length share of the
   **overlap part** — it drops below 100% wherever A's ends pile up on the route's first/last
   B-arc/vertex (see §4.1). Match distance is the other primary quality signal. (`trim_ends_m`,
