@@ -240,3 +240,47 @@ def test_match_dag_default_return_unchanged(matcher):
         assert col in dag_long.columns
     for col in ("source_id", "dest_ids", "n_dest", "n_pairs", "avg_dist_m", "match_type"):
         assert col in dag_summary.columns
+
+
+def test_parts_resolution_trim_drops_the_entry_walk():
+    """The B-side dual of the A-overhang: at a route hand-off the entry vertex 'walks' from the
+    junction cell to where the edge actually lies via a 1:N coverage run. Those cells are route
+    connectivity, not correspondence — per A-vertex, a covered cell is a CLAIM only within one
+    step (along-track) of the vertex's nearest cell. Two lines tiling one street both claimed the
+    whole arc through exactly this."""
+    A = edges_to_digraph([("e", [(30, 2), (60, 2)])], step_meters=5.0)
+    B = edges_to_digraph([("b", [(0, 0), (60, 0)])], step_meters=5.0)
+    LA, LB = line_digraph(A), line_digraph(B)
+    for (u, v) in LA.nodes:
+        LA.nodes[(u, v)]["road_id"], LA.nodes[(u, v)]["seq"] = A[u][v]["road_id"], A[u][v]["seq"]
+    for (u, v) in LB.nodes:
+        LB.nodes[(u, v)]["road_id"], LB.nodes[(u, v)]["seq"] = B[u][v]["road_id"], B[u][v]["seq"]
+    a_by = {LA.nodes[n]["seq"]: n for n in LA.nodes}
+    b_by = {LB.nodes[n]["seq"]: n for n in LB.nodes}
+    M = {(a_by[k], b_by[6 + k]) for k in range(6)}           # the true 1:1 correspondence
+    M |= {(a_by[0], b_by[j]) for j in range(6)}              # the entry WALK: a0 covers b0..b5 too
+    parts = [p for p in parts_from_matching(M, LA, LB) if p["part_type"] == "match"]
+    assert len(parts) == 1
+    p = parts[0]
+    assert p["b_segs"] == tuple(range(5, 12))                # walk cells gone; the ONE-step
+    assert p["b_from_m"] == pytest.approx(25.0, abs=1e-6)    # boundary cell is kept inclusively —
+    assert p["b_to_m"] == pytest.approx(60.0, abs=1e-6)      # a claim reaches at most one step
+    assert p["drift_m"] == pytest.approx(2.5, abs=0.3)       # past the vertex's nearest cell
+    assert p["n_pairs"] == 7
+
+
+def test_parts_resolution_trim_keeps_legit_adjacent_coverage():
+    """A vertex genuinely covering its neighbour cell (same lateral offset, one step along) is a
+    real claim — the trim's boundary is inclusive at exactly one step, so it must survive."""
+    A = edges_to_digraph([("e", [(0, 3), (10, 3)])], step_meters=5.0)
+    B = edges_to_digraph([("b", [(0, 0), (10, 0)])], step_meters=5.0)
+    LA, LB = line_digraph(A), line_digraph(B)
+    for (u, v) in LA.nodes:
+        LA.nodes[(u, v)]["road_id"], LA.nodes[(u, v)]["seq"] = A[u][v]["road_id"], A[u][v]["seq"]
+    for (u, v) in LB.nodes:
+        LB.nodes[(u, v)]["road_id"], LB.nodes[(u, v)]["seq"] = B[u][v]["road_id"], B[u][v]["seq"]
+    a_by = {LA.nodes[n]["seq"]: n for n in LA.nodes}
+    b_by = {LB.nodes[n]["seq"]: n for n in LB.nodes}
+    M = {(a_by[0], b_by[0]), (a_by[0], b_by[1]), (a_by[1], b_by[1])}
+    parts = [p for p in parts_from_matching(M, LA, LB) if p["part_type"] == "match"]
+    assert parts[0]["b_segs"] == (0, 1)                      # the adjacent covered cell survives
