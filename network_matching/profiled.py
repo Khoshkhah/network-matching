@@ -23,7 +23,7 @@ from typing import Dict, Hashable, List, Tuple
 
 import networkx as nx
 
-from .dag_dtw import INF, _b_order, layer_order
+from .dag_dtw import INF, _b_order, check_rules, layer_order
 
 Profile = frozenset          # frozenset of (split_vertex, cell) pairs
 
@@ -315,8 +315,21 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
         if not joined:
             raise ValueError("profiled join: no jointly reachable profile across sinks")
 
-    cost, picks = min(joined.values(), key=lambda r: r[0])
-    cells = _flood(A, picks)
-    M = {(a, v) for a, run in cells.items() for v in run}
-    committed = {a: sorted(run, key=str)[0] for a, run in cells.items()}
-    return M, committed, cost
+    # Terminal judge (docs §6.4). The profile enforces V3 and the recurrence enforces V2, but V1 is
+    # NOT covered: on a cyclic B a run can revisit a B-vertex, and the per-profile contraction keeps
+    # only the cheapest row, so a cheap-but-V1-invalid row can hide a valid costlier one -- the same
+    # validity-blind contraction as scripts/repro_contraction_eviction. Taking the single minimum
+    # returned an invalid matching on 169/900 random trees over cyclic B. Trying candidates
+    # cheapest-first gives the judge the other profiles as fallbacks.
+    verts = set(A.nodes)
+    for cost, picks in sorted(joined.values(), key=lambda r: r[0]):
+        cells = _flood(A, picks)
+        M = {(a, v) for a, run in cells.items() for v in run}
+        if {a for a, _ in M} != verts:                       # V4: every vertex must be placed
+            continue
+        v1, v2, v3 = check_rules(M, A, B)
+        if v1 or v2 or v3:
+            continue
+        committed = {a: sorted(run, key=str)[0] for a, run in cells.items()}
+        return M, committed, cost
+    raise ValueError("profiled join: no valid root row -- increase match_radius_m")
