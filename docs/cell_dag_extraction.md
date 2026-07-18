@@ -452,16 +452,54 @@ hourglass edges, of each pair of concurrently-open merges, how many are cone-dis
 number bounds what Fix 1 alone buys. Exact by construction (an identity on additive, independent
 terms).
 
-### 8.2 Fix 2 — forward-table pruning of merge cells
+### 8.2 Fix 2 — forward-table pruning of merge cells (vetted 2026-07-17)
 
-`prepare`/`forward` already give every cell a bound `D`. A candidate cell of a merge whose
-**best-case completion exceeds a cheap global upper bound** (e.g. the cost of any one greedy
-matching) can never lie on the optimum, so it is **dropped before it ever enters `pending`**. This
-does not change the exponent but shrinks the **base**: a 45-cell merge pruned to a handful turns
-`45·45·14` into something small. Exact (only provably-suboptimal cells removed), cheap, and it
-**composes** with Fix 1 (fewer cells per surviving factor). Lands regardless of the disjoint/nested
-split. Measurement (§8.5) makes it **essential, not optional**: the all-coupled edge `100350`
-(`77 000`) is invisible to Fix 1 (`1×`), and only base-shrinking touches it — so Fix 2 goes first.
+**Admissible branch-and-bound.** `prepare`/`forward` already give every cell a forward cost `D`. Drop
+a MERGE candidate cell (`A.in_degree(m) ≥ 2` — the only cells that widen `pending`) whose lower bound
+already exceeds a real matching's cost, because no optimal matching can use it. Shrinks the **base** of
+the product (`45·45·14` → a small product) without changing the exponent; **composes** with Fix 1 and
+is the **only** lever for the all-coupled tail (§8.5: `100350` is invisible to Fix 1 but Fix 2 gives
+32×), so it goes first.
+
+**Mechanism.**
+
+- **Lower bound `LB(m,v) = D[m][v]`** — the forward cost *alone* (see "why not `D+B−E`" below).
+- **Upper bound `UB` = the incumbent's cost** — a real valid matching from `extract_join` (the §10
+  junction-join engine, which has *no* pending blow-up and returns in ~0 ms even on the worst edge):
+  `UB = _cost_of(A,B, extract_join(A,B,α,β)[0], α,β)`. On any `extract_join` `ValueError`, `UB = ∞` ⇒
+  block nothing (a degenerate incumbent is a no-op, never a corruption).
+- **Block** every merge cell with `D[m][v] < ∞` **and** `D[m][v] > UB + ε`, **inside**
+  `_cell_reachable`'s reverse BFS (a `blocked` param at its three add-sites) so the single `seen` set
+  stays internally consistent; everything downstream reads `seen` unchanged.
+- **Default off** (`prune=False` on `extract_cell`/`match_dag`): shipped behaviour is bit-identical
+  until the gate (§8.4/§7) is green.
+
+**Exactness — the prune never removes an optimal cell.** Let `M*` be the optimum and `c* = C(M*)`. For
+any cell `(m,v)` used by `M*`:
+
+1. **`D[m][v] ≤ c*`.** `D[m][v]` is a valid *floor* on the cost of any matching that uses `(m,v)`: the
+   forward recurrence divides each predecessor's contribution by that predecessor's **out**-degree
+   (`dag_dtw.py:318`, `:230` — the §6.1 `/outdeg` phantom), so it **under**-counts, `D ≤ true cost`.
+   `M*` uses `(m,v)`, hence `c* = C(M*) ≥ D[m][v]`.
+2. **`c* ≤ UB`.** `UB` is a real valid matching's cost and `c*` is the *cheapest* valid cost, so
+   `c* ≤ UB` (the gate invariant `C(cell) ≤ C(join)`, 384/384).
+
+Chaining, **`D[m][v] ≤ c* ≤ UB`** for every optimal cell, so the block predicate `D[m][v] > UB` is
+**false on every optimal cell** — only provably-suboptimal cells are removed. Blocking merely deletes
+whole rows/signature-classes from `seen`; it never alters a surviving row (rows are built from
+`seen`/interfaces/inbox), and every competitor it removes routed through a blocked cell (cost
+`≥ D > UB ≥ c*`), so none can undercut `M*`. The cheapest-valid-first selection returns the identical
+`M*` — bit-parity with the un-pruned run.
+
+**Why `D` alone, not `D+B−E`.** The first draft used `D[m][v] + B[m][v] − E[m][v]` (forward + backward,
+minus the doubly-counted emission). Two independent adversarial refutations killed it with executed
+counterexamples (15/7997 hard `ValueError`s on articulation merges): gluing the forward run (which
+*ends* at `v`) to the backward run (which *starts* at `v`) with a single `−E` **over**-counts whenever
+`M`'s true run for `m` spans more than one cell (any `α<1` coverage run), so `D+B−E` can *exceed* `c*`
+— violating step 1 and pruning the optimum. `D` alone can only *under*-count (the phantom), so step 1
+is a **theorem**, not an assumption. `D+B−E` stays permanently out. Sound tightening if `D`-only is
+ever too loose: `LB = max(D[m][v], B[m][v])` — the max of two independently-valid floors, no gluing —
+which needs `backward()` and a re-run of the gate.
 
 ### 8.3 Alternative considered — sink-cell labeling (conditional)
 
@@ -534,3 +572,18 @@ component.
   composes with Fix 1 everywhere (shrinks each surviving factor).
 * **Sink-labeling (§8.3) is measured unsafe on this target.** Funnels are present on nearly every
   merge (3/3 on three of four edges), so the funnel-free precondition fails.
+
+**Fix 2 effectiveness (D-only LB vs the `extract_join` incumbent).** The incumbent `UB` is obtained in
+**~0 ms** on every blow-up edge (`extract_join` has no pending product), and `D > UB` removes cells:
+
+| edge | `UB` | merge cells kept | product | Fix 2 |
+|---|---|---|---|---|
+| 102752 | 909 | 45→39, 45→39, 14→5 | 28 350 → 7 605 | 4× |
+| 100350 | 339 | 25→5, 55→22, 56→22 | 77 000 → 2 420 | **32×** |
+| 100042 | 402 | 16→4, 17→4, 29→11 | 7 888 → 176 | 45× |
+| 100341 | 410 | 19→12, 19→13, 20→5 | 7 220 → 780 | 9× |
+
+The load-bearing row is **`100350`**: Fix 1 gives `1×` there (all merges coupled), Fix 2 gives **32×**,
+confirming Fix 2 is the tail's only lever. Fix 2 is weakest exactly where Fix 1 is strongest (102752:
+4× vs Fix 1's 42×) and strongest where Fix 1 is weakest — and the two **compose** on the surviving
+factors. The `D`-only pruning is exact (§8.2 proof).
