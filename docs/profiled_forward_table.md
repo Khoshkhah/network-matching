@@ -146,6 +146,43 @@ Nothing about the structure changes — only the names. This is what the hourgla
 
 `S = ∅ ⇒ the design is a no-op` — no conflicts exist, every profile is `frozenset()`, and `D̂ ≡ D`.
 
+### 1.1c The list of profiles at one cell
+
+> The keys of `Dp` at cell `(a,v)` are **every distinct placement of `a`'s live ancestor splits under
+> which `(a,v)` is reachable**. Each key stores the **cheapest** cost achieving that placement.
+
+Same cell, same `(a,v)` — different assumptions about what happened upstream. A real dump, `btree(3)`,
+cell `(ruuu_m, ruud')`, whose live ancestor splits are `r`, `ru`, `ruu` (so width 3):
+
+```
+   cost   9.5919   when   r->r',  ru->ru',      ruu->ruu'
+   cost  10.5119   when   r->r',  ru->ruu_m',   ruu->ruu'
+   cost  10.6897   when   r->r',  ru->ru',      ruu->ruud_m'
+   cost  11.6096   when   r->r',  ru->ruu_m',   ruu->ruud_m'
+   cost  13.4415   when   r->r',  ru->ru',      ruu->ruud'
+        …  14 rows in total …
+   cost  32.1958   when   r->r',  ru->ru',      ruu->ru'
+   cost  34.8018   when   r->r',  ru->ru_m',    ruu->ru'
+
+   min over the list = 9.5919   <- exactly what D holds (§2.1)
+```
+
+* **Count** = the cell's *multiplicity*. Bounded by `∏` over live ancestor splits of `|cand(split)|`,
+  minus every combination that is unreachable or inconsistent — here `1 × 3 × 5 = 15` possible, 14
+  survive.
+* **`r` appears in every row** with the same value: only one of its cells survived §4.1a's pruning.
+  A split with one surviving exit contributes a constant, not a branching factor.
+* **The rows are not alternatives to choose between locally.** `9.5919` is what this cell costs *if*
+  the rest of the matching also puts `ru` on `ru'` and `ruu` on `ruu'`.
+
+**Why every row is kept.** Suppose a sibling branch elsewhere in `A` can only be matched with
+`ru->ru_m'`. Then this cell cannot use its cheapest row at `9.5919` — it must use `15.4950`, and the
+global optimum is the one that trades these off. Collapsing the list to its minimum (or to any single
+argmin) throws away the row the optimum needs; that is the failure §1's "never collapsed to a single
+argmin" refers to, and the reason `pending` exists in the engine this replaces.
+
+Reproduce with `report/probe_profile_list.py`.
+
 ### 1.2 Consistency
 
 Two profiles are **consistent** iff they agree on every key both name; a tuple is consistent iff
