@@ -656,42 +656,58 @@ confirming Fix 2 is the tail's only lever. Fix 2 is weakest exactly where Fix 1 
 factors. The `D`-only pruning is exact (§8.2 proof). But per §8.2's measured limitations, this lever is
 loose and not always available — so the coupled tail wants §8.6.
 
-### 8.6 Attack the coupling — the robust alternative (proposed)
+### 8.6 Attack the coupling — eliminate the coupled merge (proposed)
 
-The hard case is two merges that **interact**: `m₁` upstream, `m₂` downstream, joined by a through-path
-`P` (in the hourglass, `J_u` and `J_v`, joined by the waist). The blow-up carries all
-`|cand(m₁)| × |cand(m₂)|` of their cell-combinations to the root and multiplies them. But a combination
-`(m₁ = u, m₂ = v)` is only real when `P` can **warp from `u` to `v`** — and most pairs can't. So resolve
-the pair **at the path**, keeping only the feasible combinations, instead of carrying them all up.
+Fix 1 handles merges whose cones are disjoint. This handles the ones that are not: two merges joined by
+a path. It is **min-sum message passing on the source tree** — nothing more.
 
-**Algorithm** (two coupled merges). `m₁`'s cell is a **separator**: in a tree, deleting `m₁` cuts the
-graph, so everything below `m₁` connects to everything above only through `m₁`'s cell — which is what
-makes this exact.
+**Setup (graph theory).** Let the source tree $A$ have two merge vertices $m_1, m_2$ joined by a
+*through-path* $P$ (the degree-2 vertices strictly between them — in the hourglass, $J_u$ and $J_v$
+across the waist). For a merge $m$ let $\mathrm{cand}(m)$ be its **candidate cells** (the $B$-vertices
+it may pin to), and write $u \in \mathrm{cand}(m_1)$, $v \in \mathrm{cand}(m_2)$ for a choice at each.
 
-1. **`sub₂(v)`** — for each cell `v` of `m₂`, the best cost of `m₂` and everything below it, given
-   `m₂ = v`. (A table over `m₂`'s cells.)
-2. **`g(u) = min_v [ pathcost(u, v) + sub₂(v) ]`** — for each cell `u` of `m₁`; `pathcost(u, v)` is the
-   DTW cost of warping `P` from `u` to `v`, or `∞` if it can't. One `|cand(m₁)| × |cand(m₂)|` sweep.
-3. **Fold `g` into `m₁`** as one of its arms; `m₁` resolves normally. `m₂`'s pending is gone.
+Deleting $m_1$ from the tree splits $A$ into $P$'s side — *below* $= \{P, m_2, \text{and } m_2\text{'s
+subtree}\}$ — and the rest, *above*. So $m_1$ is a **separator**: above and below meet only at $m_1$.
 
-`m₂` collapses into `g` at the path, so the two merges never coexist — the product is formed once
-(step 2) and never propagated. A chain of `k` merges costs `O(k·d²)` instead of `dᵏ` (`d` = max cells).
+**Cost decomposition.** The matching cost is a sum of per-vertex terms over $A$, so once the separator
+cells $u, v$ are fixed it splits into three independent parts:
 
-**Definitions.**
+$$
+C(u,v) \;=\; \mathrm{Above}(u) \;+\; \mathrm{Path}(u,v) \;+\; \mathrm{Below}(v),
+\qquad\qquad C^{*} = \min_{u,\,v}\, C(u,v),
+$$
 
-- **Variable elimination:** the variables are the merge **vertices**; each variable's **domain** is its
-  cells. Structure is vertex-level; computation (`sub₂`, `pathcost`, `g`) is cell-level. Any coupled
-  merge pair qualifies — not only `J_u`/`J_v`.
-- **Feasible `(u,v)`** ≡ `pathcost(u,v) < ∞`, read straight off `P`'s forward DTW (one pass per entry
-  `u`). Not a separate check.
-- **Integration:** a new discharge point — as the backward sweep walks `P` from `m₂` to `m₁`, fold
-  `m₂` into `g` and discharge its pending there, replacing §3.5's common-ancestor discharge (a tree has
-  none).
+where $\mathrm{Above}(u)$ is the least cost above $m_1$ given $m_1 = u$; $\mathrm{Path}(u,v)$ is the DTW
+cost of warping $P$ from $u$ to $v$ (and $= \infty$ when no warping exists); and $\mathrm{Below}(v)$ is
+the least cost below $m_2$ given $m_2 = v$.
 
-Unlike Fix 2, this is **exact by construction and needs no incumbent and no bound** (§8.2's two
-unreliable pieces).
+**What `extract_cell` does now.** It keeps $m_2$'s cell open until a common ancestor of $m_2$'s arms
+discharges it (§3.5). A tree has no such ancestor above the waist, so $v$ survives to the root and the
+pending carries *every* $(u,v)$ jointly. Measured on line 102752: **5,087** carried pairs — against
+**99** for a lone merge.
 
-**Scope & first step.** The two-merge chain is exact. Three-plus coupled merges, or branching between
-them, is the general **junction-tree** case (cost = the coupling graph's treewidth) — the real open
-design. Validate first: measure how sparse `pathcost` is on the slow edges' coupled pairs. Sparse ⇒ the
-product collapses and it's worth designing; dense ⇒ rethink.
+**The idea — eliminate $v$ at the waist.** $\mathrm{Above}(u)$ does not depend on $v$, so the inner
+$\min$ over $v$ moves inward:
+
+$$
+C^{*} \;=\; \min_{u}\Big[\, \mathrm{Above}(u) \;+\; \underbrace{\min_{v}\big(\mathrm{Path}(u,v) + \mathrm{Below}(v)\big)}_{\textstyle \mu(u)} \,\Big].
+$$
+
+The bracketed term $\mu(u) = \min_{v}\big[\mathrm{Path}(u,v) + \mathrm{Below}(v)\big]$ is a **message**
+from $m_2$ to $m_1$: one value per cell $u$. It is the very $\min$ the root join already takes — moved
+to the waist. Building it is a single $|\mathrm{cand}(m_1)| \times |\mathrm{cand}(m_2)|$ sweep;
+afterwards $m_1$ carries a table of size $|\mathrm{cand}(m_1)|$, not the joint product. On 102752:
+**5,087 → 45**.
+
+The equality is exact because $m_1$ is a separator — this is min-sum message passing (variable
+elimination) on a tree. Operationally it is a **new discharge point**: eliminate $m_2$ (min over its
+cells, folded into $\mu$) the moment its cost is local — at the waist — instead of at the common
+ancestor a tree does not have. The $\mathrm{Path}(u,v) = \infty$ pairs drop out inside the $\min$; no
+separate feasibility test.
+
+**Complexity.** A chain of $k$ coupled merges, eliminated deepest-first (each into a message over the
+next), costs $O(k\,d^{2})$ with $d = \max_m |\mathrm{cand}(m)|$ — versus $d^{\,k}$ for the joint pending.
+
+**Scope.** Exact for the two-merge chain (a single separator). Three-or-more coupled merges, or
+branching between them, is general **junction-tree** message passing; its cost is the treewidth of the
+coupling graph — the open case.
