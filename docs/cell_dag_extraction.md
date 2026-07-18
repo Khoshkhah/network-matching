@@ -434,7 +434,10 @@ line `102752`'s line-graph is 29 nodes with **3 concurrently-open merges** of 45
 (cProfile: `extract_cell` 18 s cumulative, `_fill` 8.4 s, `_pend_union` 5.9 s). The §7 wall, on
 trees — which is precisely the shape the hourglass always takes.
 
-Two **exact** fixes, composable; a third alternative rejected.
+Fix 1 (§8.1) and Fix 2 (§8.2) are exact and composable; §8.3 is a rejected alternative. Measurement
+(§8.5) then showed Fix 2 is only a *conditional* accelerator (loose bound, unreliable incumbent), which
+motivates §8.6 — **attacking the coupling directly**, the robust option that needs no incumbent and no
+bound.
 
 ### 8.1 Fix 1 — factor independent merges (`O(∏)` → `O(∑)`)
 
@@ -549,6 +552,22 @@ is a **theorem**, not an assumption. `D+B−E` stays permanently out. Sound tigh
 ever too loose: `LB = max(D[m][v], B[m][v])` — the max of two independently-valid floors, no gluing —
 which needs `backward()` and a re-run of the gate.
 
+**Measured limitations (2026-07-17) — Fix 2 is a *conditional* accelerator, not a dependable fix.** Two
+findings weaken it (correctness is never at risk — the answer is always `extract_cell`'s — but the
+*speedup* is loose and often unavailable):
+
+1. **The bound is one-sided.** `D[m][v]` covers only the *upstream* sub-DAG, while `UB` is a whole-DAG
+   cost. So `D > UB` fires only for cells whose upstream *alone* already exceeds a full matching — the
+   sink-side cells. Source-side cells have tiny `D` and never prune, *however tight `UB` is*. Measured:
+   `D`-only 4–45×, and `max(D,B)` only 6×/33×/49×/14× — it never shrinks the hard edges to a handful.
+2. **The incumbent is frequently missing.** `extract_join` is the min-frozen engine (§10); its
+   contraction can discard the label combination a feasible matching needs, so it fails even when one
+   exists. On a 2000-edge sample it failed on 601, of which **536 had a feasible matching it missed**
+   (~27% of all edges). On those, `UB = ∞` and Fix 2 prunes nothing.
+
+So Fix 2 helps only when the incumbent exists *and* the loose one-sided bound clears enough cells. That
+is why the coupled tail wants a different attack — §8.6.
+
 ### 8.3 Alternative considered — sink-cell labeling (conditional)
 
 **The idea (proposed during design).** Key the dedup on the cells assigned to the **sink vertices**
@@ -634,4 +653,38 @@ component.
 The load-bearing row is **`100350`**: Fix 1 gives `1×` there (all merges coupled), Fix 2 gives **32×**,
 confirming Fix 2 is the tail's only lever. Fix 2 is weakest exactly where Fix 1 is strongest (102752:
 4× vs Fix 1's 42×) and strongest where Fix 1 is weakest — and the two **compose** on the surviving
-factors. The `D`-only pruning is exact (§8.2 proof).
+factors. The `D`-only pruning is exact (§8.2 proof). But per §8.2's measured limitations, this lever is
+loose and not always available — so the coupled tail wants §8.6.
+
+### 8.6 Attack the coupling — the robust alternative (proposed)
+
+Fix 1 factors merges that **don't** interact. The hard case is the merges that **do**: `J_u` (source
+side) and `J_v` (sink side), joined by the **waist** `e` between them — `J_u`'s cell fixes where the
+waist *starts*, `J_v`'s cell fixes where it *ends*. Their `|cand(J_u)| × |cand(J_v)|` combinations are
+what the blow-up carries all the way to the root.
+
+**The idea, plainly.** A pair `(J_u = x, J_v = y)` is only real if there is a **valid waist run** from
+`x` to `y` — and for most pairs there isn't (you can't start the waist at `x` and end it at `y` for
+arbitrary `x, y`). So resolve the two merges **along the waist**, keeping only the pairs a real waist
+run connects. The product collapses to that handful of feasible pairs.
+
+**Why it's better than Fix 2.** It is **exact by construction** — it just enforces the waist constraint
+where the constraint lives (on the through-path) instead of deferring it to the root join. And unlike
+Fix 2 it needs **no incumbent and no bound** — the two things §8.2's limitations showed are unreliable.
+
+How the three approaches divide the work:
+
+| merge pair | Fix 1 | Fix 2 | attack the coupling |
+|---|---|---|---|
+| **independent** | product → **sum** | base-shrink (loose) | no effect (all pairs feasible) |
+| **coupled** | no effect | loose, conditional prune | product → **feasible pairs** |
+
+On 102752 (merges `45, 45, 14`; one `45` disjoint, the other `45` coupled to the `14`): Fix 1 factors
+the disjoint `45` off (`45·14 + 45 = 675`); attack-the-coupling then cuts the coupled `45·14 = 630`
+block to just the pairs with a feasible waist run — potentially tens. Together ≈ `(feasible pairs) + 45`.
+
+It is the **harder change** — a new join/discharge step inside `extract_cell` for tree-coupled merges
+(the §3.5 common-ancestor early discharge cannot fire on a tree, where arms share no ancestor).
+**Undesigned.** First step: measure, per coupled merge pair on the slow edges, how many `(J_u, J_v)`
+cell-pairs actually have a feasible waist run — if a handful, the product collapses hard and robustly;
+if still large, the idea needs rethinking.
