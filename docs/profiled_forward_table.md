@@ -170,35 +170,46 @@ So the substitution costs nothing and buys correctness. Reproduce with
 > The keys of `Dp` at cell `(a,v)` are **every distinct placement of `a`'s live ancestor splits under
 > which `(a,v)` is reachable**. Each key stores the **cheapest** cost achieving that placement.
 
-Same cell, same `(a,v)` — different assumptions about what happened upstream. A real dump, `btree(3)`,
-cell `(ruuu_m, ruud')`, whose live ancestor splits are `r`, `ru`, `ruu` (so width 3):
+Same cell — different assumptions about what happened upstream. A real dump from the smallest case
+that shows it, one split and one chain:
 
 ```
-   cost   9.5919   when   r->r',  ru->ru',      ruu->ruu'
-   cost  10.5119   when   r->r',  ru->ruu_m',   ruu->ruu'
-   cost  10.6897   when   r->r',  ru->ru',      ruu->ruud_m'
-   cost  11.6096   when   r->r',  ru->ruu_m',   ruu->ruud_m'
-   cost  13.4415   when   r->r',  ru->ru',      ruu->ruud'
-        …  14 rows in total …
-   cost  32.1958   when   r->r',  ru->ru',      ruu->ru'
-   cost  34.8018   when   r->r',  ru->ru_m',    ruu->ru'
+A:  a ──→ J ──→ c          J is the only split (outdeg 2)
+              └─→ d
+B:  u ──→ v ──→ w ──→ x
 
-   min over the list = 9.5919   <- exactly what D holds (§2.1)
+candidate cells of J :  u, v, w, x
+candidate cells of c :  w, x
 ```
 
-* **Count** = the cell's *multiplicity*. Bounded by `∏` over live ancestor splits of `|cand(split)|`,
-  minus every combination that is unreachable or inconsistent — here `1 × 3 × 5 = 15` possible, 14
-  survive.
-* **`r` appears in every row** with the same value: only one of its cells survived §4.1a's pruning.
-  A split with one surviving exit contributes a constant, not a branching factor.
-* **The rows are not alternatives to choose between locally.** `9.5919` is what this cell costs *if*
-  the rest of the matching also puts `ru` on `ru'` and `ruu` on `ruu'`.
+```
+cell (c, w)  holds 2 profiles:
+     cost   9.891   when   J ends on v
+     cost  11.953   when   J ends on w
+     min = 9.891    D = 9.891
 
-**Why every row is kept.** Suppose a sibling branch elsewhere in `A` can only be matched with
-`ru->ru_m'`. Then this cell cannot use its cheapest row at `9.5919` — it must use `15.4950`, and the
-global optimum is the one that trades these off. Collapsing the list to its minimum (or to any single
-argmin) throws away the row the optimum needs; that is the failure §1's "never collapsed to a single
-argmin" refers to, and the reason `pending` exists in the engine this replaces.
+cell (c, x)  holds 3 profiles:
+     cost   9.242   when   J ends on w
+     cost  14.764   when   J ends on x
+     cost  14.990   when   J ends on v
+     min = 9.242    D = 9.242
+```
+
+Read `(c, w)` as: *"pairing `c` with `w` costs 9.891 if `J`'s run ended on `v`, or 11.953 if it ended
+on `w`."* Same pairing, two prices, because the upstream differs.
+
+* **Count** = the cell's *multiplicity*. At most `∏` over live ancestor splits of `|cand(split)|`,
+  minus combinations that are unreachable — `J` has 4 candidate cells but only 2 of them can reach
+  `(c, w)`, so that cell holds 2 rows, not 4.
+* **`min` over the list is exactly `D`** (§2.1), as both cells show.
+* **The rows are not local alternatives.** `9.891` is what `(c, w)` costs *given* that the rest of the
+  matching also puts `J` on `v`. It is a conditional price, not an option.
+
+**Why every row is kept.** Suppose the sibling branch `d` can only be matched with `J` on `w`. Then
+`(c, w)` cannot use its cheapest row at 9.891 — it must use **11.953**, and the global optimum is
+whichever total is smallest once both branches are priced under the *same* placement of `J`.
+Collapsing this list to its minimum throws away the row the optimum needs. That is what §1's "never
+collapsed to a single argmin" means, and why `pending` exists in the engine this replaces.
 
 Reproduce with `report/probe_profile_list.py`.
 
