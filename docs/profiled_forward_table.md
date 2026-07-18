@@ -24,6 +24,31 @@ cells, which on the hourglass is the far cheaper of the two.
 
 ## 1. The Object
 
+### 1.0 Prerequisite — §4.1a stays
+
+This design **runs on top of** `dag_dtw_matching.md` §4.1a's forbid-and-rebuild coupling, it does not
+replace it. `forward()` still owns the `forbidden` flags; the profiled pass reads them and skips a
+forbidden cell wherever a row attaches to it, exactly as `_fill_row` does.
+
+The two operate at different levels and both are wanted:
+
+| | §4.1a coupling | this design |
+|---|---|---|
+| question | which exits can **no** child use? | which exit should **all** children take? |
+| evidence | transition existence (`_feasible_links`) — no DP values | cost per split placement |
+| effect | deletes impossible cells | prices the possible ones jointly |
+| cost | negligible | the profile table |
+
+Keeping §4.1a first is what makes the profiled pass cheap: it removes infeasible cells before any
+profile is built, so the candidate sets the fold ranges over are already trimmed. It also still owns
+the feasibility error — *"split `p`: no surviving V3 exit within `r`"* — which the profiled pass has no
+reason to re-derive.
+
+What §4.1a cannot do is choose among the exits it keeps, and §5.0 measures that gap: on the two slow
+hourglass edges every violation is a split whose 41–66 exits are feasible for **both** children, so
+the intersection removes nothing and each child links its own cheapest. That choice is what the
+profile prices.
+
 | field | today | here |
 |---|---|---|
 | `D[a][v]` | one value: min over all configs incl. phantoms — a lower bound | **`D̂[a][v][π]`** — min cost over consistent configs with upstream splits placed per `π` |
@@ -397,7 +422,7 @@ cap with refusal — the `max_rows` pattern — bounds memory to a diagnosable e
 
 | existing | relation |
 |---|---|
-| §4.1a forbid-and-rebuild | the **feasibility**-level version of this design: "every surviving split exit is usable by every child", no cost attached. This adds the cost dimension. Its standing rule — *a feasibility intersection, never an optimality one* — is why costs are held per profile rather than per cell (§1). |
+| §4.1a forbid-and-rebuild | **retained as a prerequisite, not replaced** (§1.0). It answers "which exits can no child use?"; this answers "which exit should all children take?". `forward()` keeps owning the `forbidden` flags and the feasibility error; the profiled pass reads them and prices what survives. Its standing rule — *a feasibility intersection, never an optimality one* — is also why costs are held per profile rather than per cell (§1). |
 | `pending` (`cell_dag_extraction.md` §2–3) | the same job keyed on merges instead of splits. §6.1 is a key swap; §5.2 measures the key spaces. |
 | §3.5 early discharge | the backward mirror of §1.3. Same idea, opposite direction: first common ancestor ↔ post-dominator. |
 | §8.6 inner-merge elimination | the same min-sum elimination, applied to one merge in the extraction. This applies it to every split in the forward pass. Composable; neither subsumes the other. |
