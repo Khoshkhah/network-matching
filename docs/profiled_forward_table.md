@@ -7,10 +7,10 @@
 | | |
 |---|---|
 | the gap it closes (§5.0) | the forward table is **V3-invalid on the two slow hourglass edges** (2 and 3 violations), valid on the other two and on all 10 synthetic cases |
-| gate (§7) | unit suite **198 passed**; envelope **384/384** cost parity; cyclic-B **731/731** with **0** invalid and **168** cases answered where `extract_cell` refuses; four hourglass edges all matching |
+| gate (§7) | **all green** — unit suite **198 passed**; envelope **384/384** cost parity; cyclic-B **731/731** with **0** invalid and **168** cases answered where `extract_cell` refuses; benchmark families parity; four hourglass edges all matching |
 | speed, real edges | `100350` **687.7 s → 0.44 s**; `100341` 33.4 s → 0.19 s; `102752` 30.0 s → 0.98 s |
 | memory (§1.4) | 3–14 MB per edge, everything retained (~279 B/row); no freeing lifecycle needed |
-| **known bad case (§5.1)** | a pure out-tree: nothing post-dominates, so no key discharges. `btree(4)` **dies** (`MemoryError`) where `extract_cell` takes 14 ms. The blow-up is in the **sink join**, not the forward table — see §6.1 |
+| **hard case (§5.1)** | a pure out-tree: nothing post-dominates, so no key ever discharges and widths grow with depth. `btree(4)` costs 2.3 s where `extract_cell` takes 14 ms — slower, but correct and bounded since the §6.1 elimination (it previously died with `MemoryError`) |
 
 Today's forward table (`dag_dtw_matching.md` §4.1) minimises over **all** upstream configurations,
 including phantoms — a vertex placed on two cells at once, courtesy of the `1/outdeg` split
@@ -448,10 +448,12 @@ winning chain during reconstruction — re-evaluating one cell's `fill()` is che
 by `1 + |Bpred(v)|`, ≤ ~64 tuples at `indeg 3`). That keeps the smaller half and recomputes the
 larger. Not worth building until a measurement demands it.
 
-**The cap does not yet bound memory.** `forward_profiled(max_profiles=…)` refuses when one *cell*
-exceeds the limit, but the out-tree blow-up (§5.1) is **aggregate across cells** — `btree(4)` peaks at
-~61 profiles per cell against a 50 000 cap, so the guard never fires. A global row budget is what is
-needed; until then the refusal is not a memory bound.
+**What the caps do and do not bound.** `forward_profiled(max_profiles=…)` refuses when one *cell*
+exceeds the limit, and `extract_profiled(max_rows=…)` when one *factor* does. Neither bounds the
+**aggregate** across cells: `btree(4)` peaks at ~61 profiles per cell against a 50 000 cap, so that
+guard never fires. Since §6.1's elimination the aggregate is no longer the failure mode in practice
+— `btree(4)` completes in 27 MB — but a global row budget is still the only thing that would make the
+refusal a genuine memory bound.
 
 ---
 
@@ -684,16 +686,52 @@ for π in global_keys:                       # profiles live at the sinks
 **For a fixed `π` the sinks are independent** — that is the whole point of the key. The join is
 `O(|global_keys| × |sinks| × |cand|)`, with no product over sinks.
 
-> **Implementation gap — this is where `btree` dies.** `extract_profiled` folds the sinks one at a
-> time, merging profiles. Two sinks whose split-ancestries are **disjoint** never conflict, so every
-> pair merges successfully and the fold builds their **cross product** instead of minimising them
-> separately. On the hourglass (2 sinks sharing both splits) that is one component and costs nothing;
-> on `btree(4)` (16 sinks with largely disjoint ancestries) it is a 16-way product and exhausts memory
-> — while the forward table it reads is only 4.9 MB.
->
-> The fix is the same factoring as `cell_dag_extraction.md` §8.1: build a graph on sinks where an edge
-> means *shares a profile key*, take connected components, minimise each independently, and **sum**.
-> Disjoint sinks must never be crossed. Not yet implemented.
+**The join must eliminate keys, not fold sinks.** Each sink is a **factor** over its live splits,
+`f_t(π) = min_v D̂[t][v][π|t]`, and the answer is `min over π of Σ_t f_t`. Combining sinks *pairwise*
+keys the running table by the **union** of all their keys, and two sinks sharing no key always merge
+successfully — so a pairwise fold builds their **cross product**. On `btree(4)` that is 16 sinks and it
+exhausts memory, against a forward table of only 4.9 MB.
+
+> **A rejected fix, recorded because it looks right.** "Group sinks that share a key, minimise each
+> group independently, sum" does nothing on an out-tree: every `btree` sink descends from the root
+> split, which is never discharged, so all 16 sinks share that key, the sink graph is a clique, and
+> the grouping gives one component. Same product.
+
+Eliminate the **keys** instead:
+
+```
+for each split J, deepest first:
+    take only the factors that mention J
+    combine them                       (consistent pairs, costs summed)
+    minimise J out                     → one factor over the remaining keys
+```
+
+Deepest-first is what bounds it: when `J` is eliminated the only key its factors still share is `J`'s
+**parent** split, so intermediate factors are bounded by the tree's **depth**, not by its total split
+count — `btree(4)` has 15 splits and depth 4.
+
+| | pairwise fold | key elimination |
+|---|---|---|
+| `btree(3)` extraction | 0.763 s · 57.46 MB | **0.003 s · 0.27 MB** |
+| `btree(4)` extraction | **MemoryError** (>4 GB) | **0.278 s · 26.89 MB** |
+| hourglass | unchanged | unchanged |
+
+**`keep` — top-K, and why it is a tunable not a constant.** The elimination retains the `keep`
+cheapest rows per key rather than only the minimum, so the terminal judge (§6.4) still has fallbacks
+for V1. This is the *"validity-aware or top-K contraction"* that
+`scripts/repro_contraction_eviction/README.md` asks for. Swept over 600 cyclic-B cases:
+
+| `keep` | cost parity | cases answered where `extract_cell` raises |
+|---|---|---|
+| 4 | 487/487 | 94 |
+| 8 | 487/487 | 107 |
+| **32** *(default)* | 487/487 | **112** |
+| 128 | 487/487 | 112 |
+
+**Parity is unaffected at every value** — `keep` never changes correctness, only how many cases the
+old engine refuses that this one can still answer, and that **saturates at 32**. Treat that as a
+measured plateau, not a proven bound: a pathological input could need more, and the failure mode is a
+refusal rather than a wrong answer.
 
 **Measured size** (same four edges, §5.2):
 
