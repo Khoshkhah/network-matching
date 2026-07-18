@@ -104,25 +104,42 @@ hard match grows the cheap dimension.
 
 ### 1.4 What a cell stores
 
-**Where it lives.** `prepare()` already gives every A-vertex a table of candidate cells, and each cell
-record holds `E`, `D`, `bpD`, `forbidden`. This design adds **one more field on that same record**:
+**The whole structure**, top to bottom. Everything except the last line already exists — this design
+adds exactly one key, `Dp`.
 
 ```
-A.nodes[a]              vertex a's attributes
-         ["cand"]       its candidate cells        (built by prepare())
-                [v]     the record for cell (a, v)
-                   ["D"]     existing — ONE float:  what this cell costs
-                   ["Dp"]    new      — A DICT:     what it costs per profile
+A                                    the source graph (networkx DiGraph)
+│
+└── .nodes[a]                        one A-vertex's attribute dict
+    │
+    ├── "x", "y"                     its position                       (point + segment)
+    ├── "bearing", "length"          segment-mode only                  (line_digraph)
+    ├── "road_id", "seq"             provenance, when the caller sets it
+    │
+    └── "cand"                       ITS CANDIDATE B-VERTICES  — built by prepare(),
+        │                            gated to those within `r` of `a`.  Each key here
+        │                            is one CELL (a, v).
+        │
+        └── [v]                      the record for cell (a, v)
+            │
+            ├── "E"          float   emission cost of pairing a with v
+            ├── "D"          float   forward cost   — ONE number
+            ├── "bpD"        list    its back-pointers
+            ├── "B", "bpB"           the backward (diagnostic) table
+            ├── "forbidden"  bool    §4.1a: not a valid run END
+            │
+            └── "Dp"         dict    ← ADDED BY THIS DESIGN
+                └── [profile] → (cost, bp)
 ```
 
-So `cand[v]` gains one key:
+**Why `"cand"` is its own level.** `A.nodes[a]` is networkx's attribute dict and already holds the
+vertex's geometry. B-vertex names are arbitrary — plain strings in point mode (`"s'"`, `"J0'"`) and
+**tuples** in segment mode (`("s'", "J0'")`) — so putting cells directly in `A.nodes[a]` would let a
+B-vertex named `x`, `y`, `bearing` or `length` silently overwrite the geometry, and would mix string
+attribute keys with tuple cell keys in one dict. Keeping them under `"cand"` also makes the candidate
+set a unit: `len(cand)` is the cell count, `for v in cand` sweeps cells, `v in cand` tests membership.
 
-```
-cand[v] = {"E": …, "D": …, "bpD": …, "forbidden": …,      # unchanged
-           "Dp": { profile : (cost, bp) }}                 # added
-```
-
-**What is in it.** One entry per profile:
+**What `Dp` holds.** One entry per profile:
 
 | | |
 |---|---|
@@ -131,8 +148,8 @@ cand[v] = {"E": …, "D": …, "bpD": …, "forbidden": …,      # unchanged
 | `bp` | `[(vertex, cell, profile), …]` — where the value came from |
 
 `D` answers *"what does this cell cost?"* with a single number. `Dp` answers *"what does it cost
-**given where the upstream splits are placed**?"* — one number per placement. Everything else about
-the cell record is untouched.
+**given where the upstream splits are placed**?"* — one number per placement. Nothing else on the
+record changes, and `forward()` keeps filling `D`/`bpD`/`forbidden` exactly as before (§1.0).
 
 `bp` holds one triple per predecessor (advance/stall), or a **single same-vertex triple** for an
 α-coverage step — the same convention `bpD` uses, so the move type is read off *whose* vertex appears.
