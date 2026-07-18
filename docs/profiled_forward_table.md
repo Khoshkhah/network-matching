@@ -83,8 +83,40 @@ The branches need **not** rejoin. `cell_dag_extraction.md` §6.1's phantom has `
 separate sinks with disjoint descendants and is still invalid, because a matching assigns every vertex
 one run *globally*. Any definition of `S` requiring a reconvergence point misses it.
 
-A **profile** `π` is a partial map `s ↦ cell` over `S ∩ ancestors(a)`, minus whatever has been
-discharged (§1.3). `S = ∅ ⇒ the design is a no-op` — no conflicts exist and `D̂ ≡ D`.
+### 1.1a The format of a profile `π`
+
+A profile is a **`frozenset` of `(split_vertex, B_cell)` pairs** — one pair per split that is still
+live at this cell. It reads as *"this split's run ends on that B-vertex"*.
+
+```python
+frozenset({ ('r',  "r'"),          # split  r  ends on B-vertex  r'
+            ('ru', "ru_m'") })     # split  ru ends on B-vertex  ru_m'
+```
+
+| | |
+|---|---|
+| left of each pair | an **A**-vertex with `outdeg ≥ 2`, i.e. a member of `S` |
+| right of each pair | a **B**-vertex — the cell that split's run **ends** on (§2: run *end*, not entry) |
+| how many pairs | `|S ∩ ancestors(a)|` minus everything discharged (§1.3) — the **width** |
+| `frozenset()` | legal and common: no splits upstream, or all of them discharged |
+
+`frozenset` rather than `dict` for two reasons: it is **hashable**, so it can key the `Dp` dict; and it
+is **order-independent**, so two rows that agree on the same placements collide correctly during
+contraction regardless of the order the keys were added.
+
+**Segment mode looks alarming but is the same thing.** On a line graph every vertex name is itself a
+`(u, v)` tuple, so both halves of each pair become tuples:
+
+```python
+frozenset({ (('ru_m', 'ru'), ("r'", "ru_m'")) })
+#            └─ A-segment ─┘  └─ B-segment ─┘
+#            the split                       its run ends on this B-segment
+```
+
+Nothing about the structure changes — only the names. This is what the hourglass uses, which is why
+`102752`'s profiles print as nested tuples.
+
+`S = ∅ ⇒ the design is a no-op` — no conflicts exist, every profile is `frozenset()`, and `D̂ ≡ D`.
 
 ### 1.2 Consistency
 
@@ -151,7 +183,7 @@ set a unit: `len(cand)` is the cell count, `for v in cand` sweeps cells, `v in c
 
 | | |
 |---|---|
-| `profile` | `frozenset` of `(split_vertex, cell)` pairs — where the upstream splits sit |
+| `profile` | `frozenset` of `(split_vertex, B_cell)` pairs — where the upstream splits sit (format: §1.1a) |
 | `cost` | `float` — the value of this row |
 | `bp` | `[(vertex, cell, profile), …]` — where the value came from |
 
