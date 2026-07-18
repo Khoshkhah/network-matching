@@ -183,6 +183,53 @@ argmin" refers to, and the reason `pending` exists in the engine this replaces.
 
 Reproduce with `report/probe_profile_list.py`.
 
+### 1.1d The life of a profile key — born, carried, merged, discharged
+
+A key is **not** created at a source and carried unchanged to the end. It is **born at a split** and
+**dies at that split's post-dominator**. Exactly four events touch a profile, and nothing else does:
+
+| event | where | effect on `π` |
+|---|---|---|
+| **born** | at a split `a ∈ S` | add `(a, v)` — this run ends on `v` |
+| **carried** | any vertex that is neither a split nor a discharge point | unchanged — literally the *same object* (§1.4) |
+| **run-end moves** | an α-coverage step at a split | the split's own pair is **overwritten**, `(a,v') → (a,v)` |
+| **merged** | at a merge | the arms' profiles must **agree**; union if they do, the pair is dropped if not (§1.2) |
+| **discharged** | at a post-dominator of `s` | remove `s` — nothing downstream can contradict it (§1.3) |
+
+Traced on `diamond_chain(2)`, `s → J0 → {x0,z0} → m0 → t0 → J1 → {x1,z1} → m1 → t1`, splits
+`{J0, J1}`:
+
+```
+vertex  in/out   role                                  profiles at one cell
+     s    0/1    source                                {}
+    J0    1/2    SPLIT — key born                      {J0@s'}
+    x0    1/1    carries parent's profile              {J0@J0'}, {J0@s'}
+    z0    1/1    carries parent's profile              {J0@J0'}, {J0@s'}
+    m0    2/1    MERGE (arms agree) + DISCHARGE J0     {}
+    t0    1/1    nothing live                          {}
+    J1    1/2    SPLIT — key born                      {J1@m0'}
+    x1    1/1    carries parent's profile              {J1@J1'}, {J1@t0'}
+    z1    1/1    carries parent's profile              {J1@J1'}, {J1@t0'}
+    m1    2/1    MERGE + DISCHARGE J1                  {}
+    t1    1/0    nothing live                          {}
+```
+
+Read it as a lifetime: `J0`'s key exists **only between `J0` and `m0`**. Below `m0` it is gone, so
+`J1`'s key is the only one live in the second diamond — the width never reaches 2. That is why
+`diamond_chain(400)` runs in 0.5 s while `btree(4)` dies: on a tree nothing post-dominates, so no key
+is ever discharged and they accumulate to the sinks.
+
+`x0` holding **two** profiles is §1.1c in miniature: `J0`'s run can end on `J0'` *or* on `s'`, and
+`x0` is reachable under either, so it stores a row for each.
+
+> **Contrast with a source-cell profile.** There a key is born at a source, is fixed at birth, and
+> never dies — so the width is the source count and only grows. Here a key appears at a split, tracks
+> that split's run end, and is deleted the moment it can no longer be contradicted. The lifetime is
+> what keeps the table small (§5.1), and it is the substantive difference between the two designs
+> beyond the correctness argument in §1.1b.
+
+Reproduce with `report/probe_profile_life.py`.
+
 ### 1.2 Consistency
 
 Two profiles are **consistent** iff they agree on every key both name; a tuple is consistent iff
