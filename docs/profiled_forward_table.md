@@ -83,6 +83,54 @@ The branches need **not** rejoin. `cell_dag_extraction.md` §6.1's phantom has `
 separate sinks with disjoint descendants and is still invalid, because a matching assigns every vertex
 one run *globally*. Any definition of `S` requiring a reconvergence point misses it.
 
+### 1.1a The format of a profile `π`
+
+A profile is a **`frozenset` of `(A_split, B_vertex)` pairs** — one pair per split still live at this
+cell. Each pair **is a cell**: it reads *"this split's run ends on that B-vertex"*.
+
+Writing A-vertices as `J…` and B-vertices as `b…` to keep the two apart:
+
+```python
+frozenset({ ('J1', 'b4'),     # split J1's run ends on B-vertex b4
+            ('J2', 'b9') })   # split J2's run ends on B-vertex b9
+```
+
+| | |
+|---|---|
+| left of each pair | an **A**-vertex with `outdeg ≥ 2`, i.e. a member of `S` |
+| right of each pair | a **B**-vertex — where that split's run **ends** (§2: run *end*, not entry) |
+| the pair itself | one **cell** `(A_split, B_vertex)` — "cell" always means such a pair |
+| how many pairs | `|S ∩ ancestors(a)|` minus everything discharged (§1.3) — the **width** |
+| `frozenset()` | legal and common: no splits upstream, or all of them discharged |
+
+> **Reading the dumps in this doc.** The examples below are printed from the benchmark families in
+> `scripts/extract_cell_dag.py`, which build **congruent** A and B graphs and name each B-vertex by
+> appending an apostrophe to its A counterpart. So `r` is an A-vertex and `r'` is the B-vertex lying
+> on top of it; `ru_m` is an A-vertex and `ru_m'` its B counterpart. The apostrophe is the *only*
+> thing distinguishing them. That convention is convenient for tests — the correct match is visually
+> obvious — but it makes profiles hard to read, so in prose this doc uses `J…`/`b…` instead.
+
+`frozenset` rather than `dict` for two reasons: it is **hashable**, so it can key the `Dp` dict; and it
+is **order-independent**, so two rows that agree on the same placements collide correctly during
+contraction regardless of the order the keys were added.
+
+**Segment mode looks alarming but is the same thing.** On a line graph every vertex name is itself a
+`(u, v)` tuple, so both halves of each pair become tuples:
+
+```python
+frozenset({ (('ru_m', 'ru'), ("r'", "ru_m'")) })
+#            └─ A-segment ─┘  └─ B-segment ─┘
+#            the split         where its run ends
+```
+Both halves are now `(u, v)` tuples because a line-graph vertex *is* an edge of the original graph.
+The left tuple is an A-segment (the split), the right is the B-segment its run ends on — the same
+`(A_split, B_vertex)` pair as above, with tuple-valued names.
+
+Nothing about the structure changes — only the names. This is what the hourglass uses, which is why
+`102752`'s profiles print as nested tuples.
+
+`S = ∅ ⇒ the design is a no-op` — no conflicts exist, every profile is `frozenset()`, and `D̂ ≡ D`.
+
 ### 1.1b Why splits, and not source cells
 
 The idea this design grew from was to label each cell with **which source cells it came from**. That
@@ -110,41 +158,6 @@ profile is twice as wide:
 
 So the substitution costs nothing and buys correctness. Reproduce with
 `report/probe_sources_vs_splits.py`.
-
-### 1.1a The format of a profile `π`
-
-A profile is a **`frozenset` of `(split_vertex, B_cell)` pairs** — one pair per split that is still
-live at this cell. It reads as *"this split's run ends on that B-vertex"*.
-
-```python
-frozenset({ ('r',  "r'"),          # split  r  ends on B-vertex  r'
-            ('ru', "ru_m'") })     # split  ru ends on B-vertex  ru_m'
-```
-
-| | |
-|---|---|
-| left of each pair | an **A**-vertex with `outdeg ≥ 2`, i.e. a member of `S` |
-| right of each pair | a **B**-vertex — the cell that split's run **ends** on (§2: run *end*, not entry) |
-| how many pairs | `|S ∩ ancestors(a)|` minus everything discharged (§1.3) — the **width** |
-| `frozenset()` | legal and common: no splits upstream, or all of them discharged |
-
-`frozenset` rather than `dict` for two reasons: it is **hashable**, so it can key the `Dp` dict; and it
-is **order-independent**, so two rows that agree on the same placements collide correctly during
-contraction regardless of the order the keys were added.
-
-**Segment mode looks alarming but is the same thing.** On a line graph every vertex name is itself a
-`(u, v)` tuple, so both halves of each pair become tuples:
-
-```python
-frozenset({ (('ru_m', 'ru'), ("r'", "ru_m'")) })
-#            └─ A-segment ─┘  └─ B-segment ─┘
-#            the split                       its run ends on this B-segment
-```
-
-Nothing about the structure changes — only the names. This is what the hourglass uses, which is why
-`102752`'s profiles print as nested tuples.
-
-`S = ∅ ⇒ the design is a no-op` — no conflicts exist, every profile is `frozenset()`, and `D̂ ≡ D`.
 
 ### 1.1c The list of profiles at one cell
 
@@ -295,7 +308,7 @@ set a unit: `len(cand)` is the cell count, `for v in cand` sweeps cells, `v in c
 
 | | |
 |---|---|
-| `profile` | `frozenset` of `(split_vertex, B_cell)` pairs — where the upstream splits sit (format: §1.1a) |
+| `profile` | `frozenset` of `(A_split, B_vertex)` pairs — where the upstream splits sit (format: §1.1a) |
 | `cost` | `float` — the value of this row |
 | `bp` | `[(vertex, cell, profile), …]` — where the value came from |
 
