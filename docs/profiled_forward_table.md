@@ -88,22 +88,22 @@ one run *globally*. Any definition of `S` requiring a reconvergence point misses
 A profile is a **`frozenset` of `(A_split, B_vertex)` pairs** — one pair per split still live at this
 cell. Each pair **is a cell**: it reads *"this split's run ends on that B-vertex"*.
 
-Concretely, for a source `A` with two live splits — call them `Jup` and `Jdn` — matched against a
-target `B` whose vertices are named `b0, b1, b2, …`:
+Following the notation used throughout these docs — **`a, b, c, p, m, J, X` are A-vertices; `u, v, w,
+x` are B-vertices** (as in `D[a][v]`, `bpD`'s `(p, x)` pairs, and coverage's `[(a, v')]`) — a cell
+with two live splits `J₁` and `J₂` holds profiles like:
 
 ```python
-frozenset({ ('Jup', 'b4'),     # the run of split Jup ends on B-vertex b4
-            ('Jdn', 'b9') })   # the run of split Jdn ends on B-vertex b9
+frozenset({ (J₁, u),      # the run of split J₁ ends on B-vertex u
+            (J₂, w) })    # the run of split J₂ ends on B-vertex w
 ```
 
-Every name here is an arbitrary identifier — `Jup`/`Jdn` are two distinct splits in `A`, `b4`/`b9`
-two distinct vertices in `B`. **Nothing is encoded in the names**; they carry no index, order or
-position. Real graphs use whatever identifiers their builder assigned (see the note below).
+The subscripts distinguish two splits and nothing more; `u` and `w` are two B-vertices. Real graphs
+use whatever identifiers their builder assigned (see the note below).
 
 | | |
 |---|---|
-| left of each pair | an **A**-vertex with `outdeg ≥ 2`, i.e. a member of `S` |
-| right of each pair | a **B**-vertex — where that split's run **ends** (§2: run *end*, not entry) |
+| left of each pair | an **A**-vertex with `outdeg ≥ 2`, i.e. a member of `S` (`J`, `a`, …) |
+| right of each pair | a **B**-vertex (`u`, `v`, `w`, …) — where that split's run **ends** (§2: run *end*, not entry) |
 | the pair itself | one **cell** `(A_split, B_vertex)` — "cell" always means such a pair |
 | how many pairs | `|S ∩ ancestors(a)|` minus everything discharged (§1.3) — the **width** |
 | `frozenset()` | legal and common: no splits upstream, or all of them discharged |
