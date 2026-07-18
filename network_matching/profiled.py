@@ -19,6 +19,7 @@ Entry points:
 """
 from __future__ import annotations
 
+import os
 from typing import Dict, Hashable, List, Tuple
 
 import networkx as nx
@@ -26,6 +27,8 @@ import networkx as nx
 from .dag_dtw import INF, _b_order, check_rules, layer_order
 
 Profile = frozenset          # frozenset of (split_vertex, cell) pairs
+SHIELD = os.environ.get("PROFILED_SHIELD") == "1"   # EXPERIMENT (docs §7.1): drop a key
+                                                   # once a nearer split shields it
 
 
 # ---------------------------------------------------------------------------------------
@@ -64,6 +67,48 @@ def postdom_drop(A: nx.DiGraph, S: set) -> Dict[Hashable, set]:
 
 _MERGE_CACHE: Dict[tuple, object] = {}                   # (p0, p1) -> merged profile or None
 _ABSENT = object()                                       # cache miss marker: None is a real result
+
+
+def shield_drop(A: nx.DiGraph, S: set) -> Dict[Hashable, set]:
+    """REFUTED experiment, kept because the idea is compelling (docs §7.1).
+
+    Premise: ``s`` is shielded at ``a`` when a nearer split ``s'`` lies on every path from ``s`` to
+    ``a``, so everything below ``s'`` depends on ``s`` only through ``s'`` and the key can be dropped.
+    That would make width 1 on a tree, and it does: profiles/cell go 14 -> 61 -> MemoryError at btree
+    depth 3/4/5 without it, and stay FLAT at 5 with it (btree(5): MemoryError -> 82 ms).
+
+    But it is WRONG, because ``Dp`` is cumulative over the whole upstream cone: cost(s -> a) is
+    already inside every descendant's value, scaled by the 1/outdeg fractions. Dropping ``s`` at
+    ``a``'s children lets them minimise it out INDEPENDENTLY, so they can pick different cells of
+    ``s`` while each carries half of the shared cost -- the phantom, one level up.
+
+    Measured on the 384-case envelope: 334/384 valid (was 384), parity 329/334, and the §6.2 sink-sum
+    identity itself breaks (333/334). Divergences up to +33%. EVERY failure is on the `deep`
+    structure, the only one with a split below a split; chain/ysplit/merge all pass, which is why a
+    handful of hand-picked cases looked clean. btree hides it too: its geometry is congruent and
+    symmetric, so independent minimisation happens to agree.
+
+    Making it sound needs a different recurrence -- one where ``Dp`` means "cost since the nearest
+    split" so each segment's cost belongs to exactly one factor -- not a change to the drop rule.
+    Enable with PROFILED_SHIELD=1 to reproduce the failure."""
+    out: Dict[Hashable, set] = {a: set() for a in A.nodes}
+    for s in S:
+        reach = nx.descendants(A, s) | {s}
+        H = A.subgraph(reach)
+        idom = nx.immediate_dominators(H, s)
+        for a in reach:
+            if a == s:
+                continue
+            x = idom.get(a)
+            while x is not None and x != s:
+                if x in S:
+                    out[a].add(s)
+                    break
+                nxt = idom.get(x)
+                if nxt is None or nxt == x:
+                    break
+                x = nxt
+    return out
 
 
 def _merge(p0: Profile, p1: Profile):
@@ -263,6 +308,9 @@ def forward_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     deg = {n: max(1, len(list(A.successors(n)))) for n in A.nodes}
     S = profiled_splits(A)
     drop = postdom_drop(A, S)
+    if SHIELD:
+        sh = shield_drop(A, S)
+        drop = {a: drop[a] | sh[a] for a in A.nodes}
     _MERGE_CACHE.clear()                                     # profiles are graph-local
     for a in order:
         _fill_row_profiled(A, B, a, S, drop[a], alpha, beta, border, deg, max_profiles)
