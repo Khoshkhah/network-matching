@@ -1,14 +1,16 @@
 # The Profiled Forward Table
 
-**Status:** design, not implemented. Standalone; merges into `dag_dtw_matching.md` §4 and
-`cell_dag_extraction.md` §8 once the gate (§7) is green.
+**Status:** implemented as `network_matching/profiled.py` (`forward_profiled` + `extract_profiled`),
+**not wired into `match_dag`** — nothing calls it yet. Standalone; merges into `dag_dtw_matching.md`
+§4 and `cell_dag_extraction.md` §8 when adopted.
 
-| measured | |
+| | |
 |---|---|
 | the gap it closes (§5.0) | the forward table is **V3-invalid on the two slow hourglass edges** (2 and 3 violations), valid on the other two and on all 10 synthetic cases |
-| state space (§5.2) | 36–70× smaller than the `pending` it replaces; largest win on `100350`, the edge where every previous fix failed |
-| extraction (§6.1) | a min over **≤234 keys across 2 sinks** — replaces the backward sweep, `pending`, and the inbox lifecycle |
-| memory (§1.4) | ~2–3 MB packed, everything retained; no freeing lifecycle needed |
+| gate (§7) | **all green** — unit suite **198 passed**; envelope **384/384** cost parity; cyclic-B **731/731** with **0** invalid and **168** cases answered where `extract_cell` refuses; benchmark families parity; four hourglass edges all matching |
+| speed, real edges | `100350` **687.7 s → 0.44 s**; `100341` 33.4 s → 0.19 s; `102752` 30.0 s → 0.98 s |
+| memory (§1.4) | 3–14 MB per edge, everything retained (~279 B/row); no freeing lifecycle needed |
+| **hard case (§5.1)** | a pure out-tree: nothing post-dominates, so no key ever discharges and widths grow with depth. `btree(4)` costs 2.3 s where `extract_cell` takes 14 ms — slower, but correct and bounded since the §6.1 elimination (it previously died with `MemoryError`) |
 
 Today's forward table (`dag_dtw_matching.md` §4.1) minimises over **all** upstream configurations,
 including phantoms — a vertex placed on two cells at once, courtesy of the `1/outdeg` split
@@ -24,6 +26,31 @@ cells, which on the hourglass is the far cheaper of the two.
 
 ## 1. The Object
 
+### 1.0 Prerequisite — §4.1a stays
+
+This design **runs on top of** `dag_dtw_matching.md` §4.1a's forbid-and-rebuild coupling, it does not
+replace it. `forward()` still owns the `forbidden` flags; the profiled pass reads them and skips a
+forbidden cell wherever a row attaches to it, exactly as `_fill_row` does.
+
+The two operate at different levels and both are wanted:
+
+| | §4.1a coupling | this design |
+|---|---|---|
+| question | which exits can **no** child use? | which exit should **all** children take? |
+| evidence | transition existence (`_feasible_links`) — no DP values | cost per split placement |
+| effect | deletes impossible cells | prices the possible ones jointly |
+| cost | negligible | the profile table |
+
+Keeping §4.1a first is what makes the profiled pass cheap: it removes infeasible cells before any
+profile is built, so the candidate sets the fold ranges over are already trimmed. It also still owns
+the feasibility error — *"split `p`: no surviving V3 exit within `r`"* — which the profiled pass has no
+reason to re-derive.
+
+What §4.1a cannot do is choose among the exits it keeps, and §5.0 measures that gap: on the two slow
+hourglass edges every violation is a split whose 41–66 exits are feasible for **both** children, so
+the intersection removes nothing and each child links its own cheapest. That choice is what the
+profile prices.
+
 | field | today | here |
 |---|---|---|
 | `D[a][v]` | one value: min over all configs incl. phantoms — a lower bound | **`D̂[a][v][π]`** — min cost over consistent configs with upstream splits placed per `π` |
@@ -33,8 +60,16 @@ Costs are held **per profile**, never collapsed to a single argmin: different pr
 costs and the optimum sometimes needs a non-cheapest one, so a cell that dropped its alternatives
 could not be reached under the profile a later tuple requires. §5 shows the full table is affordable.
 
-The existing `D` column is **kept, not overwritten**: `cell_dag_extraction.md` §8.2's Fix 2 prune
-needs an admissible `D ≤ C(M)`, and §4 records which column supplies what.
+**Both `D` and `Dp` exist on the record — but the profiled path never reads `D`.** It reads only `E`,
+`forbidden` and `Dp`. `D` survives because `forward()` has to run first for the `forbidden` flags
+(§1.0), and computing `D` is *how it gets them*: `_couple` uses `_links` — which reads `D` and `bpD` —
+to decide which sibling rows to rebuild. So `D` is a by-product of producing the flags, not an input
+to this design.
+
+It costs little (7 ms, 0.08 MB on `102752`) so there is no reason to remove it, and the diagnostics
+(`extract_join`, `check_forward_v3`, `check_reachability`) still depend on it. But nothing here needs
+its values, and a future coupling-only pass that emits the flags without filling `D` would be a valid
+simplification.
 
 ### 1.1 The profiled set `S`
 
@@ -48,8 +83,226 @@ The branches need **not** rejoin. `cell_dag_extraction.md` §6.1's phantom has `
 separate sinks with disjoint descendants and is still invalid, because a matching assigns every vertex
 one run *globally*. Any definition of `S` requiring a reconvergence point misses it.
 
-A **profile** `π` is a partial map `s ↦ cell` over `S ∩ ancestors(a)`, minus whatever has been
-discharged (§1.3). `S = ∅ ⇒ the design is a no-op` — no conflicts exist and `D̂ ≡ D`.
+### 1.1a The format of a profile `π`
+
+> **A profile is a set of cells — one cell per live split.**
+
+Each element `(J, v)` *is* a cell in the ordinary sense (§1.4: an A-vertex paired with a B-vertex), so
+a profile is a **set of cells**, restricted to cells whose A-vertex is a live split. It reads *"this
+split's run ends on that B-vertex"*. Concretely it is a `frozenset` of `(A_split, B_vertex)` pairs.
+
+Three properties, all of them consequences of *set*, not *list*:
+
+| | |
+|---|---|
+| **unordered** | `{(J₁,v), (J₂,x)}` and `{(J₂,x), (J₁,v)}` are the same profile — which is why two rows that agree collide correctly during contraction |
+| **at most one cell per split** | a vertex has one run in a matching, so `{(J₁,v), (J₁,w)}` is not a profile — that contradiction is exactly what §1.2's consistency test rejects when merging two arms |
+| **no duplicates** | free from set semantics |
+
+*Relation to the source-cell version this grew from:* structurally **identical** — a set of cells, at
+most one per keyed vertex. Only two things changed: **which** vertices are keyed (splits, not sources
+— §1.1b), and that a split's key **dies** at its post-dominator whereas a source's key would live to
+the sinks (§1.1d).
+
+Following the notation used throughout these docs — **`a, b, c, p, m, J, X` are A-vertices; `u, v, w,
+x` are B-vertices** (as in `D[a][v]`, `bpD`'s `(p, x)` pairs, and coverage's `[(a, v')]`) — a cell
+with two live splits `J₁` and `J₂` holds profiles like:
+
+```python
+frozenset({ (J₁, u),      # the run of split J₁ ends on B-vertex u
+            (J₂, w) })    # the run of split J₂ ends on B-vertex w
+```
+
+The subscripts distinguish two splits and nothing more; `u` and `w` are two B-vertices. Real graphs
+use whatever identifiers their builder assigned (see the note below).
+
+| | |
+|---|---|
+| left of each pair | an **A**-vertex with `outdeg ≥ 2`, i.e. a member of `S` (`J`, `a`, …) |
+| right of each pair | a **B**-vertex (`u`, `v`, `w`, …) — where that split's run **ends** (§2: run *end*, not entry) |
+| the pair itself | one **cell** `(A_split, B_vertex)` — "cell" always means such a pair |
+| how many pairs | `|S ∩ ancestors(a)|` minus everything discharged (§1.3) — the **width** |
+| `frozenset()` | legal and common: no splits upstream, or all of them discharged |
+
+> **Reading the dumps in this doc.** The examples below are printed from the benchmark families in
+> `scripts/extract_cell_dag.py`, which build **congruent** A and B graphs and name each B-vertex by
+> appending an apostrophe to its A counterpart. So `r` is an A-vertex and `r'` is the B-vertex lying
+> on top of it; `ru_m` is an A-vertex and `ru_m'` its B counterpart. The apostrophe is the *only*
+> thing distinguishing them. That convention is convenient for tests — the correct match is visually
+> obvious — but it makes profiles hard to read, so in prose this doc uses the house convention
+> (`J`, `a`, … for A-vertices; `u`, `v`, `w` for B-vertices) instead.
+
+`frozenset` rather than `dict` for two reasons: it is **hashable**, so it can key the `Dp` dict; and it
+is **order-independent**, so two rows that agree on the same placements collide correctly during
+contraction regardless of the order the keys were added.
+
+**Segment mode looks alarming but is the same thing.** On a line graph every vertex name is itself a
+`(u, v)` tuple, so both halves of each pair become tuples:
+
+```python
+frozenset({ (('ru_m', 'ru'), ("r'", "ru_m'")) })
+#            └─ A-segment ─┘  └─ B-segment ─┘
+#            the split         where its run ends
+```
+Both halves are now `(u, v)` tuples because a line-graph vertex *is* an edge of the original graph.
+The left tuple is an A-segment (the split), the right is the B-segment its run ends on — the same
+`(A_split, B_vertex)` pair as above, with tuple-valued names.
+
+Nothing about the structure changes — only the names. This is what the hourglass uses, which is why
+`102752`'s profiles print as nested tuples.
+
+`S = ∅ ⇒ the design is a no-op` — no conflicts exist, every profile is `frozenset()`, and `D̂ ≡ D`.
+
+### 1.1b Why splits, and not source cells
+
+The idea this design grew from was to label each cell with **which source cells it came from**. That
+is not what `S` is, and the substitution is deliberate — recorded here because the two are easy to
+confuse and the source version fails for a reason that is not obvious.
+
+**A source profile cannot see a V3 violation.** V3 binds the cell a **split's run ends on**. Measured
+on all four hourglass edges, **no source is ever a split** (overlap 0 below), so every split lies
+strictly *downstream* of its source ancestors — and therefore **both children of a split inherit the
+identical source-cell assignment**. Two children can carry the same source profile and still leave the
+split from different cells. The conflict is invisible to it.
+
+Splits are the minimal set that does see it: a cell can only be disagreed about when two downstream
+branches carry it (§1.1), and a branch point is exactly `outdeg ≥ 2`.
+
+**And it is not even cheaper.** Sources are the more numerous set, and on the tail edge the source
+profile is twice as wide:
+
+| edge | `\|LA\|` | sources | splits | overlap | width if splits | width if sources |
+|---|---|---|---|---|---|---|
+| 102752 | 29 | 4 | 2 | 0 | 2 | 2 |
+| 100042 | 26 | 3 | 2 | 0 | 2 | 2 |
+| 100341 | 29 | 3 | 2 | 0 | 2 | 2 |
+| **100350** | 21 | 4 | 2 | 0 | **2** | **4** |
+
+So the substitution costs nothing and buys correctness. Reproduce with
+`report/probe_sources_vs_splits.py`.
+
+### 1.1c The list of profiles at one cell
+
+> The keys of `Dp` at cell `(a,v)` are **every distinct placement of `a`'s live ancestor splits under
+> which `(a,v)` is reachable**. Each key stores the **cheapest** cost achieving that placement.
+
+Same cell — different assumptions about what happened upstream. A real dump from the smallest case
+that shows it, one split and one chain:
+
+```
+A:  a ──→ J ──→ c          J is the only split (outdeg 2)
+              └─→ d
+B:  u ──→ v ──→ w ──→ x
+
+candidate cells of J :  u, v, w, x
+candidate cells of c :  w, x
+```
+
+```
+cell (c, w)  holds 2 profiles:
+     cost   9.891   when   J ends on v
+     cost  11.953   when   J ends on w
+     min = 9.891    D = 9.891
+
+cell (c, x)  holds 3 profiles:
+     cost   9.242   when   J ends on w
+     cost  14.764   when   J ends on x
+     cost  14.990   when   J ends on v
+     min = 9.242    D = 9.242
+```
+
+Read `(c, w)` as: *"pairing `c` with `w` costs 9.891 if `J`'s run ended on `v`, or 11.953 if it ended
+on `w`."* Same pairing, two prices, because the upstream differs.
+
+**Here a profile happens to be a single pair — because there is only one split.** In general it is
+**one pair per live split**. Add a second split downstream and the profiles carry two:
+
+```
+A:  a ──→ J₁ ──→ c ──→ J₂ ──→ e          two splits, neither ever discharged
+           └───→ d          └───→ f      (their branches never rejoin)
+B:  u ──→ v ──→ w ──→ x ──→ y
+```
+
+```
+cell (c, v)   live splits: J₁          width 1
+     cost   9.544   when   J₁ ends on v
+     cost  13.075   when   J₁ ends on u
+
+cell (e, x)   live splits: J₁, J₂      width 2
+     cost  14.814   when   J₁ ends on v,  J₂ ends on x
+     cost  16.829   when   J₁ ends on w,  J₂ ends on x
+     cost  17.586   when   J₁ ends on v,  J₂ ends on w
+     cost  19.601   when   J₁ ends on w,  J₂ ends on w
+```
+
+`(e, x)` sits below both splits, so every one of its rows must say where **both** ended — and the rows
+enumerate the combinations. That is the product in §1.1's multiplicity, and why width matters: each
+extra live split multiplies the row count instead of adding to it.
+
+This little graph is also the out-tree failure (§5.1) in miniature: `J₁`'s branches (`c`, `d`) never
+rejoin and neither do `J₂`'s, so **no key is ever discharged** and the widths only grow downstream.
+
+* **Count** = the cell's *multiplicity*. At most `∏` over live ancestor splits of `|cand(split)|`,
+  minus combinations that are unreachable — `J` has 4 candidate cells but only 2 of them can reach
+  `(c, w)`, so that cell holds 2 rows, not 4.
+* **`min` over the list is exactly `D`** (§2.1), as both cells show.
+* **The rows are not local alternatives.** `9.891` is what `(c, w)` costs *given* that the rest of the
+  matching also puts `J` on `v`. It is a conditional price, not an option.
+
+**Why every row is kept.** Suppose the sibling branch `d` can only be matched with `J` on `w`. Then
+`(c, w)` cannot use its cheapest row at 9.891 — it must use **11.953**, and the global optimum is
+whichever total is smallest once both branches are priced under the *same* placement of `J`.
+Collapsing this list to its minimum throws away the row the optimum needs. That is what §1's "never
+collapsed to a single argmin" means, and why `pending` exists in the engine this replaces.
+
+Reproduce with `report/probe_profile_list.py`.
+
+### 1.1d The life of a profile key — born, carried, merged, discharged
+
+A key is **not** created at a source and carried unchanged to the end. It is **born at a split** and
+**dies at that split's post-dominator**. Exactly four events touch a profile, and nothing else does:
+
+| event | where | effect on `π` |
+|---|---|---|
+| **born** | at a split `a ∈ S` | add `(a, v)` — this run ends on `v` |
+| **carried** | any vertex that is neither a split nor a discharge point | unchanged — literally the *same object* (§1.4) |
+| **run-end moves** | an α-coverage step at a split | the split's own pair is **overwritten**, `(a,v') → (a,v)` |
+| **merged** | at a merge | the arms' profiles must **agree**; union if they do, the pair is dropped if not (§1.2) |
+| **discharged** | at a post-dominator of `s` | remove `s` — nothing downstream can contradict it (§1.3) |
+
+Traced on `diamond_chain(2)`, `s → J0 → {x0,z0} → m0 → t0 → J1 → {x1,z1} → m1 → t1`, splits
+`{J0, J1}`:
+
+```
+vertex  in/out   role                                  profiles at one cell
+     s    0/1    source                                {}
+    J0    1/2    SPLIT — key born                      {J0@s'}
+    x0    1/1    carries parent's profile              {J0@J0'}, {J0@s'}
+    z0    1/1    carries parent's profile              {J0@J0'}, {J0@s'}
+    m0    2/1    MERGE (arms agree) + DISCHARGE J0     {}
+    t0    1/1    nothing live                          {}
+    J1    1/2    SPLIT — key born                      {J1@m0'}
+    x1    1/1    carries parent's profile              {J1@J1'}, {J1@t0'}
+    z1    1/1    carries parent's profile              {J1@J1'}, {J1@t0'}
+    m1    2/1    MERGE + DISCHARGE J1                  {}
+    t1    1/0    nothing live                          {}
+```
+
+Read it as a lifetime: `J0`'s key exists **only between `J0` and `m0`**. Below `m0` it is gone, so
+`J1`'s key is the only one live in the second diamond — the width never reaches 2. That is why
+`diamond_chain(400)` runs in 0.5 s while `btree(4)` dies: on a tree nothing post-dominates, so no key
+is ever discharged and they accumulate to the sinks.
+
+`x0` holding **two** profiles is §1.1c in miniature: `J0`'s run can end on `J0'` *or* on `s'`, and
+`x0` is reachable under either, so it stores a row for each.
+
+> **Contrast with a source-cell profile.** There a key is born at a source, is fixed at birth, and
+> never dies — so the width is the source count and only grows. Here a key appears at a split, tracks
+> that split's run end, and is deleted the moment it can no longer be contradicted. The lifetime is
+> what keeps the table small (§5.1), and it is the substantive difference between the two designs
+> beyond the correctness argument in §1.1b.
+
+Reproduce with `report/probe_profile_life.py`.
 
 ### 1.2 Consistency
 
@@ -75,30 +328,132 @@ topology. No matching hyperparameter sets it. `r`, `k_min`, `bearing_weight`, `�
 `|cand|`, which drives *multiplicity* (how many profiles a cell holds), not width. Widening `r` for a
 hard match grows the cheap dimension.
 
-### 1.4 Lifetime
+### 1.4 What a cell stores
+
+**The whole structure**, top to bottom. Everything except the last line already exists — this design
+adds exactly one key, `Dp`.
+
+```
+A                                    the source graph (networkx DiGraph)
+│
+└── .nodes[a]                        one A-vertex's attribute dict
+    │
+    ├── "x", "y"                     its position                       (point + segment)
+    ├── "bearing", "length"          segment-mode only                  (line_digraph)
+    ├── "road_id", "seq"             provenance, when the caller sets it
+    │
+    └── "cand"                       ITS CANDIDATE B-VERTICES  — built by prepare(),
+        │                            gated to those within `r` of `a`.  Each key here
+        │                            is one CELL (a, v).
+        │
+        └── [v]                      the record for cell (a, v)
+            │
+            ├── "E"          float   emission cost of pairing a with v
+            ├── "D"          float   forward cost   — ONE number
+            ├── "bpD"        list    its back-pointers
+            ├── "B", "bpB"           the backward (diagnostic) table
+            ├── "forbidden"  bool    §4.1a: not a valid run END
+            │
+            └── "Dp"         dict    ← ADDED BY THIS DESIGN
+                └── [profile] → (cost, bp)
+```
+
+**Why `"cand"` is its own level.** `A.nodes[a]` is networkx's attribute dict and already holds the
+vertex's geometry. B-vertex names are arbitrary — plain strings in point mode (`"s'"`, `"J0'"`) and
+**tuples** in segment mode (`("s'", "J0'")`) — so putting cells directly in `A.nodes[a]` would let a
+B-vertex named `x`, `y`, `bearing` or `length` silently overwrite the geometry, and would mix string
+attribute keys with tuple cell keys in one dict. Keeping them under `"cand"` also makes the candidate
+set a unit: `len(cand)` is the cell count, `for v in cand` sweeps cells, `v in cand` tests membership.
+
+**What `Dp` holds.** One entry per profile:
+
+| | |
+|---|---|
+| `profile` | `frozenset` of `(A_split, B_vertex)` pairs — where the upstream splits sit (format: §1.1a) |
+| `cost` | `float` — the value of this row |
+| `bp` | `[(vertex, cell, profile), …]` — where the value came from |
+
+`D` answers *"what does this cell cost?"* with a single number. `Dp` answers *"what does it cost
+**given where the upstream splits are placed**?"* — one number per placement. Nothing else on the
+record changes, and `forward()` keeps filling `D`/`bpD`/`forbidden` exactly as before (§1.0).
+
+`bp` holds one triple per predecessor (advance/stall), or a **single same-vertex triple** for an
+α-coverage step — the same convention `bpD` uses, so the move type is read off *whose* vertex appears.
+
+**Worked example** — `btree(2)`, the source `r` (a split, `outdeg = 2`) and its child `ru_m`
+(`indeg = 1`, `outdeg = 1`, not a split, nothing to discharge):
+
+| | `r` at cell `r'` | `ru_m` at cell `r'` |
+|---|---|---|
+| profile | `{r: r'}` | `{r: r'}` |
+| cost | `0.4000` | `11.0240` |
+| `bp` | `[]` (source, free entry) | `[(r, r', {r: r'})]` |
+
+`r` carries `{r: r'}` because it **is** a split — §2's "own split cell" step writes its own placement
+into the key. `ru_m` carries the same profile because it is not a split and discharges nothing: it
+simply inherits.
+
+#### The single-parent case — inherit by reference, do not copy
+
+A vertex that is **neither a split nor a discharge point** does not change the profile at all. Its
+rows therefore keep the **parent's frozenset object itself**, not a rebuilt equal one:
+
+```
+passthrough = (a not in S) and (not drop[a])
+if passthrough:  return pi          # same object, no allocation
+```
+
+That is the common case — most vertices are `indeg 1, outdeg 1` — and rebuilding an identical
+frozenset per cell per profile was the bulk of the memory. Measured on `btree(4)`'s forward table:
+
+| | before | after |
+|---|---|---|
+| bytes per row | 814 | **279** |
+| forward table | 14.36 MB | **4.91 MB** |
+| time | 0.205 s | **0.122 s** |
+
+Row *counts* are identical — this is representation only, nothing is dropped.
+
+What each row still costs after that: the dict entry (the key is shared, but a frozenset is re-hashed
+on every lookup), the `(cost, bp)` tuple, the `bp` list, and the triple inside it — four objects to
+carry one float and one pointer. Remaining reductions, cheapest first, **none yet implemented**:
+
+| | what | cost to do |
+|---|---|---|
+| intern profiles to ints | a per-graph `frozenset → int` table; keys become small integers, so hashing is an int hash and the dicts shrink | contained — only `_merge`, `remap`, `_flood` touch profile identity |
+| flatten `bp` | at `indeg 1` there is exactly one triple; store it directly instead of wrapping it in a list | trivial |
+| delegate entirely | a passthrough cell stores only `(parent_vertex, {entry_cell: cost})` and resolves profiles through its parent on demand | invasive — every reader must chase the chain |
+
+### 1.5 Lifetime
 
 **Allocate per cell, keep to the end. There is no row-freeing lifecycle.** What shrinks is the profile
 *keys* (§1.3), not the rows — that is where the contraction happens, and it happens during the sweep.
 
-Freeing rows would buy nothing anyway: reconstruction needs **either** the stored `bpD[a][v][π]`
-**or** the cost rows to recompute the argmin from, so one of the two must survive to the end. Keeping
-both is affordable at the measured scale:
+Freeing rows would buy nothing anyway: reconstruction needs **either** the stored `bp` **or** the cost
+rows to recompute the argmin from, so one of the two must survive to the end. Keeping both is
+affordable at the measured scale — the real forward tables, as built:
 
-| | 102752 | 100350 |
-|---|---|---|
-| probe peak, everything retained, Python `frozenset`s | 22.9 MB | 14.1 MB |
-| packed estimate (~57 k rows × (2 int pairs + float)) | ~2–3 MB | ~1–2 MB |
+| | 102752 | 100042 | 100341 | 100350 |
+|---|---|---|---|---|
+| profile rows | 57 478 | 12 425 | 12 871 | 28 444 |
+| forward table | 14.4 MB | 3.1 MB | 3.4 MB | 10.1 MB |
+| build time | 0.97 s | 0.26 s | 0.18 s | 0.40 s |
 
-*If it ever does get tight:* store costs, **drop `bpD`**, and recompute the argmin along the single
+At ~279 bytes per row (§1.4) that is a few megabytes per edge and no freeing is warranted. Contrast
+`cell_dag_extraction.md` §4, where freeing **was** load-bearing (35× peak memory): there the frontier
+was the whole table set.
+
+*If it ever does get tight:* store costs, **drop `bp`**, and recompute the argmin along the single
 winning chain during reconstruction — re-evaluating one cell's `fill()` is cheap (entry cells bounded
 by `1 + |Bpred(v)|`, ≤ ~64 tuples at `indeg 3`). That keeps the smaller half and recomputes the
 larger. Not worth building until a measurement demands it.
 
-Contrast `cell_dag_extraction.md` §4, where freeing **was** load-bearing (35× peak memory): there the
-frontier was the whole table set. Here the tables are small and the sweep is one pass.
-
-A per-cell profile cap with a loud refusal — the `max_rows` pattern — bounds the worst case to a
-diagnosable error rather than an OOM.
+**What the caps do and do not bound.** `forward_profiled(max_profiles=…)` refuses when one *cell*
+exceeds the limit, and `extract_profiled(max_rows=…)` when one *factor* does. Neither bounds the
+**aggregate** across cells: `btree(4)` peaks at ~61 profiles per cell against a 50 000 cap, so that
+guard never fires. Since §6.1's elimination the aggregate is no longer the failure mode in practice
+— `btree(4)` completes in 27 MB — but a global row budget is still the only thing that would make the
+refusal a genuine memory bound.
 
 ---
 
@@ -152,6 +507,38 @@ combine two cells of one split, because the profiles carrying them disagree. `mi
 the true min over consistent configurations, so it remains admissible (`≤ C(M)`) on a strictly smaller
 feasible set than `D` — tighter, never looser.
 
+### 2.1 `D` is the minimum over `Dp` — and the phantom is not in either
+
+`D` minimises over *all* upstream configurations, `D̂` over the *consistent* ones only, and consistent
+⊂ all, so in theory `D[a][v] ≤ min_π D̂[a][v][π]`. **Measured, they are equal on every cell:**
+
+| edge | cells | V3 violations | `D == min_π D̂` | `D < min_π D̂` |
+|---|---|---|---|---|
+| 102752 | 993 | **2** | **993** | 0 |
+| 100042 | 708 | 0 | 708 | 0 |
+| 100341 | 1081 | 0 | 1081 | 0 |
+| 100350 | 822 | **3** | **822** | 0 |
+
+Equal on all 3 604 cells — *including the two edges that are V3-invalid*. So the profiled table does
+not make any individual value smaller, and this is not an accident of the data:
+
+**A single cell's `D` cannot be a phantom.** `D[a][v]` minimises over `a`'s upstream cone. A phantom
+needs two branches disagreeing about one split, so it can only arise inside one cone when a merge's
+arms share a split ancestor. On the hourglass the in-side is tree-shaped — the arms come from disjoint
+in-stubs — so no single `D` is ever wrong.
+
+**The phantom lives in the combination.** Re-read `cell_dag_extraction.md` §6.1 with this in mind:
+`D[c₁][u] = 0.5` is *correct* for `c₁`'s cone, and `D[c₂][d] = 0.5` is *correct* for `c₂`'s. Neither
+value is a phantom. Their **sum**, `1.0`, is — because the two were minimised independently and
+happened to choose different cells of `J`.
+
+> So what the profile buys is **not a tighter `D`. It is a *keyed* `D`** — each value labelled with
+> what it assumed about the splits, so values can be combined consistently instead of blindly. That is
+> also why `check_forward_v3` reports violations while every individual `D` is perfectly correct, and
+> why the payoff shows up in the **extraction** (§6) rather than in the table's numbers.
+
+Reproduce with `report/probe_D_vs_Dp.py`.
+
 **Costs stay under-counted.** The `1/outdeg` fraction is §4.1's approximation for a shared upstream
 point and this design does not change it. See §6.3 — a profile identifies the shared prefix exactly,
 so it *could* be charged once, but that is a separate change.
@@ -186,9 +573,8 @@ The phantom combination `(c₁,u) + (c₂,d)` is rejected: `v₁ ≠ v₂`. The 
 | | effect |
 |---|---|
 | **A smaller coupling key** | `pending` keys on merge cells, this keys on split cells. On the hourglass there are **3 merges but only 2 splits**, and the waist post-dominates the whole in-side — 36–70× fewer rows (§5.2) |
-| **Biggest win on the worst edge** | `100350`, where Fix 1 gives 1× and Fix 2 gives 32×, is where this gives the most (§5.2) |
-| **Tighter admissible `D`** | `min_π D̂` is a lower bound on a strictly smaller feasible set — sharpens `cell_dag_extraction.md` §8.2 Fix 2, whose measured weakness was a loose bound. Fix 2 keeps pruning on the **old** `D` column. |
-| **A real matching per cell** | every surviving trace is V3-consistent by construction, so each cell yields a valid `UB` — the other half of §8.5's Fix 2 verdict ("unreliable incumbent") |
+| **Biggest win on the worst edge** | `100350`, the all-coupled tail no earlier fix helped, is where this gives the most: `extract_cell` **687.7 s / 783 MB**, profiled **0.44 s / 16 MB** (§5.2) |
+| **Answers cases the current engine refuses** | contracting per **profile** leaves the judge fallbacks that contracting per **pending signature** destroys: **168/900** cyclic-B cases answered where `extract_cell` raises a spurious *"no valid root row"* (§5.3) |
 | **V3 as an invariant** | `check_forward_v3` empty by construction, promoting a diagnostic to a guarantee |
 
 ---
@@ -300,6 +686,53 @@ for π in global_keys:                       # profiles live at the sinks
 **For a fixed `π` the sinks are independent** — that is the whole point of the key. The join is
 `O(|global_keys| × |sinks| × |cand|)`, with no product over sinks.
 
+**The join must eliminate keys, not fold sinks.** Each sink is a **factor** over its live splits,
+`f_t(π) = min_v D̂[t][v][π|t]`, and the answer is `min over π of Σ_t f_t`. Combining sinks *pairwise*
+keys the running table by the **union** of all their keys, and two sinks sharing no key always merge
+successfully — so a pairwise fold builds their **cross product**. On `btree(4)` that is 16 sinks and it
+exhausts memory, against a forward table of only 4.9 MB.
+
+> **A rejected fix, recorded because it looks right.** "Group sinks that share a key, minimise each
+> group independently, sum" does nothing on an out-tree: every `btree` sink descends from the root
+> split, which is never discharged, so all 16 sinks share that key, the sink graph is a clique, and
+> the grouping gives one component. Same product.
+
+Eliminate the **keys** instead:
+
+```
+for each split J, deepest first:
+    take only the factors that mention J
+    combine them                       (consistent pairs, costs summed)
+    minimise J out                     → one factor over the remaining keys
+```
+
+Deepest-first is what bounds it: when `J` is eliminated the only key its factors still share is `J`'s
+**parent** split, so intermediate factors are bounded by the tree's **depth**, not by its total split
+count — `btree(4)` has 15 splits and depth 4.
+
+| | pairwise fold | key elimination |
+|---|---|---|
+| `btree(3)` extraction | 0.763 s · 57.46 MB | **0.003 s · 0.27 MB** |
+| `btree(4)` extraction | **MemoryError** (>4 GB) | **0.278 s · 26.89 MB** |
+| hourglass | unchanged | unchanged |
+
+**`keep` — top-K, and why it is a tunable not a constant.** The elimination retains the `keep`
+cheapest rows per key rather than only the minimum, so the terminal judge (§6.4) still has fallbacks
+for V1. This is the *"validity-aware or top-K contraction"* that
+`scripts/repro_contraction_eviction/README.md` asks for. Swept over 600 cyclic-B cases:
+
+| `keep` | cost parity | cases answered where `extract_cell` raises |
+|---|---|---|
+| 4 | 487/487 | 94 |
+| 8 | 487/487 | 107 |
+| **32** *(default)* | 487/487 | **112** |
+| 128 | 487/487 | 112 |
+
+**Parity is unaffected at every value** — `keep` never changes correctness, only how many cases the
+old engine refuses that this one can still answer, and that **saturates at 32**. Treat that as a
+measured plateau, not a proven bound: a pathological input could need more, and the failure mode is a
+refusal rather than a wrong answer.
+
 **Measured size** (same four edges, §5.2):
 
 | edge | sinks | profiles per sink | distinct `π` at sinks | splits live at sinks |
@@ -397,9 +830,8 @@ cap with refusal — the `max_rows` pattern — bounds memory to a diagnosable e
 
 | existing | relation |
 |---|---|
-| §4.1a forbid-and-rebuild | the **feasibility**-level version of this design: "every surviving split exit is usable by every child", no cost attached. This adds the cost dimension. Its standing rule — *a feasibility intersection, never an optimality one* — is why costs are held per profile rather than per cell (§1). |
+| §4.1a forbid-and-rebuild | **retained as a prerequisite, not replaced** (§1.0). It answers "which exits can no child use?"; this answers "which exit should all children take?". `forward()` keeps owning the `forbidden` flags and the feasibility error; the profiled pass reads them and prices what survives. Its standing rule — *a feasibility intersection, never an optimality one* — is also why costs are held per profile rather than per cell (§1). |
 | `pending` (`cell_dag_extraction.md` §2–3) | the same job keyed on merges instead of splits. §6.1 is a key swap; §5.2 measures the key spaces. |
 | §3.5 early discharge | the backward mirror of §1.3. Same idea, opposite direction: first common ancestor ↔ post-dominator. |
 | §8.6 inner-merge elimination | the same min-sum elimination, applied to one merge in the extraction. This applies it to every split in the forward pass. Composable; neither subsumes the other. |
-| §8.2 Fix 2 | unchanged and still needs the **old** `D` column for its admissible bound; gains a per-cell incumbent for its `UB` (§4). |
 | `check_forward_v3` (`dag_dtw.py:1419`) | today a diagnostic. Under this design it must return **empty** on every input — promote it to an invariant. |
