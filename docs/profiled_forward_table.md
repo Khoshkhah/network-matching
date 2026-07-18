@@ -287,6 +287,38 @@ combine two cells of one split, because the profiles carrying them disagree. `mi
 the true min over consistent configurations, so it remains admissible (`≤ C(M)`) on a strictly smaller
 feasible set than `D` — tighter, never looser.
 
+### 2.1 `D` is the minimum over `Dp` — and the phantom is not in either
+
+`D` minimises over *all* upstream configurations, `D̂` over the *consistent* ones only, and consistent
+⊂ all, so in theory `D[a][v] ≤ min_π D̂[a][v][π]`. **Measured, they are equal on every cell:**
+
+| edge | cells | V3 violations | `D == min_π D̂` | `D < min_π D̂` |
+|---|---|---|---|---|
+| 102752 | 993 | **2** | **993** | 0 |
+| 100042 | 708 | 0 | 708 | 0 |
+| 100341 | 1081 | 0 | 1081 | 0 |
+| 100350 | 822 | **3** | **822** | 0 |
+
+Equal on all 3 604 cells — *including the two edges that are V3-invalid*. So the profiled table does
+not make any individual value smaller, and this is not an accident of the data:
+
+**A single cell's `D` cannot be a phantom.** `D[a][v]` minimises over `a`'s upstream cone. A phantom
+needs two branches disagreeing about one split, so it can only arise inside one cone when a merge's
+arms share a split ancestor. On the hourglass the in-side is tree-shaped — the arms come from disjoint
+in-stubs — so no single `D` is ever wrong.
+
+**The phantom lives in the combination.** Re-read `cell_dag_extraction.md` §6.1 with this in mind:
+`D[c₁][u] = 0.5` is *correct* for `c₁`'s cone, and `D[c₂][d] = 0.5` is *correct* for `c₂`'s. Neither
+value is a phantom. Their **sum**, `1.0`, is — because the two were minimised independently and
+happened to choose different cells of `J`.
+
+> So what the profile buys is **not a tighter `D`. It is a *keyed* `D`** — each value labelled with
+> what it assumed about the splits, so values can be combined consistently instead of blindly. That is
+> also why `check_forward_v3` reports violations while every individual `D` is perfectly correct, and
+> why the payoff shows up in the **extraction** (§6) rather than in the table's numbers.
+
+Reproduce with `report/probe_D_vs_Dp.py`.
+
 **Costs stay under-counted.** The `1/outdeg` fraction is §4.1's approximation for a shared upstream
 point and this design does not change it. See §6.3 — a profile identifies the shared prefix exactly,
 so it *could* be charged once, but that is a separate change.
