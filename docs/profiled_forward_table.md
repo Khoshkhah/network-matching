@@ -83,6 +83,34 @@ The branches need **not** rejoin. `cell_dag_extraction.md` §6.1's phantom has `
 separate sinks with disjoint descendants and is still invalid, because a matching assigns every vertex
 one run *globally*. Any definition of `S` requiring a reconvergence point misses it.
 
+### 1.1b Why splits, and not source cells
+
+The idea this design grew from was to label each cell with **which source cells it came from**. That
+is not what `S` is, and the substitution is deliberate — recorded here because the two are easy to
+confuse and the source version fails for a reason that is not obvious.
+
+**A source profile cannot see a V3 violation.** V3 binds the cell a **split's run ends on**. Measured
+on all four hourglass edges, **no source is ever a split** (overlap 0 below), so every split lies
+strictly *downstream* of its source ancestors — and therefore **both children of a split inherit the
+identical source-cell assignment**. Two children can carry the same source profile and still leave the
+split from different cells. The conflict is invisible to it.
+
+Splits are the minimal set that does see it: a cell can only be disagreed about when two downstream
+branches carry it (§1.1), and a branch point is exactly `outdeg ≥ 2`.
+
+**And it is not even cheaper.** Sources are the more numerous set, and on the tail edge the source
+profile is twice as wide:
+
+| edge | `\|LA\|` | sources | splits | overlap | width if splits | width if sources |
+|---|---|---|---|---|---|---|
+| 102752 | 29 | 4 | 2 | 0 | 2 | 2 |
+| 100042 | 26 | 3 | 2 | 0 | 2 | 2 |
+| 100341 | 29 | 3 | 2 | 0 | 2 | 2 |
+| **100350** | 21 | 4 | 2 | 0 | **2** | **4** |
+
+So the substitution costs nothing and buys correctness. Reproduce with
+`report/probe_sources_vs_splits.py`.
+
 ### 1.1a The format of a profile `π`
 
 A profile is a **`frozenset` of `(split_vertex, B_cell)` pairs** — one pair per split that is still
