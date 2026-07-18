@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cell-DAG Extraction, explained from zero</title>
+<style>
+  :root {
+    --paper: #f3f5f9;
+    --card: #ffffff;
+    --ink: #171b23;
+    --muted: #5b6472;
+    --faint: #8b93a2;
+    --rule: #dbe0ea;
+    --accent: #3341c9;
+    --accent-soft: #e7e9fb;
+    --advance: #0c8d7e;
+    --stall: #b9760c;
+    --cover: #7a44c8;
+    --cell: #2f5bd0;
+    --good: #1a9a53;
+    --good-soft: #e3f4ea;
+    --danger: #cf3f42;
+    --danger-soft: #fbe7e7;
+    --shadow: 0 1px 2px rgba(20,25,35,.05), 0 6px 20px rgba(20,25,35,.06);
+
+    --font-body: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+    --font-head: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #10131a;
+      --card: #171b24;
+      --ink: #e7eaf1;
+      --muted: #9aa3b3;
+      --faint: #6b7484;
+      --rule: #262d3a;
+      --accent: #8f9dff;
+      --accent-soft: #1e2440;
+      --advance: #35bda9;
+      --stall: #e0a341;
+      --cover: #b58cf0;
+      --cell: #6f97f0;
+      --good: #46c47e;
+      --good-soft: #16301f;
+      --danger: #ec6a6c;
+      --danger-soft: #331a1c;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --paper: #f3f5f9; --card:#ffffff; --ink:#171b23; --muted:#5b6472; --faint:#8b93a2;
+    --rule:#dbe0ea; --accent:#3341c9; --accent-soft:#e7e9fb; --advance:#0c8d7e; --stall:#b9760c;
+    --cover:#7a44c8; --cell:#2f5bd0; --good:#1a9a53; --good-soft:#e3f4ea; --danger:#cf3f42;
+    --danger-soft:#fbe7e7; --shadow:0 1px 2px rgba(20,25,35,.05), 0 6px 20px rgba(20,25,35,.06);
+  }
+  :root[data-theme="dark"] {
+    --paper:#10131a; --card:#171b24; --ink:#e7eaf1; --muted:#9aa3b3; --faint:#6b7484;
+    --rule:#262d3a; --accent:#8f9dff; --accent-soft:#1e2440; --advance:#35bda9; --stall:#e0a341;
+    --cover:#b58cf0; --cell:#6f97f0; --good:#46c47e; --good-soft:#16301f; --danger:#ec6a6c;
+    --danger-soft:#331a1c; --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--font-body); font-size: 18px; line-height: 1.72;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 24px 120px; }
+  .wide { max-width: 900px; margin-left: auto; margin-right: auto; }
+
+  /* theme toggle */
+  .theme-toggle {
+    position: fixed; top: 16px; right: 16px; z-index: 100;
+    font-family: var(--font-head); font-size: 13px; font-weight: 600;
+    background: var(--card); color: var(--ink); border: 1px solid var(--rule);
+    border-radius: 999px; padding: 8px 14px; cursor: pointer; box-shadow: var(--shadow);
+    display: inline-flex; align-items: center; gap: 7px; line-height: 1;
+  }
+  .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  .theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media print { .theme-toggle { display: none; } }
+
+  /* header */
+  header.masthead { max-width: 900px; margin: 0 auto; padding: 72px 24px 40px; }
+  .eyebrow {
+    font-family: var(--font-head); font-size: 13px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 18px;
+  }
+  h1.title {
+    font-family: var(--font-head); font-weight: 720; font-size: clamp(32px, 5vw, 50px);
+    line-height: 1.06; letter-spacing: -.02em; margin: 0 0 20px; text-wrap: balance;
+  }
+  .standfirst {
+    font-size: clamp(19px, 2.4vw, 22px); color: var(--muted); line-height: 1.55;
+    max-width: 40ch; margin: 0;
+  }
+  .masthead-rule { max-width: 900px; margin: 44px auto 0; padding: 0 24px; }
+  .masthead-rule hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+
+  h2 {
+    font-family: var(--font-head); font-weight: 700; font-size: 27px; letter-spacing: -.01em;
+    line-height: 1.2; margin: 68px 0 8px; text-wrap: balance; scroll-margin-top: 20px;
+  }
+  h2 .num {
+    display: inline-block; font-size: 15px; font-weight: 600; color: var(--accent);
+    font-variant-numeric: tabular-nums; margin-right: 12px; vertical-align: 3px;
+  }
+  h3 {
+    font-family: var(--font-head); font-weight: 650; font-size: 19px; margin: 40px 0 4px;
+    letter-spacing: -.005em;
+  }
+  p { margin: 16px 0; }
+  .lead-in { color: var(--muted); font-size: 16px; margin-top: 4px; font-family: var(--font-head); }
+  strong { font-weight: 700; }
+  em { font-style: italic; }
+  a { color: var(--accent); }
+
+  /* inline technical tokens */
+  .m { font-family: var(--font-mono); font-size: .9em; }
+  .cell {
+    font-family: var(--font-mono); font-size: .86em; font-weight: 600;
+    background: var(--accent-soft); color: var(--cell);
+    padding: 1px 6px; border-radius: 5px; white-space: nowrap;
+  }
+  .tag {
+    font-family: var(--font-head); font-size: 12.5px; font-weight: 700; letter-spacing: .03em;
+    text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  }
+  .tag.advance { color: var(--advance); background: color-mix(in srgb, var(--advance) 13%, transparent); }
+  .tag.stall   { color: var(--stall);   background: color-mix(in srgb, var(--stall) 15%, transparent); }
+  .tag.cover   { color: var(--cover);   background: color-mix(in srgb, var(--cover) 14%, transparent); }
+  b.advance { color: var(--advance); } b.stall { color: var(--stall); } b.cover { color: var(--cover); }
+
+  /* definition chip */
+  .def {
+    background: var(--card); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+    border-radius: 10px; padding: 14px 18px; margin: 20px 0; box-shadow: var(--shadow);
+  }
+  .def .term {
+    font-family: var(--font-head); font-weight: 700; font-size: 15px; color: var(--ink);
+    display: block; margin-bottom: 2px;
+  }
+  .def p { margin: 0; font-size: 16.5px; color: var(--muted); }
+  .def p + p { margin-top: 8px; }
+
+  /* callouts */
+  .callout {
+    border-radius: 12px; padding: 18px 20px; margin: 26px 0; font-family: var(--font-head);
+    font-size: 16.5px; line-height: 1.6;
+  }
+  .callout .k {
+    display: block; font-size: 12.5px; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; margin-bottom: 6px;
+  }
+  .callout.idea { background: var(--good-soft); border: 1px solid color-mix(in srgb, var(--good) 30%, transparent); }
+  .callout.idea .k { color: var(--good); }
+  .callout.trap { background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); }
+  .callout.trap .k { color: var(--danger); }
+
+  /* figures */
+  figure { margin: 30px 0; }
+  .fig-card {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 14px;
+    padding: 26px 22px 18px; box-shadow: var(--shadow); overflow-x: auto;
+  }
+  .fig-row { display: flex; flex-wrap: wrap; gap: 30px; align-items: flex-start; justify-content: center; }
+  figcaption {
+    font-family: var(--font-head); font-size: 14px; color: var(--muted); text-align: center;
+    margin-top: 14px; line-height: 1.5;
+  }
+  svg { display: block; max-width: 100%; height: auto; }
+  svg text { font-family: var(--font-mono); fill: var(--ink); }
+  svg .node { fill: var(--card); stroke: var(--ink); stroke-width: 1.6; }
+  svg .nodeA { fill: var(--accent-soft); stroke: var(--cell); stroke-width: 1.6; }
+  svg .edge { stroke: var(--faint); stroke-width: 1.6; fill: none; }
+  svg .lbl { fill: var(--muted); }
+  svg .arrowhead { fill: var(--faint); }
+
+  /* tables */
+  .tbl-scroll { overflow-x: auto; margin: 24px 0; }
+  table {
+    border-collapse: collapse; width: 100%; font-family: var(--font-head); font-size: 15.5px;
+    background: var(--card); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow);
+  }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--rule); }
+  th {
+    font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); background: color-mix(in srgb, var(--accent) 5%, var(--card));
+  }
+  td { font-variant-numeric: tabular-nums; }
+  td.mono, th.mono { font-family: var(--font-mono); }
+  tr:last-child td { border-bottom: 0; }
+  .yes { color: var(--good); font-weight: 700; }
+  .no  { color: var(--danger); font-weight: 700; }
+
+  /* code block for traces */
+  pre {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 12px;
+    padding: 18px 20px; overflow-x: auto; font-family: var(--font-mono); font-size: 14px;
+    line-height: 1.65; box-shadow: var(--shadow); margin: 22px 0;
+  }
+  pre .c { color: var(--cover); } pre .g { color: var(--good); } pre .r { color: var(--danger); }
+  pre .b { color: var(--cell); } pre .mut { color: var(--faint); }
+
+  /* row of the 3 moves */
+  .moves { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 24px 0; }
+  .move {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 16px 18px;
+    box-shadow: var(--shadow);
+  }
+  .move h4 { font-family: var(--font-head); margin: 10px 0 4px; font-size: 16px; }
+  .move p { font-size: 14.5px; color: var(--muted); margin: 4px 0 0; line-height: 1.5; }
+  .move .cost { font-family: var(--font-mono); font-size: 13px; font-weight: 700; }
+  @media (max-width: 640px) { .moves { grid-template-columns: 1fr; } }
+
+  /* lifecycle phases */
+  ol.phases { margin: 22px 0; padding: 0; list-style: none; counter-reset: ph; }
+  ol.phases > li {
+    position: relative; padding: 2px 0 18px 42px; margin: 0 0 0 14px;
+    border-left: 2px solid var(--rule); font-family: var(--font-head); font-size: 16px;
+  }
+  ol.phases > li:last-child { border-left-color: transparent; padding-bottom: 2px; }
+  ol.phases > li::before {
+    counter-increment: ph; content: counter(ph);
+    position: absolute; left: -15px; top: -2px; width: 28px; height: 28px;
+    background: var(--accent); color: var(--paper); border-radius: 50%;
+    font-weight: 700; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  }
+  .phase-sub {
+    display: block; margin-top: 10px; font-size: 14.5px; color: var(--muted);
+    background: var(--card); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 11px 13px; line-height: 1.8;
+  }
+
+  .toc {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 14px; padding: 20px 24px;
+    margin: 34px 0 0; box-shadow: var(--shadow); columns: 2; column-gap: 34px;
+  }
+  .toc a { display: block; text-decoration: none; color: var(--ink); font-family: var(--font-head);
+    font-size: 15px; padding: 5px 0; break-inside: avoid; }
+  .toc a:hover { color: var(--accent); }
+  .toc .tnum { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; margin-right: 8px; }
+  @media (max-width: 560px) { .toc { columns: 1; } }
+
+  footer { max-width: 900px; margin: 90px auto 0; padding: 30px 24px; border-top: 1px solid var(--rule);
+    font-family: var(--font-head); font-size: 14px; color: var(--faint); }
+  ::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" id="themeToggle" type="button">Theme</button>
+
+<header class="masthead">
+  <p class="eyebrow">network-matching &middot; the extraction step</p>
+  <h1 class="title">Cell-DAG Extraction, explained from zero</h1>
+  <p class="standfirst">How the matcher takes two graphs and picks the single cheapest correspondence between them &mdash; built up one idea at a time, assuming you know nothing.</p>
+</header>
+<div class="masthead-rule"><hr></div>
+
+<div class="wrap">
+
+  <nav class="toc" aria-label="Contents">
+    <a href="#s0"><span class="tnum">0</span>The problem it solves</a>
+    <a href="#s1"><span class="tnum">1</span>Vertices, candidates, cells</a>
+    <a href="#s2"><span class="tnum">2</span>The three moves</a>
+    <a href="#s3"><span class="tnum">3</span>Runs</a>
+    <a href="#s4"><span class="tnum">4</span>The dream that breaks</a>
+    <a href="#s5"><span class="tnum">5</span>Two tables per cell</a>
+    <a href="#s6"><span class="tnum">6</span>The sweep</a>
+    <a href="#s7"><span class="tnum">7</span>Building the tables</a>
+    <a href="#s8"><span class="tnum">8</span>Lifecycle: inbox &amp; free</a>
+    <a href="#s9"><span class="tnum">9</span>Pending: the merge</a>
+    <a href="#s10"><span class="tnum">10</span>Discharge &amp; the answer</a>
+    <a href="#s11"><span class="tnum">11</span>When it gets slow</a>
+  </nav>
+
+  <h2 id="s0"><span class="num">0</span>The problem it solves</h2>
+  <p class="lead-in">Two drawings of the same thing. Which piece matches which?</p>
+  <p>Imagine two maps of the same neighbourhood, drawn by two different people. Both show the same streets, but one splits a road into more pieces, one rounds a corner differently, one labels things its own way. You want a machine to say: <em>this piece here is the same road as that piece there.</em> That correspondence &mdash; piece-by-piece, and the <em>cheapest</em> one that makes sense &mdash; is what the whole library computes.</p>
+  <p>Call the two drawings <strong>graph <span class="m">A</span></strong> and <strong>graph <span class="m">B</span></strong>. Each is a set of points joined by directed arrows (a road flows one way through it). The matcher has already done a lot of work before the step we're explaining. <strong>Extraction is the very last step</strong>: everything is prepared, and now we must <em>read off the single best matching</em>. This page is only about that final read-off &mdash; but it explains every word from scratch.</p>
+
+  <div class="callout idea">
+    <span class="k">The one-sentence goal</span>
+    Out of millions of possible ways to line up <span class="m">A</span> against <span class="m">B</span>, extraction finds the <strong>one alignment with the lowest total cost</strong> &mdash; and does it without ever listing those millions.
+  </div>
+
+  <h2 id="s1"><span class="num">1</span>Vertices, candidates, and cells</h2>
+  <p class="lead-in">The atoms of the whole algorithm.</p>
+  <p>A <strong>vertex</strong> is just a point in a graph. Points in <span class="m">A</span> are <strong>A-vertices</strong> (written <span class="m">X</span>, <span class="m">Y</span>&hellip;); points in <span class="m">B</span> are <strong>B-vertices</strong> (written <span class="m">u</span>, <span class="m">v</span>, <span class="m">w</span>&hellip;).</p>
+  <p>An earlier step already looked at each A-vertex and found the handful of B-vertices near enough to be plausible partners. Those are its <strong>candidates</strong>.</p>
+
+  <div class="def">
+    <span class="term">Cell</span>
+    <p>A <strong>cell</strong> is a pair <span class="cell">(X, v)</span> &mdash; one A-vertex <span class="m">X</span> paired with one of its candidate B-vertices <span class="m">v</span>. Read it as a single guess: <em>&ldquo;maybe <span class="m">X</span> matches <span class="m">v</span>.&rdquo;</em></p>
+    <p>Every cell carries a number, its <strong>emission</strong> <span class="m">E(X, v)</span> &mdash; how badly <span class="m">X</span> fits <span class="m">v</span> (mostly how far apart they are). Small <span class="m">E</span> = good fit.</p>
+  </div>
+
+  <p>The final answer, called <span class="m">M</span>, is simply <strong>a chosen set of cells</strong> &mdash; for each A-vertex, which B-vertex (or vertices) it lands on. The cost of an answer is the sum of its cells' emissions, weighted by the rules in the next section. Extraction picks the set with the smallest total.</p>
+
+  <h2 id="s2"><span class="num">2</span>The three moves</h2>
+  <p class="lead-in">How you walk both graphs in step &mdash; and the only three things that can happen.</p>
+  <p>Think of tracing a finger along <span class="m">A</span> and another along <span class="m">B</span> at the same time, always moving forward. At each tick exactly one of three things happens. Each has a cost weight.</p>
+
+  <div class="moves">
+    <div class="move">
+      <span class="tag advance">Advance</span>
+      <h4>Both step forward</h4>
+      <p><span class="m">A</span> moves to its next vertex <em>and</em> <span class="m">B</span> moves to a next vertex. One-to-one. Normal progress.</p>
+      <p class="cost" style="color:var(--advance)">weight 1</p>
+    </div>
+    <div class="move">
+      <span class="tag stall">Stall</span>
+      <h4>A steps, B waits</h4>
+      <p>Several A-vertices pile onto the <em>same</em> B-vertex. Used where <span class="m">A</span> is more detailed than <span class="m">B</span>. Many-to-one.</p>
+      <p class="cost" style="color:var(--stall)">weight &beta;</p>
+    </div>
+    <div class="move">
+      <span class="tag cover">Cover</span>
+      <h4>B steps, A waits</h4>
+      <p>One A-vertex spans <em>several</em> B-vertices in a row. Used where <span class="m">B</span> is more detailed than <span class="m">A</span>. One-to-many.</p>
+      <p class="cost" style="color:var(--cover)">weight &alpha;</p>
+    </div>
+  </div>
+
+  <p>These three moves are the <strong>edges of a graph-of-cells</strong> &mdash; the <strong>&ldquo;cell DAG.&rdquo;</strong> Its dots are cells <span class="cell">(X, v)</span>; a move is a legal step from one cell to another. So the whole task restated: <em>find the cheapest connected trail of cells that covers every A-vertex.</em></p>
+
+  <div class="callout idea">
+    <span class="k">One distinction to hold onto</span>
+    <span class="tag advance">Advance</span> and <span class="tag stall">stall</span> connect cells of <strong>different</strong> A-vertices (a parent and its child). <span class="tag cover">Cover</span> connects cells of the <strong>same</strong> A-vertex. That split is why, two steps from now, each cell will need <em>two</em> tables instead of one.
+  </div>
+
+  <p class="lead-in" style="margin-top:26px">A word on &ldquo;DAG&rdquo;, &ldquo;parent&rdquo;, &ldquo;child&rdquo;</p>
+  <p><strong>DAG</strong> = <em>directed acyclic graph</em>: arrows have a direction and there are no loops. In <span class="m">A</span>, an arrow <span class="m">P&nbsp;&rarr;&nbsp;X</span> makes <span class="m">P</span> the <strong>parent</strong> and <span class="m">X</span> the <strong>child</strong> &mdash; parent points to child, following the flow. A vertex with no incoming arrow is a <strong>source</strong>; one with no outgoing arrow is a <strong>sink</strong>.</p>
+
+  <h2 id="s3"><span class="num">3</span>Runs &mdash; one A-vertex, several B-vertices</h2>
+  <p class="lead-in">Because of cover, matches aren't always one-to-one.</p>
+  <p>When an A-vertex uses <span class="tag cover">cover</span>, it maps to a whole <strong>run</strong> of B-vertices in a row. A run has two ends, and they face opposite ways:</p>
+
+  <figure>
+    <div class="fig-card">
+      <svg viewBox="0 0 560 150" width="560" role="img" aria-label="A run of one A-vertex over three B-vertices.">
+        <defs><marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path class="arrowhead" d="M0,0 L7,4 L0,8 Z"/></marker></defs>
+        <text x="105" y="34" class="lbl" font-size="13">parent connects here</text>
+        <text x="392" y="34" class="lbl" font-size="13">children attach here</text>
+        <line x1="150" y1="44" x2="150" y2="70" class="edge" marker-end="url(#ah)"/>
+        <line x1="440" y1="44" x2="440" y2="70" class="edge" marker-end="url(#ah)"/>
+        <circle cx="150" cy="92" r="22" class="nodeA"/><text x="150" y="97" text-anchor="middle" font-size="15">v</text>
+        <circle cx="295" cy="92" r="22" class="nodeA"/><text x="295" y="97" text-anchor="middle" font-size="15">w</text>
+        <circle cx="440" cy="92" r="22" class="nodeA"/><text x="440" y="97" text-anchor="middle" font-size="15">u</text>
+        <line x1="172" y1="92" x2="271" y2="92" class="edge" marker-end="url(#ah)"/>
+        <line x1="317" y1="92" x2="416" y2="92" class="edge" marker-end="url(#ah)"/>
+        <text x="222" y="82" text-anchor="middle" fill="var(--cover)" font-size="12">cover</text>
+        <text x="367" y="82" text-anchor="middle" fill="var(--cover)" font-size="12">cover</text>
+        <text x="150" y="132" text-anchor="middle" class="lbl" font-size="13">start</text>
+        <text x="295" y="132" text-anchor="middle" class="lbl" font-size="13">interior</text>
+        <text x="440" y="132" text-anchor="middle" class="lbl" font-size="13">finish</text>
+      </svg>
+      <figcaption>A-vertex <span class="m">X</span> covering the run <span class="m">v &rarr; w &rarr; u</span>. Its <strong>start</strong> faces the parent; its <strong>finish</strong> faces the children.</figcaption>
+    </div>
+  </figure>
+
+  <p>The tuple that records this run is <span class="m">(v,&nbsp;w,&nbsp;u)</span> &mdash; its length is how many B-vertices the A-vertex covers. A plain one-to-one match is just a length-1 run like <span class="m">(u,)</span>. Keep the two ends &mdash; <strong>start</strong> and <strong>finish</strong> &mdash; in mind; the whole table design hangs on them.</p>
+
+  <h2 id="s4"><span class="num">4</span>The dream that breaks</h2>
+  <p class="lead-in">The obvious algorithm &mdash; and the small example that proves it wrong.</p>
+  <p>Here's the natural first idea. Give every cell <strong>one number</strong> (its best cost so far), walk the cell DAG in order, at each cell take the cheapest arriving option, add its own cost, pass it on. A clean scalar dynamic program. It would be fast and simple.</p>
+  <p>It's also <strong>wrong</strong> &mdash; and seeing exactly how is the key that unlocks everything after. Here is the smallest graph that breaks it.</p>
+
+  <figure>
+    <div class="fig-card">
+      <div class="fig-row">
+        <div>
+          <svg viewBox="0 0 220 190" width="220" role="img" aria-label="Graph A: J splits to c1 and c2.">
+            <defs><marker id="ah2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path class="arrowhead" d="M0,0 L7,4 L0,8 Z"/></marker></defs>
+            <circle cx="110" cy="36" r="24" class="nodeA"/><text x="110" y="41" text-anchor="middle" font-size="15">J</text>
+            <line x1="95" y1="55" x2="58" y2="120" class="edge" marker-end="url(#ah2)"/>
+            <line x1="125" y1="55" x2="162" y2="120" class="edge" marker-end="url(#ah2)"/>
+            <circle cx="52" cy="140" r="24" class="nodeA"/><text x="52" y="145" text-anchor="middle" font-size="14">c&#8321;</text>
+            <circle cx="168" cy="140" r="24" class="nodeA"/><text x="168" y="145" text-anchor="middle" font-size="14">c&#8322;</text>
+            <text x="110" y="182" text-anchor="middle" class="lbl" font-size="12">A &mdash; J is a split</text>
+          </svg>
+        </div>
+        <div>
+          <svg viewBox="0 0 260 190" width="260" role="img" aria-label="Graph B: v1 and v2 each fan to two vertices.">
+            <defs><marker id="ah3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path class="arrowhead" d="M0,0 L7,4 L0,8 Z"/></marker></defs>
+            <circle cx="70" cy="36" r="22" class="node"/><text x="70" y="41" text-anchor="middle" font-size="14">v&#8321;</text>
+            <circle cx="190" cy="36" r="22" class="node"/><text x="190" y="41" text-anchor="middle" font-size="14">v&#8322;</text>
+            <line x1="58" y1="54" x2="34" y2="118" class="edge" marker-end="url(#ah3)"/>
+            <line x1="82" y1="54" x2="150" y2="118" class="edge" marker-end="url(#ah3)"/>
+            <line x1="178" y1="54" x2="110" y2="118" class="edge" marker-end="url(#ah3)"/>
+            <line x1="202" y1="54" x2="226" y2="118" class="edge" marker-end="url(#ah3)"/>
+            <circle cx="28" cy="138" r="22" class="node"/><text x="28" y="143" text-anchor="middle" font-size="14">u</text>
+            <circle cx="104" cy="138" r="22" class="node"/><text x="104" y="143" text-anchor="middle" font-size="13">d&#8242;</text>
+            <circle cx="156" cy="138" r="22" class="node"/><text x="156" y="143" text-anchor="middle" font-size="13">u&#8242;</text>
+            <circle cx="232" cy="138" r="22" class="node"/><text x="232" y="143" text-anchor="middle" font-size="14">d</text>
+            <text x="130" y="182" text-anchor="middle" class="lbl" font-size="12">B &mdash; each v fans out</text>
+          </svg>
+        </div>
+      </div>
+      <figcaption>
+        Candidates: <span class="m">c&#8321;&isin;{u, u&#8242;}</span>, <span class="m">c&#8322;&isin;{d, d&#8242;}</span>.
+        Fits: <span class="m">E(c&#8321;,u)=0, E(c&#8321;,u&#8242;)=5, E(c&#8322;,d)=0, E(c&#8322;,d&#8242;)=5</span>, and <span class="m">E(J,&middot;)=1</span>.
+      </figcaption>
+    </div>
+  </figure>
+
+  <p>Notice which B-vertex each cheap match forces the parent onto. There is exactly one arrow into each, so:</p>
+
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th class="mono">sink cell</th><th>reached only from</th><th>so it demands J sits on</th><th>its fit E</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">c&#8321; = u</td><td class="mono">v&#8321; &rarr; u</td><td class="mono"><b class="cover">v&#8321;</b></td><td>0</td></tr>
+        <tr><td class="mono">c&#8321; = u&#8242;</td><td class="mono">v&#8322; &rarr; u&#8242;</td><td class="mono">v&#8322;</td><td>5</td></tr>
+        <tr><td class="mono">c&#8322; = d</td><td class="mono">v&#8322; &rarr; d</td><td class="mono"><b class="cover">v&#8322;</b></td><td>0</td></tr>
+        <tr><td class="mono">c&#8322; = d&#8242;</td><td class="mono">v&#8321; &rarr; d&#8242;</td><td class="mono">v&#8321;</td><td>5</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>The scalar DP lets each child pick its own cheapest independently: <span class="m">c&#8321;</span> grabs <span class="cell">c&#8321; = u</span> (cost 0, wants <span class="m">J = v&#8321;</span>), <span class="m">c&#8322;</span> grabs <span class="cell">c&#8322; = d</span> (cost 0, wants <span class="m">J = v&#8322;</span>). It reports a total near <strong>1</strong>. But <span class="m">J</span> is <em>one</em> vertex &mdash; it cannot sit on <span class="m">v&#8321;</span> and <span class="m">v&#8322;</span> at once. That answer is a <strong>phantom</strong>: no real matching achieves it.</p>
+
+  <p>The real options &mdash; both children must leave <span class="m">J</span> from the <em>same</em> cell:</p>
+
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th class="mono">pick (c&#8321;, c&#8322;)</th><th>c&#8321; wants J on</th><th>c&#8322; wants J on</th><th>agree?</th><th>real cost</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">(u, d)</td><td class="mono">v&#8321;</td><td class="mono">v&#8322;</td><td class="no">no &mdash; impossible</td><td>&mdash;</td></tr>
+        <tr><td class="mono">(u, d&#8242;)</td><td class="mono">v&#8321;</td><td class="mono">v&#8321;</td><td class="yes">yes</td><td>1+0+5 = 6</td></tr>
+        <tr><td class="mono">(u&#8242;, d)</td><td class="mono">v&#8322;</td><td class="mono">v&#8322;</td><td class="yes">yes</td><td>1+5+0 = 6</td></tr>
+        <tr><td class="mono">(u&#8242;, d&#8242;)</td><td class="mono">v&#8322;</td><td class="mono">v&#8321;</td><td class="no">no &mdash; impossible</td><td>&mdash;</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout trap">
+    <span class="k">The trap</span>
+    The true best is <strong>6</strong>, not 1. The cheapest-looking pick, <span class="cell">(u, d)</span>, is exactly the impossible one. The scalar DP fails because each child threw away the alternative the <em>other</em> child needed &mdash; and by the time they'd have to agree, the needed option was already gone.
+  </div>
+
+  <p>Everything the real algorithm adds exists to avoid this one mistake: <strong>don't let a cell collapse to a single value while a shared decision is still open.</strong></p>
+
+  <h2 id="s5"><span class="num">5</span>Two tables per cell &mdash; and what's in a row</h2>
+  <p class="lead-in">The data structure, defined exactly.</p>
+  <p>From Section 3, a run has two ends. Each is a separate concern, so <strong>every cell keeps two tables</strong>:</p>
+
+  <div class="def">
+    <span class="term">END[(X, u)] &mdash; the finish end</span>
+    <p>&ldquo;X's run <strong>finishes</strong> at <span class="m">u</span>.&rdquo; This is the side the <strong>children</strong> attach to. Its recorded run so far is just <span class="m">(u,)</span>.</p>
+  </div>
+  <div class="def">
+    <span class="term">ENTRY[(X, v)] &mdash; the start end</span>
+    <p>&ldquo;X's run <strong>starts</strong> at <span class="m">v</span>.&rdquo; This is the side the <strong>parent</strong> connects to. The whole run from <span class="m">v</span> onward is already settled inside; <span class="m">v</span>'s own fit <span class="m">E</span> is left <strong>unpaid</strong> &mdash; the parent will pay it, because the price depends on <em>how</em> the parent connects (weight 1 if it advances in, &beta; if it stalls in), and the parent hasn't been reached yet.</p>
+  </div>
+
+  <p>So for one A-vertex with candidate cells <span class="m">{a, b, c}</span> you get <em>six</em> tables: an <span class="m">END</span> and an <span class="m">ENTRY</span> for each. A single run <span class="m">v&rarr;w&rarr;u</span> is filed twice &mdash; as a row in <span class="m">ENTRY[(X, v)]</span> (its start) and in <span class="m">END[(X, u)]</span> (its finish). The interior <span class="m">w</span> is never an index; it just sits inside the tuple.</p>
+
+  <h3>What a table is</h3>
+  <p>A table is a small set of <strong>rows</strong>, all with the same three columns. Each row is one candidate partial answer:</p>
+
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>value</th><th>pending</th><th>cells &mdash; the matching so far</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">3.5</td><td class="mono">{ }</td><td class="mono">{ X:(u,), Y:(u,w) }</td></tr>
+        <tr><td class="mono">6.0</td><td class="mono">{(m,w&#8321;):F}</td><td class="mono">{ X:(u,), &hellip; }</td></tr>
+        <tr><td class="mono">2.0</td><td class="mono">{(m,w&#8322;):F}</td><td class="mono">{ X:(u,), &hellip; }</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <ul>
+    <li><strong>value</strong> &mdash; the total cost gathered so far (leaving out the unpaid entry and any unpaid <span class="m">pending</span> items).</li>
+    <li><strong>pending</strong> &mdash; unresolved shared decisions this row is carrying. Empty <span class="m">{ }</span> almost everywhere; explained fully in Section 9.</li>
+    <li><strong>cells</strong> &mdash; the actual matching being built: for each A-vertex, its run of B-vertices. The answer <em>travels inside the row</em>; there's no separate backtrace.</li>
+  </ul>
+
+  <p>The table only ever keeps the <strong>cheapest row per distinct <span class="m">pending</span></strong>. Two rows carrying the same <span class="m">pending</span> are interchangeable &rarr; drop the pricier. Rows with <em>different</em> <span class="m">pending</span> are genuine alternatives &rarr; both survive.</p>
+
+  <div class="callout idea">
+    <span class="k">The whole trick in one line</span>
+    Where nothing is unresolved, <span class="m">pending</span> is <span class="m">{ }</span>, so a table is exactly <strong>one row</strong> &mdash; your simple scalar DP. Tables grow past one row <strong>only</strong> at a merge, which is precisely where the scalar DP was wrong. The multi-row machinery is the fix, applied nowhere else.
+  </div>
+
+  <h2 id="s6"><span class="num">6</span>The sweep &mdash; vertices of A, sinks first</h2>
+  <p class="lead-in">What we start with, and which way we go.</p>
+  <p>Before extraction begins we already have: every surviving cell, its emission <span class="m">E</span>, and pruning flags (dead cells are gone). The <span class="m">END</span>/<span class="m">ENTRY</span> tables are <strong>empty</strong> &mdash; the sweep builds them.</p>
+  <p>The order runs over the <strong>vertices of <span class="m">A</span></strong>, not over individual cells: sort A's vertices topologically and walk them <strong>in reverse &mdash; sinks first, sources last</strong>. Each vertex gets <strong>one turn</strong>, and in that turn we compute <em>all</em> of its tables at once &mdash; an <span class="m">END</span> and an <span class="m">ENTRY</span> for every one of its candidates.</p>
+  <p>Why this direction: when we reach a vertex <span class="m">X</span>, all of its <strong>children</strong> (downstream, nearer the sinks) are already done, so we can attach them; its <strong>parent</strong> (upstream) comes later, which is exactly why <span class="m">X</span> defers its entry cost. The base case is a <strong>sink</strong>: with no children, its <span class="m">END</span> is just the starting row <span class="m">(value 0, {}, {sink:(u,)})</span>.</p>
+
+  <p>One more thing the sweep needs &mdash; the channel that carries a finished vertex's result to the next one: the <strong>inbox</strong>.</p>
+  <div class="def">
+    <span class="term">Inbox</span>
+    <p>Every vertex owns an <strong>inbox</strong> that its children fill. When a child finishes (earlier &mdash; sinks first), it drops its finished, already-priced rows into the inbox of the parent that will read them. So by the time a vertex's turn arrives, everything it needs is already sitting there.</p>
+    <p>A row is filed by <em>which cell of the parent it attaches to</em> and <em>which child sent it</em>. The slot <span class="m">inbox[X][u][c]</span> means: &ldquo;the rows from child <span class="m">c</span>, waiting at <span class="m">X</span>'s cell <span class="m">u</span>.&rdquo;</p>
+  </div>
+  <p>That inbox is the <strong>input</strong> to building a vertex's tables &mdash; the next section shows exactly how. (Its full life &mdash; when it fills, when the vertex pushes onward, when it's freed &mdash; is Section&nbsp;8.)</p>
+
+  <h2 id="s7"><span class="num">7</span>Building the tables, candidate by candidate</h2>
+  <p class="lead-in">One vertex's turn = two passes: every END, then every ENTRY. Each is a plain input &rarr; calculate &rarr; output.</p>
+  <p>On vertex <span class="m">X</span>'s turn we sweep its candidates <strong>twice</strong> &mdash; Pass&nbsp;1 builds every <span class="m">END[(X,u)]</span>, Pass&nbsp;2 builds every <span class="m">ENTRY[(X,v)]</span>. The thing to get straight is that the two tables read <strong>different inputs</strong>:</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>building this table</th><th>reads as input</th><th>and combines them by</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">END[(X,u)]</td><td>the <strong>inbox</strong> at <span class="m">u</span> (each child's rows) + a base row</td><td>cross-join over children</td></tr>
+        <tr><td class="mono">ENTRY[(X,v)]</td><td><span class="m">END[(X,v)]</span> + <span class="m">X</span>'s own <span class="m">ENTRY</span> of the next candidate</td><td>take the cheaper (cover)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>So <strong>only <span class="m">END</span> reads the inbox</strong>; <span class="m">ENTRY</span> is built entirely from tables <span class="m">X</span> already holds. Running example: <span class="m">A</span> is one arrow <span class="m">X &rarr; Y</span>; <span class="m">B</span> has <span class="m">u &rarr; w</span>; emissions <span class="m">E(Y,u)=3, E(Y,w)=1</span>; <span class="m">&alpha;=&beta;=1</span>. Child <span class="m">Y</span> finished earlier and already pushed its two priced options into <span class="m">X</span>'s inbox at cell <span class="m">u</span>.</p>
+
+  <h3>Pass 1 &mdash; building <span class="m">END[(X,u)]</span> &nbsp;<span style="color:var(--muted);font-family:var(--font-head);font-weight:400;font-size:15px">stage: read the inbox</span></h3>
+  <p><strong>Input.</strong> The bare row for <span class="m">X</span> at <span class="m">u</span>, plus &mdash; for <em>each</em> child &mdash; that child's option-list from the inbox slot at <span class="m">u</span>. One child here, <span class="m">Y</span>:</p>
+  <pre><span class="mut"># what Y left in X's inbox at cell u  (Y already paid its own connect cost):</span>
+inbox[<span class="b">X</span>][<span class="c">u</span>][<span class="g">Y</span>] = [ (3, {}, {Y:(u,)}),   <span class="mut">Y stalled on u   &rarr; paid &beta;&middot;E(Y,u)=3</span>
+                 (1, {}, {Y:(w,)}) ]  <span class="mut">Y advanced u&rarr;w  &rarr; paid 1&middot;E(Y,w)=1</span>
+
+base row     = (0, {}, {X:(u,)})</pre>
+  <div class="callout idea">
+    <span class="k">Why is the base value 0, not E(X,u)?</span>
+    <span class="m">E(X,u)</span> is <span class="m">X</span>'s own <strong>entry cost</strong>, and by the deferral rule (Section&nbsp;3) an entry's emission is left <strong>unpaid</strong> inside the state. It's paid later &mdash; by whoever connects to <span class="m">X</span> (its parent, at weight <span class="m">1</span> or <span class="m">&beta;</span>), or as <span class="m">&alpha;&middot;E(X,u)</span> if the run later covers past <span class="m">u</span>. So the base starts at <strong>0</strong> and only gathers the <em>children's</em> costs.
+  </div>
+  <p><strong>Calculate.</strong> Cross-join: combine the base with one option per child (values add, <span class="m">cells</span> merge, <span class="m">pending</span> merge), then keep the cheapest per <span class="m">pending</span>. With a single child it's just &ldquo;base + each of Y's options, keep the cheaper&rdquo;:</p>
+  <pre>base + (3, {Y:(u,)})  =  (3, {}, {X:(u,), Y:(u,)})
+base + (1, {Y:(w,)})  =  (1, {}, {X:(u,), Y:(w,)})   &larr; cheaper
+
+<span class="g">OUTPUT  END[(X,u)] = (1, {}, {X:(u,), Y:(w,)})</span></pre>
+  <p><strong>Output.</strong> One table, <span class="m">END[(X,u)]</span> = <span class="m">(1, {}, {X:(u,), Y:(w,)})</span>. With one child there was nothing to &ldquo;cross-join&rdquo; &mdash; we just kept Y's cheaper option. The cross-join only shows itself with <strong>two or more children</strong>, so let's do that next, because it's the part that matters.</p>
+
+  <h3>What &ldquo;combine&rdquo; and &ldquo;cross-join&rdquo; actually mean</h3>
+  <div class="def">
+    <span class="term">Combine two rows &mdash; written &oplus;</span>
+    <p>To fuse row <span class="m">(v&#8321;, p&#8321;, c&#8321;)</span> with <span class="m">(v&#8322;, p&#8322;, c&#8322;)</span> into one:</p>
+    <p><strong>1. Add the values:</strong> <span class="m">v&#8321; + v&#8322;</span>. &nbsp; <strong>2. Union the cells:</strong> <span class="m">c&#8321; &cup; c&#8322;</span> &mdash; they describe <em>different</em> A-vertices, so they never clash. &nbsp; <strong>3. Union the pending:</strong> <span class="m">p&#8321; &cup; p&#8322;</span> &mdash; empty here; at a merge, the same merge-vertex appearing with two <em>different</em> cells makes the fusion impossible, so that combination is dropped.</p>
+  </div>
+
+  <p>Now the same <span class="m">END</span> build, but <span class="m">X</span> has <strong>two</strong> children, <span class="m">Y</span> and <span class="m">Z</span>, both waiting at <span class="m">u</span>. <strong>Cross-join</strong> = start from the base row and fuse in <em>one option from every child</em>, trying <em>all</em> combinations:</p>
+  <pre>inbox[<span class="b">X</span>][<span class="c">u</span>][<span class="g">Y</span>] = [ Y&#8320;=(3,{},{Y:(u,)}),  Y&#8321;=(1,{},{Y:(w,)}) ]
+inbox[<span class="b">X</span>][<span class="c">u</span>][<span style="color:var(--stall)">Z</span>] = [ Z&#8320;=(4,{},{Z:(u,)}),  Z&#8321;=(1,{},{Z:(w,)}) ]
+base           =   (0,{},{X:(u,)})
+
+<span class="mut"># fuse base &oplus; (one Y) &oplus; (one Z) &mdash; all 2&times;2 = 4 combinations:</span>
+base &oplus; Y&#8320; &oplus; Z&#8320;  = (3+4 = 7, {}, {X:(u,), Y:(u,), Z:(u,)})
+base &oplus; Y&#8320; &oplus; Z&#8321;  = (3+1 = 4, {}, {X:(u,), Y:(u,), Z:(w,)})
+base &oplus; Y&#8321; &oplus; Z&#8320;  = (1+4 = 5, {}, {X:(u,), Y:(w,), Z:(u,)})
+base &oplus; Y&#8321; &oplus; Z&#8321;  = (1+1 = 2, {}, {X:(u,), Y:(w,), Z:(w,)})   <span class="g">&larr; cheapest</span>
+
+<span class="mut"># all four carry pending {} &rarr; same signature &rarr; keep only the cheapest:</span>
+<span class="g">END[(X,u)] = (2, {}, {X:(u,), Y:(w,), Z:(w,)})</span></pre>
+  <p>That is the merge, in full: <strong>every combination of one option per child</strong>, each fused with <span class="m">&oplus;</span>, then the cheapest kept per <span class="m">pending</span>. Two children &rarr; 2&times;2 combinations; three &rarr; 2&times;2&times;2; and <em>that</em> multiplication is the seed of the slowdown we reach in Section&nbsp;11 &mdash; harmless here only because every row's <span class="m">pending</span> is <span class="m">{}</span>, so they all collapse to one.</p>
+
+  <h3>Pass 2 &mdash; building <span class="m">ENTRY[(X,v)]</span> &nbsp;<span style="color:var(--muted);font-family:var(--font-head);font-weight:400;font-size:15px">stage: read END + cover</span></h3>
+  <p><strong>Input.</strong> No inbox this time. <span class="m">ENTRY[(X,v)]</span> reads two tables <span class="m">X</span> just computed: its own <span class="m">END[(X,v)]</span>, and its own <span class="m">ENTRY[(X,w)]</span> for the candidate <span class="m">w</span> one B-step later. That's why Pass&nbsp;2 walks candidates <strong>finish-end first</strong> &mdash; the &ldquo;next&rdquo; one is always ready.</p>
+  <p><strong>Calculate.</strong> This one is <em>not</em> a cross-join &mdash; there are no children to fuse. It's a plain <strong>min between two rows</strong>: &ldquo;the run ends right here&rdquo; (<span class="m">END[(X,v)]</span>) versus &ldquo;extend the next candidate's run by one <span class="tag cover">cover</span> step&rdquo; (<span class="m">ENTRY[(X,w)]</span> with <span class="m">+&alpha;&middot;E</span> and <span class="m">v</span> prepended). Keep the cheaper, per <span class="m">pending</span>:</p>
+  <pre><span class="mut"># the COVER branch: extend the run, paying &alpha;&middot;E for each cell it covers past.
+# For E(X,u)=1, E(X,w)=2, building the run v&rarr;w&rarr;u:</span>
+run (u,)     :  0                          <span class="mut">just the finish; entry u unpaid</span>
+run (w,u)    :  0 + &alpha;&middot;E(X,u)=1  =  1        <span class="mut">covered u; entry w unpaid</span>
+run (v,w,u)  :  1 + &alpha;&middot;E(X,w)=2  =  3        <span class="mut">covered w; entry v unpaid</span></pre>
+  <p>So <span class="m">ENTRY[(X,v)]</span> for the full run carries value <strong>3</strong> (its cover charges), with the entry <span class="m">v</span> still unpaid. And note the <span class="m">min</span>: since extending only <em>adds</em> <span class="m">&alpha;&middot;E</span>, ending early is cheaper on its own &mdash; the run extends <strong>only when it is forced to reach a later finish</strong>, for instance because <span class="m">X</span>'s children attach at <span class="m">u</span>, so the run must span down to <span class="m">u</span> to carry them.</p>
+  <p><strong>Output.</strong> One <span class="m">ENTRY</span> table per candidate. An interior candidate's table is never empty &mdash; it is the stepping-stone the longer runs are built from. When Pass&nbsp;2 ends, <em>every</em> table of <span class="m">X</span> exists; only then does anything leave the vertex &mdash; which is Section&nbsp;8.</p>
+
+  <h2 id="s8"><span class="num">8</span>The lifecycle &mdash; inbox, push, free</h2>
+  <p class="lead-in">A table lives for exactly one turn: born, used, pushed onward, freed &mdash; then never touched again.</p>
+  <p>We met the <strong>inbox</strong> in Section&nbsp;6 (each vertex's mailbox, filled by its children). Now watch a vertex's whole life around it, in three phases:</p>
+
+  <ol class="phases">
+    <li><strong>Before X's turn &mdash; the inbox fills.</strong> Each child of <span class="m">X</span>, on its own earlier turn, dropped its rows into <span class="m">X</span>'s inbox. Nothing of <span class="m">X</span> itself exists yet; the inbox just accumulates across those turns.</li>
+    <li><strong>X's turn &mdash; everything happens here.</strong>
+      <span class="phase-sub"><strong>read</strong> the inbox (all children's rows are present) &nbsp;&rarr;&nbsp; <strong>build</strong> every <span class="m">END[(X,u)]</span> (Pass&nbsp;1) &nbsp;&rarr;&nbsp; <strong>build</strong> every <span class="m">ENTRY[(X,v)]</span> (Pass&nbsp;2) &nbsp;&rarr;&nbsp; <strong>push</strong> the <span class="m">ENTRY</span> rows into the parent's inbox &nbsp;&rarr;&nbsp; <strong>free</strong> <span class="m">X</span>'s tables and inbox.</span></li>
+    <li><strong>After X's turn &mdash; the table is gone.</strong> The <span class="m">END</span>/<span class="m">ENTRY</span> objects are dropped. Only the <em>rows</em> survive &mdash; sitting, by reference, in the parent's inbox, waiting for the parent's turn.</li>
+  </ol>
+
+  <p>So, plainly: a table is <strong>born</strong> on its vertex's turn, is <strong>never updated afterward</strong> (it is built complete in that one turn), and <strong>dies</strong> at the end of the turn.</p>
+
+  <p><strong>Per table, or per vertex?</strong> The push is <strong>per vertex, once</strong> &mdash; at the very end of the turn. <span class="m">X</span> finishes <em>all</em> its <span class="m">END</span> tables, then <em>all</em> its <span class="m">ENTRY</span> tables, and only then, in a single batch, prices its finished <span class="m">ENTRY</span> rows and drops them into its <strong>parent's</strong> inbox. Nothing leaves <span class="m">X</span> table-by-table; a half-built vertex emits nothing.</p>
+
+  <h3>Where the push goes &mdash; parent vertex, or parent cell?</h3>
+  <p>Both, at two granularities. The inbox belongs to the <strong>parent vertex</strong> <span class="m">P</span>. But each pushed row is <strong>addressed to a specific cell of <span class="m">P</span></strong>, and tagged by which child sent it. The mailbox slot is:</p>
+  <pre>inbox[ <span class="b">P</span> ][ <span class="c">u</span> ][ <span class="g">X</span> ]  =  the rows
+        <span class="mut">&#8593;      &#8593;      &#8593;</span>
+      <span class="mut">parent  parent   child</span>
+      <span class="mut">vertex  cell u   X</span></pre>
+  <p>Which parent cell <span class="m">u</span>? The one that <span class="m">X</span>'s entry <span class="m">e</span> can legally connect to &mdash; either <span class="m">u = e</span> (a <span class="tag stall">stall</span>) or <span class="m">e</span> one B-step past <span class="m">u</span> (an <span class="tag advance">advance</span>). So when <span class="m">P</span>'s turn comes and it builds <span class="m">END[(P,u)]</span> in Pass&nbsp;1, the child rows it folds in are exactly the ones waiting in <span class="m">inbox[P][u]</span>. The push and the read line up perfectly &mdash; that is the whole handoff between a child and its parent.</p>
+
+  <p class="lead-in" style="margin-top:24px">One caveat, picked up next section</p>
+  <p>If <span class="m">X</span> has <em>several</em> parents &mdash; meaning <span class="m">X</span> is a <strong>merge</strong> &mdash; only <strong>one</strong> of them (the &ldquo;absorber&rdquo;) receives the pushed rows; the other arms are handled a different way. That is exactly what Section&nbsp;9 is about.</p>
+
+  <div class="callout idea">
+    <span class="k">Why it can die so fast</span>
+    Once <span class="m">X</span> is done, nothing downstream needs it (already processed), and its parent reads it only through the rows already pushed. So the only thing ever held in memory is the set of <strong>unprocessed inboxes</strong> &mdash; the sweep's moving frontier &mdash; never all the tables at once.
+  </div>
+
+  <h2 id="s9"><span class="num">9</span>Pending &mdash; the merge, where alternatives are born</h2>
+  <p class="lead-in">The one place tables grow past a single row &mdash; and the reason the whole design exists.</p>
+
+  <div class="def">
+    <span class="term">Merge</span>
+    <p>A <strong>merge</strong> is an A-vertex with more than one parent &mdash; two arrows point into it. Its parents are its <strong>arms</strong>. The arms must end up agreeing on which cell the merge sits in; enforcing that agreement is the entire job of <span class="m">pending</span>.</p>
+  </div>
+
+  <p>The smallest merge that shows the point:</p>
+
+  <figure>
+    <div class="fig-card">
+      <div class="fig-row">
+        <div>
+          <svg viewBox="0 0 220 180" width="220" role="img" aria-label="Graph A: p1 and p2 both point to m.">
+            <defs><marker id="ah4" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path class="arrowhead" d="M0,0 L7,4 L0,8 Z"/></marker></defs>
+            <circle cx="48" cy="40" r="24" class="nodeA"/><text x="48" y="45" text-anchor="middle" font-size="14">p&#8321;</text>
+            <circle cx="172" cy="40" r="24" class="nodeA"/><text x="172" y="45" text-anchor="middle" font-size="14">p&#8322;</text>
+            <line x1="64" y1="58" x2="98" y2="118" class="edge" marker-end="url(#ah4)"/>
+            <line x1="156" y1="58" x2="122" y2="118" class="edge" marker-end="url(#ah4)"/>
+            <circle cx="110" cy="140" r="24" class="nodeA"/><text x="110" y="145" text-anchor="middle" font-size="15">m</text>
+            <text x="110" y="176" text-anchor="middle" class="lbl" font-size="12">m is a merge (two arms)</text>
+          </svg>
+        </div>
+        <div style="align-self:center">
+          <div class="mono" style="font-family:var(--font-mono);font-size:13.5px;line-height:1.9;color:var(--muted)">
+            cand(p&#8321;) = {a}<br>
+            cand(p&#8322;) = {b&#8321;, b&#8322;}<br>
+            cand(m)&nbsp; = {w&#8321;, w&#8322;}<br><br>
+            E(p&#8321;,a)=0<br>
+            E(p&#8322;,b&#8321;)=5&nbsp;&nbsp;E(p&#8322;,b&#8322;)=0<br>
+            E(m,w&#8321;)=1&nbsp;&nbsp;E(m,w&#8322;)=2
+          </div>
+        </div>
+      </div>
+      <figcaption>B-edges: <span class="m">a&rarr;w&#8321;, a&rarr;w&#8322;, b&#8321;&rarr;w&#8321;, b&#8322;&rarr;w&#8322;</span>. The cheap arm <span class="m">b&#8322;</span> only reaches <span class="m">w&#8322;</span>.</figcaption>
+    </div>
+  </figure>
+
+  <p><strong style="color:var(--accent)">Turn 1 &middot; vertex m</strong> (the sink). Sweep sinks-first, so <span class="m">m</span> goes first; its two cells, entry unpaid:</p>
+  <pre>m@w&#8321;:  (0, {}, {m:(w&#8321;,)})        m@w&#8322;:  (0, {}, {m:(w&#8322;,)})</pre>
+
+  <p><strong style="color:var(--accent)">Turn 2 &middot; vertex p&#8321;</strong> (the <strong>absorber</strong> arm). It consumes <span class="m">m</span> from its inbox &mdash; but it <em>cannot pay <span class="m">m</span>'s entry yet</em>, because the other arm hasn't been seen and both must land on the same cell of <span class="m">m</span>. So instead of paying, it <strong>defers</strong>: <span class="m">pending</span> is born, one row per candidate cell of <span class="m">m</span>:</p>
+  <pre>(0, {(m,w&#8321;):F}, {p&#8321;:(a,), m:(w&#8321;,)})   <span class="mut">&larr; assumes m enters at w&#8321;</span>
+(0, {(m,w&#8322;):F}, {p&#8321;:(a,), m:(w&#8322;,)})   <span class="mut">&larr; assumes m enters at w&#8322;</span></pre>
+  <p>These two rows carry <strong>different <span class="m">pending</span></strong>, so &mdash; the crucial break from the scalar DP &mdash; <span class="m">p&#8321;</span> is <em>not allowed</em> to keep only the cheaper. It keeps <strong>both</strong>.</p>
+  <p><strong style="color:var(--accent)">Turn 3 &middot; vertex p&#8322;</strong> (the other arm). It is <em>not</em> the absorber, so it contributes only <strong>markers</strong> &mdash; one per cell of <span class="m">m</span>, carrying the same <span class="m">pending</span> but no cells of its own yet. These are what the two arms will later be matched on.</p>
+
+  <div class="callout idea">
+    <span class="k">What pending is</span>
+    <span class="m">pending = {(merge, its assumed cell): stall-flag}</span>. In words: <em>&ldquo;keep one alternative per possible cell of the shared merge, so the other arm can still choose the one that agrees.&rdquo;</em> That's the whole of it &mdash; and it's exactly what was missing in Section 4.
+  </div>
+
+  <h3>Why one absorber, not two half-cost copies?</h3>
+  <p>There's a tempting, fully symmetric alternative: send <em>all</em> of <span class="m">m</span>'s rows to <strong>both</strong> parents unchanged, but <strong>halve each row's cost</strong>. At the join the two halves add back to the full cost, and since both parents got the same rows they agree on <span class="m">m</span>'s cell. This is <strong>correct</strong> &mdash; no phantom, no double-count. So why the lopsided absorber instead?</p>
+  <p>Because a row has two parts that behave differently under &ldquo;halve&rdquo;:</p>
+  <ul>
+    <li>the <strong>cost</strong> is a single number &mdash; halving it is fine, and the halves sum cleanly at the join;</li>
+    <li>the <strong>cells</strong> &mdash; <span class="m">m</span>'s entire downstream matching <span class="m">M</span> &mdash; <strong>cannot</strong> be halved (there is no such thing as half a matching), so each parent must carry the <em>full</em> copy.</li>
+  </ul>
+  <p>So under the half-cost scheme, <span class="m">m</span>'s whole cone-matching would sit <strong>duplicated on both arms</strong>, and stay duplicated for the entire stretch from <span class="m">m</span> up to wherever the arms rejoin. That matching is the <em>big</em> part of a row (it grows with the cone); the cost is one float. You'd pay ~2&times; memory on <span class="m">m</span>'s cone just to split a single number.</p>
+  <p>The absorber sidesteps it by <em>not</em> splitting at all:</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th></th><th>halve the cost, send to both</th><th>absorber (what the code does)</th></tr></thead>
+      <tbody>
+        <tr><td><strong>m's cost</strong></td><td>&frac12; on each arm, sums at the join</td><td>full on the absorber, 0 on the other</td></tr>
+        <tr><td><strong>m's cells (M)</strong></td><td>full copy on <strong>both</strong> arms (duplicated)</td><td>full on the absorber, <span class="m">{}</span> on the other</td></tr>
+        <tr><td><strong>memory on m's cone</strong></td><td class="no">~2&times;</td><td class="yes">1&times;</td></tr>
+        <tr><td><strong>correctness</strong></td><td class="yes">correct</td><td class="yes">correct</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Both give the identical answer and keep the same number of rows &mdash; you still hold the alternatives on both sides either way. The asymmetry buys nothing in correctness; it exists solely so the expensive part, <span class="m">M</span>, travels on <strong>one</strong> arm instead of two.</p>
+
+  <h2 id="s10"><span class="num">10</span>Discharge, and reading off the answer</h2>
+  <p class="lead-in">How the kept alternatives collapse back to one.</p>
+  <p>The deferred entry can't stay unpaid forever. It is <strong>discharged</strong> &mdash; paid once and dropped &mdash; at the moment the merge's arms finally meet. When both arms are in one row, we check they picked the same cell of <span class="m">m</span> (mismatches are thrown away), pay <span class="m">E(m,&middot;)</span> a single time, and remove the <span class="m">pending</span> key. Continuing the example to the end, where the two source arms combine:</p>
+  <pre><span class="mut">sources pay their own entries first: p&#8321; +0 ; b&#8321; +5, b&#8322; +0</span>
+{m@w&#8321;} &times; {m@w&#8322;}   <span class="r">&rarr; same merge, different cell &rarr; conflict, discarded</span>
+{m@w&#8321;} &times; {m@w&#8321;}   &rarr; agree &rarr; (5, {(m,w&#8321;):F}, all cells)
+{m@w&#8322;} &times; {m@w&#8322;}   &rarr; agree &rarr; (0, {(m,w&#8322;):F}, all cells)
+
+discharge (pay E(m,&middot;) once, drop the key):
+   5 + E(m,w&#8321;) = 6            0 + E(m,w&#8322;) = <span class="g">2</span>
+no keys left &rarr; rows comparable &rarr; take the min:  <span class="g">2</span>  &#10003; the true optimum</pre>
+  <p>Because both alternatives were kept, the arm with the cheap-but-picky option (<span class="m">b&#8322;</span>, which only pairs with <span class="m">w&#8322;</span>) could still find its partner, and the correct answer <strong>2</strong> survives &mdash; where the scalar DP had thrown it away. Once the last vertex is folded, the surviving row with the lowest <span class="m">value</span> that passes the validity rules <em>is</em> the answer <span class="m">M</span> &mdash; already sitting in its <span class="m">cells</span> field.</p>
+
+  <h2 id="s11"><span class="num">11</span>When it gets slow</h2>
+  <p class="lead-in">Where the elegance has a price &mdash; and the exact shape of the trouble.</p>
+  <p>Count the rows. A stretch with no merge carries <span class="m">pending = {}</span> everywhere, so every table is one row &mdash; fast, scalar, ideal. <strong>One</strong> merge with <span class="m">k</span> candidate cells means up to <span class="m">k</span> live rows &mdash; still cheap.</p>
+  <p>The danger is <strong>two or more merges open at the same time</strong>. Their <span class="m">pending</span> markers coexist, and the number of distinct combinations becomes the <em>product</em> of their cell counts &mdash; <span class="m">k&#8321; &times; k&#8322; &times; &hellip;</span>. Rows multiply instead of add.</p>
+
+  <div class="callout trap">
+    <span class="k">The escape valve &mdash; and its blind spot</span>
+    There's a rescue called <strong>early discharge</strong>: pay off a merge's <span class="m">pending</span> as soon as its arms rejoin at a <em>shared ancestor</em>, so it never lingers to multiply with the next merge. It works beautifully when the graph's branches reconverge. But if <span class="m">A</span> is a <strong>tree</strong> &mdash; branches that split and never rejoin &mdash; a merge's arms share <em>no</em> ancestor, early discharge never fires, and every merge's <span class="m">pending</span> survives to the very end. Several merges in a tree, and the product blows up.
+  </div>
+
+  <p>That is the crux worth remembering: the algorithm is a clean scalar DP everywhere except at merges, and merges are handled cheaply <em>as long as their alternatives get discharged early</em>. The pathological case is a <strong>tree-shaped <span class="m">A</span> with more than one merge</strong> &mdash; exactly the situation where early discharge has nothing to grab onto, so the kept alternatives pile up multiplicatively. Knowing that tells you precisely where to look when the extraction is slow, and precisely what a fix has to change: give the tree case a way to discharge that doesn't depend on branches ever meeting again.</p>
+
+</div>
+
+<footer>
+  A plain-language companion to <span class="m" style="font-family:var(--font-mono)">network_matching.dag_dtw.extract_cell</span> and its design note <span class="m" style="font-family:var(--font-mono)">docs/cell_dag_extraction.md</span>. Every term here is defined from scratch; the formal contract, weights, and proofs live in that note.
+</footer>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var saved = null;
+    try { saved = localStorage.getItem("cdx-theme"); } catch (e) {}
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+
+    var btn = document.getElementById("themeToggle");
+    function current() {
+      var t = root.getAttribute("data-theme");
+      if (t) return t;
+      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+    }
+    function render() {
+      var t = current();
+      btn.textContent = t === "dark" ? "☀︎  Light" : "☽  Dark";
+      btn.setAttribute("aria-label", "Switch to " + (t === "dark" ? "light" : "dark") + " theme");
+    }
+    btn.addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("cdx-theme", next); } catch (e) {}
+      render();
+    });
+    render();
+  })();
+</script>
+</body>
+</html>
