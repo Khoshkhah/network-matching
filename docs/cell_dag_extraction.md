@@ -474,22 +474,70 @@ is the **only** lever for the all-coupled tail (§8.5: `100350` is invisible to 
 - **Default off** (`prune=False` on `extract_cell`/`match_dag`): shipped behaviour is bit-identical
   until the gate (§8.4/§7) is green.
 
-**Exactness — the prune never removes an optimal cell.** Let `M*` be the optimum and `c* = C(M*)`. For
-any cell `(m,v)` used by `M*`:
+**Exactness — a formal proof.**
 
-1. **`D[m][v] ≤ c*`.** `D[m][v]` is a valid *floor* on the cost of any matching that uses `(m,v)`: the
-   forward recurrence divides each predecessor's contribution by that predecessor's **out**-degree
-   (`dag_dtw.py:318`, `:230` — the §6.1 `/outdeg` phantom), so it **under**-counts, `D ≤ true cost`.
-   `M*` uses `(m,v)`, hence `c* = C(M*) ≥ D[m][v]`.
-2. **`c* ≤ UB`.** `UB` is a real valid matching's cost and `c*` is the *cheapest* valid cost, so
-   `c* ≤ UB` (the gate invariant `C(cell) ≤ C(join)`, 384/384).
+*Notation.* $\mathcal{M}$ = the valid matchings (V1–V3 + the run/move structure); for
+$M \in \mathcal{M}$, $\mathrm{run}_M(a) \subseteq V(B)$ is $a$'s run, and cell $(a,v)$ is *used by* $M$
+iff $v \in \mathrm{run}_M(a)$. Cost $C(M) = \sum_a \sum_{v \in \mathrm{run}_M(a)} w_M(a,v)\,E(a,v)$,
+with $E \ge 0$ and every ledger weight $w \in \{1, \beta, \alpha\}$, $\beta \ge 1$, $\alpha \in (0,1]$
+— all $> 0$, so **every cost term is $\ge 0$** $(\star)$. Write $c^{*} = \min_{\mathcal{M}} C$ and let
+$M^{*}$ be an optimiser. By the construction of `forward()` (§4.1),
+$D[a][v] = \min_{W} \Phi(W)$ over the legal **upstream configurations** $W$ of $(a,v)$ — a cell for
+$a$ and for each ancestor of $a$, move- and V3-consistent, with $a$'s run ending at $v$ — where
+$\Phi(W) = \sum_{(b,x) \in W} \gamma_W(b)\,w_W(b,x)\,E(b,x)$ and
+$\gamma_W(b) = \prod_{e:\, b \to a} 1/\mathrm{outdeg}(\mathrm{tail}\,e) \in (0,1]$ (the §4.1
+split-sharing; §6.1 shows it under-counts).
 
-Chaining, **`D[m][v] ≤ c* ≤ UB`** for every optimal cell, so the block predicate `D[m][v] > UB` is
-**false on every optimal cell** — only provably-suboptimal cells are removed. Blocking merely deletes
-whole rows/signature-classes from `seen`; it never alters a surviving row (rows are built from
-`seen`/interfaces/inbox), and every competitor it removes routed through a blocked cell (cost
-`≥ D > UB ≥ c*`), so none can undercut `M*`. The cheapest-valid-first selection returns the identical
-`M*` — bit-parity with the un-pruned run.
+*Proposition 1 (forward under-count): $D[a][v] \le C(M)$ for every $M$ using $(a,v)$.* From $M$ build
+$\widehat{M}$: keep $M$'s assignment on $a$ and its ancestors, **truncate** $\mathrm{run}_M(a)$ to end
+at $v$, and **drop** $M$ on all descendants of $a$. (i) $\widehat{M}$ is a legal upstream config for
+$(a,v)$ — its moves are $M$'s (valid), V3-consistent because $M$ is, $a$'s run ends at $v$ — so it is a
+feasible point of the $D[a][v]$ minimisation: $D[a][v] \le \Phi(\widehat{M})$. (ii) each $\gamma \le 1$
+and each $w\,E \ge 0$, so $\Phi(\widehat{M}) = \sum \gamma\,w\,E \le \sum w\,E$. (iii) $\widehat{M}$'s
+terms are a *subset* of $M$'s (truncation only deletes terms; each kept cell keeps its $M$-weight), all
+$\ge 0$, so by $(\star)$, $\sum w\,E \le C(M)$. Chaining: $D[a][v] \le C(M)$. $\blacksquare$
+
+*Proposition 2 (incumbent bound): $c^{*} \le \mathrm{UB}$.* $\mathrm{UB} = C(M_J)$ for the incumbent
+$M_J \in \mathcal{M}$ (from `extract_join`); $c^{*}$ is the minimum of $C$ over $\mathcal{M} \ni M_J$.
+$\blacksquare$
+
+*Theorem (exact prune).* Let
+$\text{blocked} = \{\,(m,v) : \mathrm{indeg}(m) \ge 2,\ D[m][v] < \infty,\ D[m][v] > \mathrm{UB}\,\}$ and
+$\mathcal{M}' = \{\,M \in \mathcal{M} : M \text{ uses no blocked cell}\,\}$. **(1)** For any cell
+$(m,v)$ used by $M^{*}$: Prop 1 gives $D[m][v] \le c^{*}$, Prop 2 gives $c^{*} \le \mathrm{UB}$, so
+$D[m][v] \le \mathrm{UB} \Rightarrow (m,v) \notin \text{blocked}$; hence $M^{*} \in \mathcal{M}'$.
+**(2)** $M^{*} \in \mathcal{M}' \Rightarrow \min_{\mathcal{M}'} C \le c^{*}$, and
+$\mathcal{M}' \subseteq \mathcal{M} \Rightarrow \min_{\mathcal{M}'} C \ge c^{*}$; so
+$\min_{\mathcal{M}'} C = c^{*}$, attained by $M^{*}$, and $\mathcal{M}' \ne \varnothing$ — the incumbent
+witnesses it: every cell of $M_J$ has $D \le C(M_J) = \mathrm{UB}$ by Prop 1, so $M_J \in \mathcal{M}'$
+(the code-level absence of a spurious `ValueError` is the Corollary, part (b)). $\blacksquare$
+
+*Corollary (bit-identical result).* Let $M_{\mathrm{ret}}$ be the matching `extract_cell` returns on
+the un-pruned instance. `extract_cell` contracts per pending-signature with a **validity-blind** min and
+runs `check_rules` only on the final list, so $M_{\mathrm{ret}}$ is the cheapest *valid* matching among
+the surviving signature representatives — *not* provably $c^{*}$ on its own. Assume therefore the
+cross-validation invariant $C(M_{\mathrm{ret}}) = C(\text{cell}) \le C(\texttt{extract\_join}) =
+\mathrm{UB}$ (gated 384/384; §7, §10.2). **(a)** $M_{\mathrm{ret}}$ is valid with
+$C(M_{\mathrm{ret}}) \le \mathrm{UB}$, so Prop 1 applies to it: every cell $(m,v)$ it uses has
+$D[m][v] \le C(M_{\mathrm{ret}}) \le \mathrm{UB}$, hence $(m,v) \notin \text{blocked}$ —
+$M_{\mathrm{ret}}$ uses no blocked cell, and all its cells survive in `seen`. **(b)** $M_{\mathrm{ret}}$
+is the cheapest matching of its own final pending-signature (else a cheaper same-signature matching
+would have been the un-pruned representative); removing blocked cells — none of them
+$M_{\mathrm{ret}}$'s — creates no new rows and no cheaper same-signature matching, so $M_{\mathrm{ret}}$
+remains the pruned finals representative of its signature and, being valid, surfaces. The pruned run
+returns the same $M_{\mathrm{ret}}$, with no spurious `ValueError`. $\blacksquare$
+
+*Caveat (reconvergent residual).* Prop 1 bounds only *valid* matchings, so one case is not excluded by
+this proof: an *invalid*, blocked-cell-using finals candidate with cost $\le C(M_{\mathrm{ret}})$
+sharing a *post-early-discharge* signature with a valid resurfacing row — which requires an
+early-discharged (reconvergent) merge. On **tree** sources (the hourglass — §8: early discharge never
+fires, so every blocked merge cell stays in the final signature) this cannot arise and bit-parity is
+exact up to exact-cost string-ties; on reconvergent DAGs the residual is covered by the §8.4 empirical
+parity gate (§7: "no divergence observed").
+
+The proof rests entirely on Proposition 1, whose only non-elementary input is that $D$ **is** the
+min-over-configs above (the established semantics of `forward()`); $\widehat{M}$'s feasibility and
+$\gamma \le 1$ do the rest.
 
 **Why `D` alone, not `D+B−E`.** The first draft used `D[m][v] + B[m][v] − E[m][v]` (forward + backward,
 minus the doubly-counted emission). Two independent adversarial refutations killed it with executed

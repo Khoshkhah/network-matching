@@ -1,0 +1,186 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}{Corollary}
+\newtheorem*{remark}{Remark}
+
+\DeclareMathOperator{\outdeg}{outdeg}
+\DeclareMathOperator{\indeg}{indeg}
+\DeclareMathOperator{\Apred}{Apred}
+\DeclareMathOperator{\rn}{run}
+\DeclareMathOperator{\cells}{cells}
+\DeclareMathOperator{\tail}{tail}
+\newcommand{\Mh}{\widehat{M}}
+\newcommand{\Mcal}{\mathcal{M}}
+\newcommand{\cst}{c^{\ast}}
+\newcommand{\Mst}{M^{\ast}}
+
+\title{Exactness of forward-table merge-cell pruning (Fix~2)\\ for \texttt{extract\_cell}}
+\author{network-matching --- cell-DAG extraction, \S8.2}
+\date{2026-07-17}
+
+\begin{document}
+\maketitle
+
+\section*{Claim}
+
+Before running \texttt{extract\_cell}, prune every \emph{merge} candidate cell whose forward-table
+value exceeds the cost of a known valid matching. The pruned run returns the \emph{same} optimal
+matching, bit-for-bit, as the un-pruned run. Formally: with lower bound $\mathrm{LB}(m,v)=D[m][v]$
+(the forward table alone), upper bound $\mathrm{UB}=C(M_J)$ for an incumbent matching $M_J$ from the
+\texttt{extract\_join} engine, and pruning restricted to merge cells ($\indeg(m)\ge 2$), the result is
+exact.
+
+\section*{Setup and notation}
+
+Let $A$ and $B$ be the source and target DAGs. For an $A$-vertex $a$, write $\Apred(a)$ for its parents
+and $\outdeg(p)$ for the number of children of $p$ in $A$.
+
+\begin{itemize}[nosep]
+  \item $\Mcal$ is the set of \textbf{valid matchings} (satisfying V1--V3 and the run/move structure).
+  \item For $M\in\Mcal$, $\rn_M(a)\subseteq V(B)$ is the run assigned to $a$. A \textbf{cell} $(a,v)$ is
+        \emph{used by} $M$ iff $v\in\rn_M(a)$.
+  \item Cost
+        \[
+          C(M)=\sum_{a}\ \sum_{v\in\rn_M(a)} w_M(a,v)\,E(a,v),
+        \]
+        where $E(a,v)\ge 0$ and every ledger weight $w_M(a,v)\in\{1,\beta,\alpha\}$ with $\beta\ge 1$,
+        $\alpha\in(0,1]$ --- all strictly positive. Hence \textbf{every summand is $\ge 0$}
+        \hfill$(\star)$
+        \\ and deleting any subset of summands cannot increase $C$.
+  \item $\cst=\min_{M\in\Mcal}C(M)$ and $\Mst$ denotes an optimiser.
+\end{itemize}
+
+\paragraph{The forward table.}
+By the construction of \texttt{forward()} (main doc \S4.1), $D[a][v]$ is a min-sum dynamic program;
+explicitly,
+\[
+  D[a][v]=\min_{W}\ \Phi(W),
+\]
+the minimum over the legal \textbf{upstream configurations} $W$ of $(a,v)$ --- an assignment of one
+cell to $a$ and to every ancestor of $a$, move-consistent and V3-consistent, with $a$'s run
+\emph{ending} at $v$ --- where
+\[
+  \Phi(W)=\sum_{(b,x)\in W}\gamma_W(b)\,w_W(b,x)\,E(b,x),
+  \qquad
+  \gamma_W(b)=\prod_{e\text{ on the $A$-path } b\to a}\frac{1}{\outdeg(\tail e)}\ \in(0,1].
+\]
+The $1/\outdeg$ factors are the split-sharing of \S4.1; \S6.1 exhibits that they \emph{under}-count.
+
+\section*{Proof}
+
+\begin{proposition}[forward under-count]\label{prop:lb}
+For every $M\in\Mcal$ and every cell $(a,v)$ used by $M$, \quad $D[a][v]\le C(M)$.
+\end{proposition}
+
+\begin{proof}
+From $M$ build the configuration $\Mh$: keep $M$'s cell-assignment on $a$ and all ancestors of $a$;
+\emph{truncate} $\rn_M(a)$ to end at $v$ (discard cells of $a$'s run after $v$); and \emph{discard}
+$M$'s assignment on all descendants of $a$.
+\begin{enumerate}[label=(\roman*),nosep]
+  \item $\Mh$ is a legal upstream configuration for $(a,v)$: every move in it is a move of $M$ (hence
+        valid), it is V3-consistent because $M$ is, and $a$'s run ends at $v$. As a feasible point of
+        the minimisation defining $D[a][v]$,
+        \[
+          D[a][v]\le\Phi(\Mh).
+        \]
+  \item Each $\gamma_{\Mh}(b)\le 1$ (a product of factors $\le 1$) and each $w\,E\ge 0$, so
+        \[
+          \Phi(\Mh)=\sum \gamma\,w\,E\ \le\ \sum w\,E.
+        \]
+  \item The summands $\sum w\,E$ of $\Mh$ are a \emph{subset} of the summands of $C(M)$ (truncation
+        only deletes summands; each kept cell retains its $M$-weight), and all are $\ge 0$, so by
+        $(\star)$, $\ \sum w\,E\ \le\ C(M)$.
+\end{enumerate}
+Chaining, $D[a][v]\le\Phi(\Mh)\le C(M)$. \qedhere
+\end{proof}
+
+\begin{proposition}[incumbent bound]\label{prop:ub}
+$\cst\le\mathrm{UB}$.
+\end{proposition}
+
+\begin{proof}
+$\mathrm{UB}=C(M_J)$ for the incumbent $M_J\in\Mcal$, and $\cst$ is the minimum of $C$ over
+$\Mcal\ni M_J$. \qedhere
+\end{proof}
+
+\begin{theorem}[exact prune]\label{thm:exact}
+Let
+\[
+  \text{\normalfont blocked}=\bigl\{(m,v): \indeg(m)\ge 2,\ D[m][v]<\infty,\ D[m][v]>\mathrm{UB}\bigr\},
+  \qquad
+  \Mcal'=\{M\in\Mcal: M\text{ uses no blocked cell}\}.
+\]
+Then $\min_{\Mcal'}C=\cst$, attained by $\Mst$, and $\Mcal'\ne\varnothing$.
+\end{theorem}
+
+\begin{proof}
+\textbf{(1) No optimal cell is blocked.} Let $(m,v)$ be any cell used by $\Mst$. By
+Proposition~\ref{prop:lb}, $D[m][v]\le C(\Mst)=\cst$; by Proposition~\ref{prop:ub}, $\cst\le\mathrm{UB}$.
+Hence $D[m][v]\le\mathrm{UB}$, i.e.\ $\neg\bigl(D[m][v]>\mathrm{UB}\bigr)$, so $(m,v)\notin$
+\text{blocked}. Therefore $\cells(\Mst)\cap\text{blocked}=\varnothing$, i.e.\ $\Mst\in\Mcal'$.
+
+\smallskip
+\textbf{(2) Optimum preserved.} $\Mst\in\Mcal'$ gives $\min_{\Mcal'}C\le C(\Mst)=\cst$; and
+$\Mcal'\subseteq\Mcal$ gives $\min_{\Mcal'}C\ge\cst$. So $\min_{\Mcal'}C=\cst$, attained by $\Mst$, and
+$\Mcal'\ne\varnothing$ --- indeed the incumbent witnesses it: every cell of $M_J$ has
+$D\le C(M_J)=\mathrm{UB}$ by Proposition~\ref{prop:lb}, so $M_J\in\Mcal'$. (The code-level absence of a
+spurious ``no valid root row'' error is the Corollary, part~(b).) \qedhere
+\end{proof}
+
+\begin{corollary}[bit-identical result]
+Let $M_{\mathrm{ret}}$ be the matching \texttt{extract\_cell} returns on the un-pruned instance.
+\texttt{extract\_cell} contracts per pending-signature with a \emph{validity-blind} minimum and runs
+\texttt{check\_rules} only on the final list, so $M_{\mathrm{ret}}$ is the cheapest \emph{valid} matching
+among the surviving signature representatives --- \emph{not} provably $\cst$ on its own. Assume therefore
+the cross-validation invariant
+$C(M_{\mathrm{ret}})=C(\mathrm{cell})\le C(\texttt{extract\_join})=\mathrm{UB}$ (gated $384/384$).
+\begin{enumerate}[label=(\alph*),nosep]
+  \item $M_{\mathrm{ret}}$ is valid with $C(M_{\mathrm{ret}})\le\mathrm{UB}$, so
+        Proposition~\ref{prop:lb} applies: every cell $(m,v)$ it uses has
+        $D[m][v]\le C(M_{\mathrm{ret}})\le\mathrm{UB}$, hence $(m,v)\notin\text{\normalfont blocked}$
+        --- $M_{\mathrm{ret}}$ uses no blocked cell and all its cells survive.
+  \item $M_{\mathrm{ret}}$ is the cheapest matching of its own final pending-signature (else a cheaper
+        same-signature matching would have been the un-pruned representative); removing blocked cells ---
+        none of them $M_{\mathrm{ret}}$'s --- creates no new rows and no cheaper same-signature matching,
+        so $M_{\mathrm{ret}}$ remains the pruned finals representative of its signature and, being valid,
+        surfaces. The pruned run returns the \emph{same} $M_{\mathrm{ret}}$, with no spurious error.
+\end{enumerate}
+\end{corollary}
+
+\begin{remark}[reconvergent residual]
+Proposition~\ref{prop:lb} bounds only \emph{valid} matchings, so one case is not excluded by this proof:
+an \emph{invalid}, blocked-cell-using finals candidate with cost $\le C(M_{\mathrm{ret}})$ sharing a
+\emph{post-early-discharge} signature with a valid resurfacing row --- which requires an early-discharged
+(reconvergent) merge. On \textbf{tree} sources (the hourglass deployment, where early discharge never
+fires, so every blocked merge cell stays in the final signature) this cannot arise and bit-parity is
+exact up to exact-cost string ties; on reconvergent DAGs the residual is covered by the empirical parity
+gate.
+\end{remark}
+
+The proof rests entirely on Proposition~\ref{prop:lb}, whose only non-elementary ingredient is that
+$D$ \emph{is} the minimum-over-configurations above (the established semantics of \texttt{forward()});
+the feasibility of $\Mh$ and $\gamma\le 1$ do the rest.
+
+\section*{Why $D+B-E$ is \emph{not} a valid bound}
+
+\begin{remark}
+The refuted first draft used $\mathrm{LB}'(a,v)=D[a][v]+B[a][v]-E(a,v)$, with $B$ the symmetric
+backward table (so $B[a][v]$ bounds the \emph{downstream} cost from $(a,v)$). $D$ accounts $a$'s run
+\emph{up to} $v$; $B$ accounts it \emph{from} $v$. When $a$'s true run in $M$ is multi-cell (any
+$\alpha<1$ coverage, with $v$ interior), the sum charges the coverage of $a$'s run \emph{twice}, and
+$-E(a,v)$ cancels only one cell's overlap. Thus $\mathrm{LB}'(a,v)$ can \emph{exceed} $C(\Mst)$ at the
+entry pivot --- violating Proposition~\ref{prop:lb} --- so an optimal cell may satisfy
+$\mathrm{LB}'>\mathrm{UB}$, part~(1) of Theorem~\ref{thm:exact} fails, $\Mst$ is blocked, $\Mcal'$
+becomes infeasible, and the extraction raises a spurious error (observed $15/7997$ in an adversarial
+sweep on articulation merges). $D$ alone carries no downstream term, so no such double-count arises,
+and Proposition~\ref{prop:lb} is a theorem for it. A sound tightening, if $D$-only is ever too loose,
+is $\mathrm{LB}(m,v)=\max\bigl(D[m][v],B[m][v]\bigr)$: the maximum of two independently valid lower
+bounds is a valid lower bound, with no gluing.
+\end{remark}
+
+\end{document}
