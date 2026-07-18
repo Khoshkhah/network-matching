@@ -325,11 +325,45 @@ no key is ever discharged.
 
 ## 7. Limits
 
+### 7.1 Out-trees — exponential in depth
+
+Nothing post-dominates on a tree, so **no key is ever discharged** and width equals the depth. A
+factor over `depth` keys costs `∏ |cand|` over them, so the whole thing is **exponential in depth** —
+the mirror of `pending`'s tree-of-merges wall, and not something the §5.3 elimination removes. What
+elimination does remove is the dependence on the *total* split count: intermediate factors are bounded
+by depth, so 15 or 63 splits are equally fine as long as the tree is shallow.
+
+Measured on `btree` (`extract_cell` for comparison):
+
+| depth | `\|A\|` | splits | `extract_cell` | profiled | memory |
+|---|---|---|---|---|---|
+| 3 | 29 | 7 | 0.002 s | 0.034 s | 0.8 MB |
+| 4 | 61 | 15 | 0.005 s | 0.344 s | 31.9 MB |
+| **5** | 125 | 31 | 0.018 s | — | **MemoryError** after 17 s |
+| **6** | 253 | 63 | 0.072 s | — | **MemoryError** after 47 s |
+
+So the usable ceiling is **depth 4**. Before the §5.3 elimination it was depth 3, so that fix bought
+one level, not a cure.
+
+**The "fake branch" idea does not transfer.** At a merge, `extract_cell` lets one arm absorb while the
+others merely *tag* the merge cell in `pending`, resolving the tag later at the discharge — it works
+because the arms **meet**. At a split the branches **diverge**, and on an out-tree they never meet, so
+a tag has no point at which it could ever be cashed. Dropping a split's key from one branch makes that
+branch's cost independent of the split's placement, which is precisely the joint pricing this design
+exists to do. The variant that *is* available — recompute the branch's subtree once per split cell
+instead of carrying the key — trades the memory for `|cand(J)|` × subtree work, i.e. the same
+exponential paid in time.
+
+**Unexploited:** a split with exactly **one** surviving exit contributes a constant key and could be
+dropped from `S` outright. Measured: one such split per `btree` (the root, pruned to a single cell by
+§4.1a). A real width reduction, but worth one key out of `depth`.
+
+### 7.2 Other limits
+
 | | |
 |---|---|
-| **out-trees** | nothing post-dominates, so no key discharges and width grows with depth — slower than `extract_cell`, though correct and bounded. The mirror of `pending`'s tree-of-merges wall |
 | **`keep`** | a measured plateau, not a proven bound. Failure mode is a refusal, never a wrong answer |
-| **no global budget** | `max_profiles` bounds one cell, `max_rows` one factor; neither bounds the aggregate |
+| **no global budget** | `max_profiles` bounds one cell, `max_rows` one factor; neither bounds the aggregate — which is what `btree(5)` exhausts |
 | **not adopted** | nothing calls `profiled.py` |
 
 ## 8. Relation to Existing Machinery
