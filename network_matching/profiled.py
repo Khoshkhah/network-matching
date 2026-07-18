@@ -292,8 +292,61 @@ def _flood(A, seeds) -> Dict[Hashable, set]:
     return cells
 
 
-def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0):
-    """``(M, committed)`` by the §6.1 join: pick one profile, let each sink take its own best cell
+def _join(f1: dict, f2: dict, keep: int, max_rows: int) -> dict:
+    """Combine two factors: consistent profile pairs, costs summed, ``keep`` cheapest per key."""
+    out: Dict[Profile, list] = {}
+    for pi1, rows1 in f1.items():
+        for pi2, rows2 in f2.items():
+            m = _merge(pi1, pi2)
+            if m is None:
+                continue                                     # arms disagree -- not a matching
+            bucket = out.setdefault(m, [])
+            for c1, p1 in rows1:
+                for c2, p2 in rows2:
+                    bucket.append((c1 + c2, p1 + p2))
+    for m, bucket in out.items():
+        bucket.sort(key=lambda r: r[0])
+        del bucket[keep:]
+    if len(out) > max_rows:
+        raise ValueError(f"profiled join factor exceeded {max_rows} rows -- raise max_rows")
+    return out
+
+
+def _eliminate(factors: List[dict], order: List[Hashable], keep: int, max_rows: int) -> List[dict]:
+    """Min-sum variable elimination over the split keys (docs §6.1).
+
+    The sinks are factors over their live splits, and the answer is ``min over pi of sum of factors``.
+    Folding the sinks pairwise builds the CROSS PRODUCT of sinks that share no key -- on an out-tree
+    that is one factor per sink and it explodes. Eliminating a key instead touches only the factors
+    that mention it: combine those, minimise the key out, emit one factor over what is left.
+
+    ``order`` must be deepest-split-first, which the DAG supplies: when a split is eliminated the only
+    key its factors still share is its parent split, so intermediate factors stay narrow.
+    """
+    for J in order:
+        idx = [i for i, f in enumerate(factors)
+               if any(any(s == J for s, _ in pi) for pi in f)]
+        if not idx:
+            continue
+        combined = factors[idx[0]]
+        for i in idx[1:]:
+            combined = _join(combined, factors[i], keep, max_rows)
+        out: Dict[Profile, list] = {}                        # minimise J out
+        for pi, rows in combined.items():
+            npi = frozenset((s, v) for s, v in pi if s != J)
+            bucket = out.setdefault(npi, [])
+            bucket.extend(rows)
+        for npi, bucket in out.items():
+            bucket.sort(key=lambda r: r[0])
+            del bucket[keep:]
+        drop_idx = set(idx)
+        factors = [f for i, f in enumerate(factors) if i not in drop_idx] + [out]
+    return factors
+
+
+def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
+                     keep: int = 32, max_rows: int = 50000):
+    """``(M, committed, cost)`` by the §6.1 join: pick one profile, let each sink take its own best cell
     under it, add up. For a fixed profile the sinks are **independent**, so this is a min over the
     profile keys -- no product over sinks.
 
@@ -302,33 +355,30 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     if not sinks:
         raise ValueError("A has no sink")
 
-    # best cell per (sink, profile)
-    per_sink: List[Dict[Profile, tuple]] = []
+    # one factor per sink: its best cell for each profile it can carry
+    factors: List[dict] = []
     for t in sinks:
         best: Dict[Profile, tuple] = {}
         for v, c in A.nodes[t]["cand"].items():
             for pi, (val, _bp) in c.get("Dp", {}).items():
                 cur = best.get(pi)
                 if cur is None or val < cur[0] - 1e-12:
-                    best[pi] = (val, v)
-        per_sink.append(best)
+                    best[pi] = (val, [(t, v, pi)])
+        if not best:
+            raise ValueError(f"profiled join: sink {t!r} has no reachable profile")
+        factors.append({pi: [(cost, picks)] for pi, (cost, picks) in best.items()})
 
-    # fold the sinks, merging profiles (they must agree where their key sets overlap)
-    joined: Dict[Profile, tuple] = {frozenset(): (0.0, [])}
-    for t, best in zip(sinks, per_sink):
-        nxt: Dict[Profile, tuple] = {}
-        for pi0, (c0, picks0) in joined.items():
-            for pi, (val, v) in best.items():
-                m = _merge(pi0, pi)
-                if m is None:
-                    continue
-                tot = c0 + val
-                cur = nxt.get(m)
-                if cur is None or tot < cur[0] - 1e-12:
-                    nxt[m] = (tot, picks0 + [(t, v, pi)])
-        joined = nxt
-        if not joined:
-            raise ValueError("profiled join: no jointly reachable profile across sinks")
+    # eliminate the split keys, deepest first -- NOT a pairwise fold over sinks (docs §6.1)
+    _ord, L = layer_order(A)
+    elim = sorted(profiled_splits(A), key=lambda s: -L[s])
+    factors = _eliminate(factors, elim, keep, max_rows)
+
+    joined: Dict[Profile, list] = factors[0]
+    for f in factors[1:]:
+        joined = _join(joined, f, keep, max_rows)
+    if not joined:
+        raise ValueError("profiled join: no jointly reachable profile across sinks")
+    candidates = sorted((c, picks) for rows in joined.values() for c, picks in rows)
 
     # Terminal judge (docs §6.4). The profile enforces V3 and the recurrence enforces V2, but V1 is
     # NOT covered: on a cyclic B a run can revisit a B-vertex, and the per-profile contraction keeps
@@ -337,7 +387,7 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     # returned an invalid matching on 169/900 random trees over cyclic B. Trying candidates
     # cheapest-first gives the judge the other profiles as fallbacks.
     verts = set(A.nodes)
-    for cost, picks in sorted(joined.values(), key=lambda r: r[0]):
+    for cost, picks in candidates:
         cells = _flood(A, picks)
         M = {(a, v) for a, run in cells.items() for v in run}
         if {a for a, _ in M} != verts:                       # V4: every vertex must be placed
