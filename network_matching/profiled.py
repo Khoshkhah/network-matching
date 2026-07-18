@@ -206,14 +206,29 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
     # survives. That is the variable-elimination step.
     in_S = a in S
 
+    # A vertex that is neither a split nor a discharge point does not change the profile at all, so
+    # the row keeps its PARENT's frozenset by reference instead of rebuilding an identical copy.
+    # That is the common case (most vertices are indeg-1, outdeg-1), and rebuilding it per cell per
+    # profile was the bulk of the per-row memory.
+    passthrough = not in_S and not drop_a
+    _remap_cache: Dict[tuple, Profile] = {}
+
     def remap(pi, cell):
         """The key a row lands on: own split cell overwritten, then discharged keys removed."""
+        if passthrough:
+            return pi                                        # same object -- no allocation
+        ck = (pi, cell) if in_S else (pi, None)
+        hit = _remap_cache.get(ck, _ABSENT)
+        if hit is not _ABSENT:
+            return hit
         d = dict(pi)
         if in_S:
             d[a] = cell
         if drop_a:
             d = {s: c for s, c in d.items() if s not in drop_a}
-        return frozenset(d.items())
+        out = frozenset(d.items())
+        _remap_cache[ck] = out
+        return out
 
     for v in cand:
         out: Dict[Profile, tuple] = {}

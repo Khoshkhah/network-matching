@@ -1,14 +1,16 @@
 # The Profiled Forward Table
 
-**Status:** design, not implemented. Standalone; merges into `dag_dtw_matching.md` §4 and
-`cell_dag_extraction.md` §8 once the gate (§7) is green.
+**Status:** implemented as `network_matching/profiled.py` (`forward_profiled` + `extract_profiled`),
+**not wired into `match_dag`** — nothing calls it yet. Standalone; merges into `dag_dtw_matching.md`
+§4 and `cell_dag_extraction.md` §8 when adopted.
 
-| measured | |
+| | |
 |---|---|
 | the gap it closes (§5.0) | the forward table is **V3-invalid on the two slow hourglass edges** (2 and 3 violations), valid on the other two and on all 10 synthetic cases |
-| state space (§5.2) | 36–70× smaller than the `pending` it replaces; largest win on `100350`, the edge where every previous fix failed |
-| extraction (§6.1) | a min over **≤234 keys across 2 sinks** — replaces the backward sweep, `pending`, and the inbox lifecycle |
-| memory (§1.4) | ~2–3 MB packed, everything retained; no freeing lifecycle needed |
+| gate (§7) | unit suite **198 passed**; envelope **384/384** cost parity; cyclic-B **731/731** with **0** invalid and **168** cases answered where `extract_cell` refuses; four hourglass edges all matching |
+| speed, real edges | `100350` **687.7 s → 0.44 s**; `100341` 33.4 s → 0.19 s; `102752` 30.0 s → 0.98 s |
+| memory (§1.4) | 3–14 MB per edge, everything retained (~279 B/row); no freeing lifecycle needed |
+| **known bad case (§5.1)** | a pure out-tree: nothing post-dominates, so no key discharges. `btree(4)` **dies** (`MemoryError`) where `extract_cell` takes 14 ms. The blow-up is in the **sink join**, not the forward table — see §6.1 |
 
 Today's forward table (`dag_dtw_matching.md` §4.1) minimises over **all** upstream configurations,
 including phantoms — a vertex placed on two cells at once, courtesy of the `1/outdeg` split
@@ -100,30 +102,93 @@ topology. No matching hyperparameter sets it. `r`, `k_min`, `bearing_weight`, `�
 `|cand|`, which drives *multiplicity* (how many profiles a cell holds), not width. Widening `r` for a
 hard match grows the cheap dimension.
 
-### 1.4 Lifetime
+### 1.4 What a cell stores
+
+One dict per cell. One entry per profile.
+
+```
+A.nodes[a]["cand"][v]["Dp"]  =  { profile : (cost, bp) }
+
+  profile   frozenset of (split_vertex, cell) pairs   — where the upstream splits sit
+  cost      float                                     — the value of this row
+  bp        [(vertex, cell, profile), ...]            — where the value came from
+```
+
+`bp` holds one triple per predecessor (advance/stall), or a **single same-vertex triple** for an
+α-coverage step — the same convention `bpD` uses, so the move type is read off *whose* vertex appears.
+
+**Worked example** — `btree(2)`, the source `r` (a split, `outdeg = 2`) and its child `ru_m`
+(`indeg = 1`, `outdeg = 1`, not a split, nothing to discharge):
+
+| | `r` at cell `r'` | `ru_m` at cell `r'` |
+|---|---|---|
+| profile | `{r: r'}` | `{r: r'}` |
+| cost | `0.4000` | `11.0240` |
+| `bp` | `[]` (source, free entry) | `[(r, r', {r: r'})]` |
+
+`r` carries `{r: r'}` because it **is** a split — §2's "own split cell" step writes its own placement
+into the key. `ru_m` carries the same profile because it is not a split and discharges nothing: it
+simply inherits.
+
+#### The single-parent case — inherit by reference, do not copy
+
+A vertex that is **neither a split nor a discharge point** does not change the profile at all. Its
+rows therefore keep the **parent's frozenset object itself**, not a rebuilt equal one:
+
+```
+passthrough = (a not in S) and (not drop[a])
+if passthrough:  return pi          # same object, no allocation
+```
+
+That is the common case — most vertices are `indeg 1, outdeg 1` — and rebuilding an identical
+frozenset per cell per profile was the bulk of the memory. Measured on `btree(4)`'s forward table:
+
+| | before | after |
+|---|---|---|
+| bytes per row | 814 | **279** |
+| forward table | 14.36 MB | **4.91 MB** |
+| time | 0.205 s | **0.122 s** |
+
+Row *counts* are identical — this is representation only, nothing is dropped.
+
+What each row still costs after that: the dict entry (the key is shared, but a frozenset is re-hashed
+on every lookup), the `(cost, bp)` tuple, the `bp` list, and the triple inside it — four objects to
+carry one float and one pointer. Remaining reductions, cheapest first, **none yet implemented**:
+
+| | what | cost to do |
+|---|---|---|
+| intern profiles to ints | a per-graph `frozenset → int` table; keys become small integers, so hashing is an int hash and the dicts shrink | contained — only `_merge`, `remap`, `_flood` touch profile identity |
+| flatten `bp` | at `indeg 1` there is exactly one triple; store it directly instead of wrapping it in a list | trivial |
+| delegate entirely | a passthrough cell stores only `(parent_vertex, {entry_cell: cost})` and resolves profiles through its parent on demand | invasive — every reader must chase the chain |
+
+### 1.5 Lifetime
 
 **Allocate per cell, keep to the end. There is no row-freeing lifecycle.** What shrinks is the profile
 *keys* (§1.3), not the rows — that is where the contraction happens, and it happens during the sweep.
 
-Freeing rows would buy nothing anyway: reconstruction needs **either** the stored `bpD[a][v][π]`
-**or** the cost rows to recompute the argmin from, so one of the two must survive to the end. Keeping
-both is affordable at the measured scale:
+Freeing rows would buy nothing anyway: reconstruction needs **either** the stored `bp` **or** the cost
+rows to recompute the argmin from, so one of the two must survive to the end. Keeping both is
+affordable at the measured scale — the real forward tables, as built:
 
-| | 102752 | 100350 |
-|---|---|---|
-| probe peak, everything retained, Python `frozenset`s | 22.9 MB | 14.1 MB |
-| packed estimate (~57 k rows × (2 int pairs + float)) | ~2–3 MB | ~1–2 MB |
+| | 102752 | 100042 | 100341 | 100350 |
+|---|---|---|---|---|
+| profile rows | 57 478 | 12 425 | 12 871 | 28 444 |
+| forward table | 14.4 MB | 3.1 MB | 3.4 MB | 10.1 MB |
+| build time | 0.97 s | 0.26 s | 0.18 s | 0.40 s |
 
-*If it ever does get tight:* store costs, **drop `bpD`**, and recompute the argmin along the single
+At ~279 bytes per row (§1.4) that is a few megabytes per edge and no freeing is warranted. Contrast
+`cell_dag_extraction.md` §4, where freeing **was** load-bearing (35× peak memory): there the frontier
+was the whole table set.
+
+*If it ever does get tight:* store costs, **drop `bp`**, and recompute the argmin along the single
 winning chain during reconstruction — re-evaluating one cell's `fill()` is cheap (entry cells bounded
 by `1 + |Bpred(v)|`, ≤ ~64 tuples at `indeg 3`). That keeps the smaller half and recomputes the
 larger. Not worth building until a measurement demands it.
 
-Contrast `cell_dag_extraction.md` §4, where freeing **was** load-bearing (35× peak memory): there the
-frontier was the whole table set. Here the tables are small and the sweep is one pass.
-
-A per-cell profile cap with a loud refusal — the `max_rows` pattern — bounds the worst case to a
-diagnosable error rather than an OOM.
+**The cap does not yet bound memory.** `forward_profiled(max_profiles=…)` refuses when one *cell*
+exceeds the limit, but the out-tree blow-up (§5.1) is **aggregate across cells** — `btree(4)` peaks at
+~61 profiles per cell against a 50 000 cap, so the guard never fires. A global row budget is what is
+needed; until then the refusal is not a memory bound.
 
 ---
 
@@ -324,6 +389,17 @@ for π in global_keys:                       # profiles live at the sinks
 
 **For a fixed `π` the sinks are independent** — that is the whole point of the key. The join is
 `O(|global_keys| × |sinks| × |cand|)`, with no product over sinks.
+
+> **Implementation gap — this is where `btree` dies.** `extract_profiled` folds the sinks one at a
+> time, merging profiles. Two sinks whose split-ancestries are **disjoint** never conflict, so every
+> pair merges successfully and the fold builds their **cross product** instead of minimising them
+> separately. On the hourglass (2 sinks sharing both splits) that is one component and costs nothing;
+> on `btree(4)` (16 sinks with largely disjoint ancestries) it is a 16-way product and exhausts memory
+> — while the forward table it reads is only 4.9 MB.
+>
+> The fix is the same factoring as `cell_dag_extraction.md` §8.1: build a graph on sinks where an edge
+> means *shares a profile key*, take connected components, minimise each independently, and **sum**.
+> Disjoint sinks must never be crossed. Not yet implemented.
 
 **Measured size** (same four edges, §5.2):
 
