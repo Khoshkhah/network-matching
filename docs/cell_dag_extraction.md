@@ -14,6 +14,7 @@ freeing**. Everything upstream is unchanged: `prepare`, the forward table with i
 | **integration** | **this engine IS `network_matching.dag_dtw.extract_cell`** (2026-07-10) — the default `engine="cell"` of `match_dag` and the DuckDB pipeline; `run_cap` removed from the API; gate passed: full suite 164/164, envelope 384/384 valid + `C(cell) ≤ C(join)` 384/384 |
 | benchmark vs the replaced vertex-granularity engine | **run** (§7): parity 16/16; up to 5.5× faster and 35× less peak memory; on chained merges 326×/338× and beyond the old engine's reach entirely; the old engine is preserved verbatim in `scripts/extract_cell_dag.py` as the baseline (`extract_cell_vertex`) |
 | early discharge (§3.5) | **implemented** — pending keys paid & dropped at the arms' first common ancestor; kills the chained-merge exponential (§7) |
+| tree-with-multiple-merges wall (§8) | **proposed, not implemented** — early discharge cannot fire on a *tree* (a merge's arms share no ancestor), so ≥2 merges give `O(∏ \|cand(m)\|)` (hourglass line 102752: `45·45·14`, ~15 s/edge). Fixes: factor independent merges (§8.1) + forward-table cell pruning (§8.2); sink-labeling kept as a conditional per-target option (§8.3) |
 
 ## 0. Notation — every index used in this doc
 
@@ -414,3 +415,94 @@ Verdict per §5's protocol: better time, much better space, one capability the o
 structured envelope 384/384 valid with `C(cell) ≤ C(join)` 384/384 (`scripts/test_dag_point.py`),
 and benchmark parity 16/16 against the replaced engine, which is preserved verbatim as
 `extract_cell_vertex` in `scripts/extract_cell_dag.py` so these numbers stay reproducible.
+
+## 8. The tree-with-multiple-merges wall — proposed fixes (not yet implemented)
+
+Early discharge (§3.5, §7) pays a merge's `pending` key at the **first common ancestor of its
+arms**. A *reconvergent* source — the §7 diamond chains — has one, so keys die young and the chain
+stays linear. A **tree** never does: a merge's arms lead to **disjoint subtrees that never rejoin
+going up**, so their only common ancestor is the root. On a tree with **≥2 merges** every key
+therefore survives to the root and the signatures **multiply** — cost `O(∏ over concurrently-open
+merges of |cand(m)|)`, the exact §7 exponential early discharge was built to kill but **cannot reach
+on a tree-shaped `A`**.
+
+This is not hypothetical. The `map-conflation` hourglass source (`local_dag.build_hourglass`) is
+**always a tree**; a normal edge has one merge (`J_u`, where the in-tree stubs funnel in), so `∏` is
+a single factor and nothing shows. But an edge whose junctions carry several merges hits the wall:
+line `102752`'s line-graph is 29 nodes with **3 concurrently-open merges** of 45, 45, 14 cells →
+`45·45·14 = 28 350` joint signatures → **13.8 M** `_pend_union` calls, **~15 s for one edge**
+(cProfile: `extract_cell` 18 s cumulative, `_fill` 8.4 s, `_pend_union` 5.9 s). The §7 wall, on
+trees — which is precisely the shape the hourglass always takes.
+
+Two **exact** fixes, composable; a third alternative rejected.
+
+### 8.1 Fix 1 — factor independent merges (`O(∏)` → `O(∑)`)
+
+Two concurrently-open merges `m₁, m₂` whose **cones are disjoint** have **independent** cell choices:
+the total decomposes `C = C₀ + f₁(m₁-cell) + f₂(m₂-cell)`, so the `min` over the *joint* signature
+equals `min f₁ + min f₂` — the product is pure waste. The fix: when a set of open merges is pairwise
+cone-disjoint, **do not materialize their joint `pending`**; carry and minimise each key's
+alternatives **independently**, recombining only the (additive) costs. Product becomes sum.
+
+**Caveat — nesting.** The fix applies to *disjoint* merges only. Some hourglass merges are
+**nested**: `J_v`'s arm runs *through* `J_u` along the shared waist `e`, so their cell choices
+interact through `e`'s run and do **not** factor. Fix 1 collapses the disjoint pairs and leaves the
+nested ones on the current `pending`. **Step one is therefore a measurement** — over the slow
+hourglass edges, of each pair of concurrently-open merges, how many are cone-disjoint vs nested. That
+number bounds what Fix 1 alone buys. Exact by construction (an identity on additive, independent
+terms).
+
+### 8.2 Fix 2 — forward-table pruning of merge cells
+
+`prepare`/`forward` already give every cell a bound `D`. A candidate cell of a merge whose
+**best-case completion exceeds a cheap global upper bound** (e.g. the cost of any one greedy
+matching) can never lie on the optimum, so it is **dropped before it ever enters `pending`**. This
+does not change the exponent but shrinks the **base**: a 45-cell merge pruned to a handful turns
+`45·45·14` into something small. Exact (only provably-suboptimal cells removed), cheap, and it
+**composes** with Fix 1 (fewer cells per surviving factor). Lands regardless of the disjoint/nested
+split.
+
+### 8.3 Alternative considered — sink-cell labeling (conditional)
+
+**The idea (proposed during design).** Key the dedup on the cells assigned to the **sink vertices**
+instead of on `pending`. Its premise: *fix the labels of all sink vertices, and the min-cost matching
+of the rest is determined* — so keeping one cheapest row per full sink-labeling loses nothing, and if
+distinct sink-labelings are fewer than distinct `pending` signatures, it is a **smaller key** than
+`pending` and thus a saving.
+
+**When the premise holds.** Exactly when **no merge sits above a target funnel** — i.e. no `B`-cell
+`x` is reachable as `w₁→x` *and* `w₂→x` from two different cells `w₁, w₂` of the same merge. Under
+that condition each merge-cell choice produces a *distinct* sink configuration, so the sink-label
+determines every merge commitment and sink-labeling is a **correct** dedup key (equivalent to
+`pending`). If on top of that the target collapses several `pending` signatures onto one sink-label,
+it is also **smaller** — the potential win the idea is after.
+
+**When it fails.** The premise breaks the moment a merge sits above a funnel. Then `m@w₁` and `m@w₂`
+reach the *same* sinks (same label) but cost differently through the upstream arm, so "cheapest per
+sink-label" keeps the downstream-cheaper cell and **silently drops the row the arm needs** — a
+§6.2-shaped valid-but-suboptimal answer. Worked case: `A: p₁→m←p₂, m→s`; `B: w₁→x, w₂→x` (the
+funnel); `E(m,w₁)=1, E(m,w₂)=2`, `p₂: b₁→w₁ (5), b₂→w₂ (0)`. Both routes end at sink `s@x`; the
+optimum is `w₂` at cost **2**, but sink-dedup keeps the downstream-cheaper `w₁` and returns **6**.
+
+**Verdict.** Conditionally correct, not unconditionally. Adopting it *safely* requires **proving the
+target funnel-free below every merge** — a checkable property of each `B` window: where it holds it is
+a valid, possibly-smaller key; where it does not it is silently wrong. Its intuition — "merge the
+redundant rows" — is exactly Fix 1 (§8.1) made rigorous, keyed on cone-independence (**always** safe)
+rather than shared sinks (safe only funnel-free). So the recommended shape is Fix 1 as the
+unconditional path, with sink-labeling available as a **per-target optimisation behind a funnel-free
+check** if the measurement shows the `B` windows satisfy it and it collapses meaningfully more rows.
+
+### 8.4 Plan and gate
+
+1. **Measure**, on line `102752` and a sample of the slow edges: (a) the disjoint/nested split of
+   concurrently-open merges (decides Fix 1's reach), and (b) whether the `B` windows are funnel-free
+   below every merge (decides whether §8.3's sink-labeling is available as a per-target key).
+2. **Fix 2** first — base-shrink, unconditional, small surface.
+3. **Fix 1** for the disjoint pairs; nested pairs stay on `pending`.
+4. **Gate** identical to the §7 integration: cost parity + refusals on the 164-case suite, the
+   structured envelope 384/384 with `C(cell) ≤ C(join)`, and benchmark parity against
+   `extract_cell_vertex`. Both fixes are exact, so parity must hold to the digit — any divergence is
+   a bug in the fix, not a tolerance.
+
+Status: **proposed, not implemented** (2026-07-17). The wall is diagnosed and the repro
+(line 102752) is reproducible; no code changed yet.
