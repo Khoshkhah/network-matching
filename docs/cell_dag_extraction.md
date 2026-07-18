@@ -656,58 +656,59 @@ confirming Fix 2 is the tail's only lever. Fix 2 is weakest exactly where Fix 1 
 factors. The `D`-only pruning is exact (§8.2 proof). But per §8.2's measured limitations, this lever is
 loose and not always available — so the coupled tail wants §8.6.
 
-### 8.6 Attack the coupling — eliminate the coupled merge (proposed)
+### 8.6 Attack the coupling — eliminate the inner merge (proposed)
 
-Fix 1 handles merges whose cones are disjoint. This handles the ones that are not: two merges joined by
-a path. It is **min-sum message passing on the source tree** — nothing more.
+The extraction runs on the **line-graph DAG** `A` — **not a tree** (line-graphing the source's
+$\text{degree}\ge 3$ vertices creates cycles). Fix 1 factors merges whose cones are disjoint; this
+handles a **nested** pair. Recall the doc's convention: a **merge** is $\operatorname{indeg}(m)\ge 2$, a
+**split** is $\operatorname{outdeg}(J)\ge 2$. On line 102752 the three merges have
+$\operatorname{indeg}\,2,2,3$ and $|\mathrm{cand}|=45,45,14$: two are pairwise disjoint (Fix 1's job),
+and the $\operatorname{indeg}\,2$ merge $m_1$ ($|\mathrm{cand}|=45$) is an **ancestor** of the
+$\operatorname{indeg}\,3$ merge $m_2$ ($|\mathrm{cand}|=14$), joined by a single directed
+**through-path** $P$ of four $\operatorname{indeg}=1,\operatorname{outdeg}=1$ vertices. Measured: deleting
+$m_2$ isolates its down-cone, so **$m_2$ is a separator**; $m_1$ is not (line-graph reconvergence).
 
-**Setup (graph theory).** Let the source tree $A$ have two merge vertices $m_1, m_2$ joined by a
-*through-path* $P$ (the degree-2 vertices strictly between them — in the hourglass, $J_u$ and $J_v$
-across the waist). For a merge $m$ let $\mathrm{cand}(m)$ be its **candidate cells** (the $B$-vertices
-it may pin to), and write $u \in \mathrm{cand}(m_1)$, $v \in \mathrm{cand}(m_2)$ for a choice at each.
-
-Deleting $m_1$ from the tree splits $A$ into $P$'s side — *below* $= \{P, m_2, \text{and } m_2\text{'s
-subtree}\}$ — and the rest, *above*. So $m_1$ is a **separator**: above and below meet only at $m_1$.
-
-**Cost decomposition.** The matching cost is a sum of per-vertex terms over $A$, so once the separator
-cells $u, v$ are fixed it splits into three independent parts:
-
-$$
-C(u,v) \;=\; \mathrm{Above}(u) \;+\; \mathrm{Path}(u,v) \;+\; \mathrm{Below}(v),
-\qquad\qquad C^{*} = \min_{u,\,v}\, C(u,v),
-$$
-
-where $\mathrm{Above}(u)$ is the least cost above $m_1$ given $m_1 = u$; $\mathrm{Path}(u,v)$ is the DTW
-cost of warping $P$ from $u$ to $v$ (and $= \infty$ when no warping exists); and $\mathrm{Below}(v)$ is
-the least cost below $m_2$ given $m_2 = v$.
-
-**What `extract_cell` does now.** It keeps $m_2$'s cell open until a common ancestor of $m_2$'s arms
-discharges it (§3.5). A tree has no such ancestor above the waist, so $v$ survives to the root and the
-pending carries *every* $(u,v)$ jointly. Measured on line 102752: **5,087** carried pairs — against
-**99** for a lone merge.
-
-**The idea — eliminate $v$ at the waist.** $\mathrm{Above}(u)$ does not depend on $v$, so the inner
-$\min$ over $v$ moves inward:
+**Costs live on cells, and we eliminate one variable — not two.** The cost is a sum of per-**cell** terms
+$w\cdot E(X,v)$ (§0), and the optimum $C^{*}$ is a min over **every** vertex's cell — *not* over
+$(u,v)$; there is no global $C(u,v)$. So eliminate $m_2$'s cell alone. Because $m_2$ separates its cone,
+the per-cell partial minimum
 
 $$
-C^{*} \;=\; \min_{u}\Big[\, \mathrm{Above}(u) \;+\; \underbrace{\min_{v}\big(\mathrm{Path}(u,v) + \mathrm{Below}(v)\big)}_{\textstyle \mu(u)} \,\Big].
+\mathrm{Below}(m_2,v)\;=\;\min\big\{\,\text{cost of the sub-matching on } m_2\text{'s down-cone}\ \big|\ m_2\text{'s cell} = (m_2,v)\,\big\}
 $$
 
-The bracketed term $\mu(u) = \min_{v}\big[\mathrm{Path}(u,v) + \mathrm{Below}(v)\big]$ is a **message**
-from $m_2$ to $m_1$: one value per cell $u$. It is the very $\min$ the root join already takes — moved
-to the waist. Building it is a single $|\mathrm{cand}(m_1)| \times |\mathrm{cand}(m_2)|$ sweep;
-afterwards $m_1$ carries a table of size $|\mathrm{cand}(m_1)|$, not the joint product. On 102752:
-**5,087 → 45**.
+is well defined — one value per cell $(m_2,v)$. The path $P$ carries that cell up to $m_1$; summing $v$
+out gives the **message**
 
-The equality is exact because $m_1$ is a separator — this is min-sum message passing (variable
-elimination) on a tree. Operationally it is a **new discharge point**: eliminate $m_2$ (min over its
-cells, folded into $\mu$) the moment its cost is local — at the waist — instead of at the common
-ancestor a tree does not have. The $\mathrm{Path}(u,v) = \infty$ pairs drop out inside the $\min$; no
-separate feasibility test.
+$$
+\mu(m_1,u)\;=\;\min_{v}\Big[\ \mathrm{PathCost}\big((m_1,u)\to(m_2,v)\big)\;+\;\mathrm{Below}(m_2,v)\ \Big],
+\qquad\text{one value per cell } (m_1,u),
+$$
 
-**Complexity.** A chain of $k$ coupled merges, eliminated deepest-first (each into a message over the
-next), costs $O(k\,d^{2})$ with $d = \max_m |\mathrm{cand}(m)|$ — versus $d^{\,k}$ for the joint pending.
+where $\mathrm{PathCost}$ is the DTW cost of warping $P$ between the two endpoint cells ($=\infty$ if
+none). $\mu$ is exactly the message $m_1$ already receives from its down-child in the backward sweep —
+but with $(m_2,v)$ **summed out at the path** instead of ridden to the root as pending. Fold $\mu$ into
+$m_1$'s cell cost and the problem has one fewer merge; finish it as before (the disjoint $45$-merge still
+factors by Fix 1). The inner merge's $|\mathrm{cand}(m_2)|$ has collapsed into $\mu$: the coupled joint
+$45\cdot 14$ becomes a $45$-entry message.
 
-**Scope.** Exact for the two-merge chain (a single separator). Three-or-more coupled merges, or
-branching between them, is general **junction-tree** message passing; its cost is the treewidth of the
-coupling graph — the open case.
+**Why it is exact.** $\min$ distributes over $+$ across disjoint cell-sets, and $m_2$ reaches the rest of
+$A$ only through $P\to m_1$ (separator), so $\mu$ depends on the cell $(m_1,u)$ alone — arity $1$:
+
+$$
+\min_{\text{rest},\,v}\big[\,R(\dots,u) + \mathrm{PathCost} + \mathrm{Below}(m_2,v)\,\big]
+\;=\;\min_{\text{rest}}\big[\,R(\dots,u) + \mu(m_1,u)\,\big],
+$$
+
+valid because $R$ (everything not below $m_2$) has no $v$. This is one step of **min-sum variable
+elimination**; operationally it is a new discharge point (§3.5) — sum $m_2$ out at the path, for the case
+where the common ancestor a tree would give does not exist. It needs no incumbent and no bound (unlike
+Fix 2). Baseline for scale: `extract_cell` carries **5,087** multi-merge signatures of the **28,350**
+product (the infeasible $(u,v)$ are already dropped — $\mathrm{PathCost}=\infty$), against **99** for a
+lone merge.
+
+**Complexity & scope.** A chain of $k$ nested merges, eliminated inner-first, costs $O(k\,d^{2})$ with
+$d=\max_m|\mathrm{cand}(m)|$, versus $d^{\,k}$. Exact whenever each eliminated merge is an arity-$1$
+separator. When it is not — merges mutually coupled, or a split $J$ ($\operatorname{outdeg}\ge 2$)
+forcing $\mu$ to depend on more than one cell — the message arity equals the **treewidth** of the
+coupling graph: general junction-tree elimination, the open case.
