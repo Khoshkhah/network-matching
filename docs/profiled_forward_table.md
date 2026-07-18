@@ -113,7 +113,8 @@ use whatever identifiers their builder assigned (see the note below).
 > appending an apostrophe to its A counterpart. So `r` is an A-vertex and `r'` is the B-vertex lying
 > on top of it; `ru_m` is an A-vertex and `ru_m'` its B counterpart. The apostrophe is the *only*
 > thing distinguishing them. That convention is convenient for tests — the correct match is visually
-> obvious — but it makes profiles hard to read, so in prose this doc uses `J…`/`b…` instead.
+> obvious — but it makes profiles hard to read, so in prose this doc uses the house convention
+> (`J`, `a`, … for A-vertices; `u`, `v`, `w` for B-vertices) instead.
 
 `frozenset` rather than `dict` for two reasons: it is **hashable**, so it can key the `Dp` dict; and it
 is **order-independent**, so two rows that agree on the same placements collide correctly during
