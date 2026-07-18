@@ -104,15 +104,35 @@ hard match grows the cheap dimension.
 
 ### 1.4 What a cell stores
 
-One dict per cell. One entry per profile.
+**Where it lives.** `prepare()` already gives every A-vertex a table of candidate cells, and each cell
+record holds `E`, `D`, `bpD`, `forbidden`. This design adds **one more field on that same record**:
 
 ```
-A.nodes[a]["cand"][v]["Dp"]  =  { profile : (cost, bp) }
-
-  profile   frozenset of (split_vertex, cell) pairs   — where the upstream splits sit
-  cost      float                                     — the value of this row
-  bp        [(vertex, cell, profile), ...]            — where the value came from
+A.nodes[a]              vertex a's attributes
+         ["cand"]       its candidate cells        (built by prepare())
+                [v]     the record for cell (a, v)
+                   ["D"]     existing — ONE float:  what this cell costs
+                   ["Dp"]    new      — A DICT:     what it costs per profile
 ```
+
+So `cand[v]` gains one key:
+
+```
+cand[v] = {"E": …, "D": …, "bpD": …, "forbidden": …,      # unchanged
+           "Dp": { profile : (cost, bp) }}                 # added
+```
+
+**What is in it.** One entry per profile:
+
+| | |
+|---|---|
+| `profile` | `frozenset` of `(split_vertex, cell)` pairs — where the upstream splits sit |
+| `cost` | `float` — the value of this row |
+| `bp` | `[(vertex, cell, profile), …]` — where the value came from |
+
+`D` answers *"what does this cell cost?"* with a single number. `Dp` answers *"what does it cost
+**given where the upstream splits are placed**?"* — one number per placement. Everything else about
+the cell record is untouched.
 
 `bp` holds one triple per predecessor (advance/stall), or a **single same-vertex triple** for an
 α-coverage step — the same convention `bpD` uses, so the move type is read off *whose* vertex appears.
