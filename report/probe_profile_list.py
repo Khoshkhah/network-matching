@@ -42,3 +42,25 @@ if __name__ == "__main__":
             print(f"     cost {cost:7.3f}   when   {placed}")
         print(f"     min = {min(x[0] for x in dp.values()):.3f}"
               f"   D = {A.nodes['c']['cand'][v]['D']:.3f}\n")
+
+    # --- width 2: add a second split downstream, so profiles carry one pair PER live split
+    A2 = digraph({"a": (0, 0), "J1": (8, 0), "d": (16, -8), "c": (16, 4), "J2": (24, 4),
+                  "e": (32, 9), "f": (32, 0)},
+                 [("a", "J1"), ("J1", "c"), ("J1", "d"), ("c", "J2"), ("J2", "e"), ("J2", "f")])
+    B2 = digraph({"u": (0, 1), "v": (8, 1), "w": (16, 1), "x": (24, 1), "y": (32, 1)},
+                 [("u", "v"), ("v", "w"), ("w", "x"), ("x", "y")])
+    prepare(A2, B2, r=14.0)
+    forward(A2, B2, 1.0, 1.0)
+    forward_profiled(A2, B2, 1.0, 1.0)
+    print("=" * 62)
+    print("A:  a -> J1 -> {c, d} ;  c -> J2 -> {e, f}     two splits, none discharged")
+    print("B:  u -> v -> w -> x -> y\n")
+    for tgt in ("c", "e"):
+        v = sorted(A2.nodes[tgt]["cand"])[0]
+        dp = A2.nodes[tgt]["cand"][v]["Dp"]
+        live = sorted({s for pi in dp for s, _ in pi})
+        print(f"cell ({tgt}, {v})   live splits: {live or 'none'}   width = {len(live)}")
+        for pi, (cost, _bp) in sorted(dp.items(), key=lambda kv: kv[1][0])[:4]:
+            txt = ", ".join(f"{s} ends on {c}" for s, c in sorted(pi, key=str)) or "(none)"
+            print(f"     cost {cost:7.3f}   when   {txt}")
+        print()

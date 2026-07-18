@@ -198,6 +198,34 @@ cell (c, x)  holds 3 profiles:
 Read `(c, w)` as: *"pairing `c` with `w` costs 9.891 if `J`'s run ended on `v`, or 11.953 if it ended
 on `w`."* Same pairing, two prices, because the upstream differs.
 
+**Here a profile happens to be a single pair — because there is only one split.** In general it is
+**one pair per live split**. Add a second split downstream and the profiles carry two:
+
+```
+A:  a ──→ J₁ ──→ c ──→ J₂ ──→ e          two splits, neither ever discharged
+           └───→ d          └───→ f      (their branches never rejoin)
+B:  u ──→ v ──→ w ──→ x ──→ y
+```
+
+```
+cell (c, v)   live splits: J₁          width 1
+     cost   9.544   when   J₁ ends on v
+     cost  13.075   when   J₁ ends on u
+
+cell (e, x)   live splits: J₁, J₂      width 2
+     cost  14.814   when   J₁ ends on v,  J₂ ends on x
+     cost  16.829   when   J₁ ends on w,  J₂ ends on x
+     cost  17.586   when   J₁ ends on v,  J₂ ends on w
+     cost  19.601   when   J₁ ends on w,  J₂ ends on w
+```
+
+`(e, x)` sits below both splits, so every one of its rows must say where **both** ended — and the rows
+enumerate the combinations. That is the product in §1.1's multiplicity, and why width matters: each
+extra live split multiplies the row count instead of adding to it.
+
+This little graph is also the out-tree failure (§5.1) in miniature: `J₁`'s branches (`c`, `d`) never
+rejoin and neither do `J₂`'s, so **no key is ever discharged** and the widths only grow downstream.
+
 * **Count** = the cell's *multiplicity*. At most `∏` over live ancestor splits of `|cand(split)|`,
   minus combinations that are unreachable — `J` has 4 candidate cells but only 2 of them can reach
   `(c, w)`, so that cell holds 2 rows, not 4.
