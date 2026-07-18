@@ -60,8 +60,16 @@ Costs are held **per profile**, never collapsed to a single argmin: different pr
 costs and the optimum sometimes needs a non-cheapest one, so a cell that dropped its alternatives
 could not be reached under the profile a later tuple requires. §5 shows the full table is affordable.
 
-The existing `D` column is **kept, not overwritten**: `cell_dag_extraction.md` §8.2's Fix 2 prune
-needs an admissible `D ≤ C(M)`, and §4 records which column supplies what.
+**Both `D` and `Dp` exist on the record — but the profiled path never reads `D`.** It reads only `E`,
+`forbidden` and `Dp`. `D` survives because `forward()` has to run first for the `forbidden` flags
+(§1.0), and computing `D` is *how it gets them*: `_couple` uses `_links` — which reads `D` and `bpD` —
+to decide which sibling rows to rebuild. So `D` is a by-product of producing the flags, not an input
+to this design.
+
+It costs little (7 ms, 0.08 MB on `102752`) so there is no reason to remove it, and the diagnostics
+(`extract_join`, `check_forward_v3`, `check_reachability`) still depend on it. But nothing here needs
+its values, and a future coupling-only pass that emits the flags without filling `D` would be a valid
+simplification.
 
 ### 1.1 The profiled set `S`
 
@@ -313,9 +321,8 @@ The phantom combination `(c₁,u) + (c₂,d)` is rejected: `v₁ ≠ v₂`. The 
 | | effect |
 |---|---|
 | **A smaller coupling key** | `pending` keys on merge cells, this keys on split cells. On the hourglass there are **3 merges but only 2 splits**, and the waist post-dominates the whole in-side — 36–70× fewer rows (§5.2) |
-| **Biggest win on the worst edge** | `100350`, where Fix 1 gives 1× and Fix 2 gives 32×, is where this gives the most (§5.2) |
-| **Tighter admissible `D`** | `min_π D̂` is a lower bound on a strictly smaller feasible set — sharpens `cell_dag_extraction.md` §8.2 Fix 2, whose measured weakness was a loose bound. Fix 2 keeps pruning on the **old** `D` column. |
-| **A real matching per cell** | every surviving trace is V3-consistent by construction, so each cell yields a valid `UB` — the other half of §8.5's Fix 2 verdict ("unreliable incumbent") |
+| **Biggest win on the worst edge** | `100350`, the all-coupled tail no earlier fix helped, is where this gives the most: `extract_cell` **687.7 s / 783 MB**, profiled **0.44 s / 16 MB** (§5.2) |
+| **Answers cases the current engine refuses** | contracting per **profile** leaves the judge fallbacks that contracting per **pending signature** destroys: **168/900** cyclic-B cases answered where `extract_cell` raises a spurious *"no valid root row"* (§5.3) |
 | **V3 as an invariant** | `check_forward_v3` empty by construction, promoting a diagnostic to a guarantee |
 
 ---
@@ -539,5 +546,4 @@ cap with refusal — the `max_rows` pattern — bounds memory to a diagnosable e
 | `pending` (`cell_dag_extraction.md` §2–3) | the same job keyed on merges instead of splits. §6.1 is a key swap; §5.2 measures the key spaces. |
 | §3.5 early discharge | the backward mirror of §1.3. Same idea, opposite direction: first common ancestor ↔ post-dominator. |
 | §8.6 inner-merge elimination | the same min-sum elimination, applied to one merge in the extraction. This applies it to every split in the forward pass. Composable; neither subsumes the other. |
-| §8.2 Fix 2 | unchanged and still needs the **old** `D` column for its admissible bound; gains a per-cell incumbent for its `UB` (§4). |
 | `check_forward_v3` (`dag_dtw.py:1419`) | today a diagnostic. Under this design it must return **empty** on every input — promote it to an invariant. |
