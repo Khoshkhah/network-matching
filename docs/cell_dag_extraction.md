@@ -658,76 +658,40 @@ loose and not always available — so the coupled tail wants §8.6.
 
 ### 8.6 Attack the coupling — the robust alternative (proposed)
 
-Fix 1 factors merges that **don't** interact. The hard case is the merges that **do**: `J_u` (source
-side) and `J_v` (sink side), joined by the **waist** `e` between them — `J_u`'s cell fixes where the
-waist *starts*, `J_v`'s cell fixes where it *ends*. Their `|cand(J_u)| × |cand(J_v)|` combinations are
-what the blow-up carries all the way to the root.
+The hard case is two merges that **interact**: `m₁` upstream, `m₂` downstream, joined by a through-path
+`P` (in the hourglass, `J_u` and `J_v`, joined by the waist). The blow-up carries all
+`|cand(m₁)| × |cand(m₂)|` of their cell-combinations to the root and multiplies them. But a combination
+`(m₁ = u, m₂ = v)` is only real when `P` can **warp from `u` to `v`** — and most pairs can't. So resolve
+the pair **at the path**, keeping only the feasible combinations, instead of carrying them all up.
 
-**The idea, plainly.** A pair `(J_u = x, J_v = y)` is only real if there is a **valid waist run** from
-`x` to `y` — and for most pairs there isn't (you can't start the waist at `x` and end it at `y` for
-arbitrary `x, y`). So resolve the two merges **along the waist**, keeping only the pairs a real waist
-run connects. The product collapses to that handful of feasible pairs.
+**Algorithm** (two coupled merges). `m₁`'s cell is a **separator**: in a tree, deleting `m₁` cuts the
+graph, so everything below `m₁` connects to everything above only through `m₁`'s cell — which is what
+makes this exact.
 
-**The algorithm (message-passing along the through-path).** State it for two coupled merges — `m₁`
-upstream, `m₂` downstream, joined by the through-path `P` (the waist). The crux: in a tree, `m₁`'s cell
-is a **separator** — removing `m₁` disconnects everything below it, so the sub-problem below `m₁`
-depends on the rest only through `m₁`'s cell. That is exactly what makes the following exact.
+1. **`sub₂(v)`** — for each cell `v` of `m₂`, the best cost of `m₂` and everything below it, given
+   `m₂ = v`. (A table over `m₂`'s cells.)
+2. **`g(u) = min_v [ pathcost(u, v) + sub₂(v) ]`** — for each cell `u` of `m₁`; `pathcost(u, v)` is the
+   DTW cost of warping `P` from `u` to `v`, or `∞` if it can't. One `|cand(m₁)| × |cand(m₂)|` sweep.
+3. **Fold `g` into `m₁`** as one of its arms; `m₁` resolves normally. `m₂`'s pending is gone.
 
-1. **Resolve `m₂`.** For each candidate cell `v` of `m₂`, compute `sub₂(v)` = the optimal cost of
-   `m₂`'s own arm-agreement and its downstream cone, given `m₂ = v`. One value per cell — a table of
-   size `|cand(m₂)|`.
-2. **Form the path message.** For each candidate cell `u` of `m₁`,
-   `g(u) = min_v [ pathcost(u, v) + sub₂(v) ]`,
-   where `pathcost(u, v)` is the DTW cost of warping the through-path `P` from entry `u` to exit `v`
-   (`∞` if there is no valid warping). This is **one** `|cand(m₁)| × |cand(m₂)|` sweep, done once.
-3. **Fold `g` into `m₁`.** `g(u)` is now the contribution of `m₁`'s path-arm; `m₁` resolves normally
-   (its own agreement over `u`, combining `g(u)` with its stub arms) — carrying only its **own**
-   pending. `m₂`'s pending is gone.
+`m₂` collapses into `g` at the path, so the two merges never coexist — the product is formed once
+(step 2) and never propagated. A chain of `k` merges costs `O(k·d²)` instead of `dᵏ` (`d` = max cells).
 
-`m₂`'s alternatives are collapsed into `g` **at the path**, so they never coexist with `m₁`'s upstream
-— the `(u,v)` product is computed once in step 2, never propagated through the sweep. For a chain of
-`k` coupled merges, apply 1–3 deepest-first (each merge resolved into a message over the next):
-`O(k · d²)` instead of `dᵏ` (`d` = max cells). And the win is sharpened by `pathcost`'s **sparsity** —
-most `(u,v)` are `∞`, so step 2's real work is the feasible pairs.
+**Definitions.**
 
-**Why it's better than Fix 2.** It is **exact by construction** — it just enforces the waist constraint
-where the constraint lives (on the through-path) instead of deferring it to the root join. And unlike
-Fix 2 it needs **no incumbent and no bound** — the two things §8.2's limitations showed are unreliable.
+- **Variable elimination:** the variables are the merge **vertices**; each variable's **domain** is its
+  cells. Structure is vertex-level; computation (`sub₂`, `pathcost`, `g`) is cell-level. Any coupled
+  merge pair qualifies — not only `J_u`/`J_v`.
+- **Feasible `(u,v)`** ≡ `pathcost(u,v) < ∞`, read straight off `P`'s forward DTW (one pass per entry
+  `u`). Not a separate check.
+- **Integration:** a new discharge point — as the backward sweep walks `P` from `m₂` to `m₁`, fold
+  `m₂` into `g` and discharge its pending there, replacing §3.5's common-ancestor discharge (a tree has
+  none).
 
-How the three approaches divide the work:
+Unlike Fix 2, this is **exact by construction and needs no incumbent and no bound** (§8.2's two
+unreliable pieces).
 
-| merge pair | Fix 1 | Fix 2 | attack the coupling |
-|---|---|---|---|
-| **independent** | product → **sum** | base-shrink (loose) | no effect (all pairs feasible) |
-| **coupled** | no effect | loose, conditional prune | product → **feasible pairs** |
-
-On 102752 (merges `45, 45, 14`; one `45` disjoint, the other `45` coupled to the `14`): Fix 1 factors
-the disjoint `45` off (`45·14 + 45 = 675`); attack-the-coupling then cuts the coupled `45·14 = 630`
-block to just the pairs with a feasible waist run — potentially tens. Together ≈ `(feasible pairs) + 45`.
-
-**What the pieces are (to avoid ambiguity).**
-
-- **Variables vs. states.** It is **variable elimination** with the **merge vertices** as variables and
-  each merge's **cells** as its domain. The *structure* (which merges couple, the separator `m₁`) is
-  vertex-level; the *computation* (`sub₂`, `pathcost`, `g`) is cell-level. It is **not** limited to
-  `J_u`/`J_v` — those are just the hourglass's pair; any two coupled merges on a degree-2 through-path
-  qualify.
-- **Feasibility of `(u,v)`.** Not a separate test — it falls out of the path DTW: one forward pass
-  along `P` from entry `u` yields `pathcost(u, ·)` for every exit `v` at once, and the **finite**
-  entries are the feasible pairs (`∞` = no valid warping). (`extract_cell` already warps this path; the
-  only change is that we `min` over `v` and collapse, instead of carrying the `(u,v)` alternatives as
-  separate pending signatures.)
-- **Where it plugs in.** A **new discharge point**. Today `m₂`'s pending is carried up `P` and
-  discharges only at a common ancestor (§3.5) — which a tree lacks, so it survives to the root and
-  multiplies. Instead: as the backward sweep walks `P` from `m₂` toward `m₁`, fold `m₂` into `g(u)`
-  and **discharge its pending there**. Only one merge's pending is ever open — no product.
-
-**Scope.** The **two-merge chain above is concrete and exact** (the separator argument). The **general
-case** — three-plus coupled merges, or branching between them — is the full junction-tree
-message-passing over the coupling structure, and *that* is the real open design (its cost is governed
-by the treewidth of the coupling graph, not the global product).
-
-**First step (validate before designing the general case):** measure, per coupled merge pair on the
-slow edges, how many `(u,v)` cell-pairs have a finite `pathcost` — i.e. the sparsity of the path
-message. If it's a handful, the product collapses hard and the direction is worth the full design; if
-it stays large, the coupling is genuinely high-dimensional and the idea needs rethinking.
+**Scope & first step.** The two-merge chain is exact. Three-plus coupled merges, or branching between
+them, is the general **junction-tree** case (cost = the coupling graph's treewidth) — the real open
+design. Validate first: measure how sparse `pathcost` is on the slow edges' coupled pairs. Sparse ⇒ the
+product collapses and it's worth designing; dense ⇒ rethink.
