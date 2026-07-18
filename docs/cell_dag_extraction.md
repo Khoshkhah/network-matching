@@ -14,7 +14,7 @@ freeing**. Everything upstream is unchanged: `prepare`, the forward table with i
 | **integration** | **this engine IS `network_matching.dag_dtw.extract_cell`** (2026-07-10) — the default `engine="cell"` of `match_dag` and the DuckDB pipeline; `run_cap` removed from the API; gate passed: full suite 164/164, envelope 384/384 valid + `C(cell) ≤ C(join)` 384/384 |
 | benchmark vs the replaced vertex-granularity engine | **run** (§7): parity 16/16; up to 5.5× faster and 35× less peak memory; on chained merges 326×/338× and beyond the old engine's reach entirely; the old engine is preserved verbatim in `scripts/extract_cell_dag.py` as the baseline (`extract_cell_vertex`) |
 | early discharge (§3.5) | **implemented** — pending keys paid & dropped at the arms' first common ancestor; kills the chained-merge exponential (§7) |
-| tree-with-multiple-merges wall (§8) | **proposed, not implemented** — early discharge cannot fire on a *tree* (a merge's arms share no ancestor), so ≥2 merges give `O(∏ \|cand(m)\|)` (hourglass line 102752: `45·45·14`, ~15 s/edge). Fixes: factor independent merges (§8.1) + forward-table cell pruning (§8.2); sink-labeling kept as a conditional per-target option (§8.3) |
+| tree-with-multiple-merges wall (§8) | **diagnosed + measured (§8.5); fixes in progress** — early discharge cannot fire on a *tree* (a merge's arms share no ancestor), so ≥2 merges give `O(∏ \|cand(m)\|)` (line 102752: `45·45·14`, ~15 s/edge). Forward-table cell pruning (§8.2, **Fix 2, in design**) is the base-shrink and the only lever for all-coupled edges; factoring independent merges (§8.1, Fix 1) gives 16–42× on most; sink-labeling (§8.3) **measured unsafe** (funnels pervasive) |
 
 ## 0. Notation — every index used in this doc
 
@@ -460,7 +460,8 @@ matching) can never lie on the optimum, so it is **dropped before it ever enters
 does not change the exponent but shrinks the **base**: a 45-cell merge pruned to a handful turns
 `45·45·14` into something small. Exact (only provably-suboptimal cells removed), cheap, and it
 **composes** with Fix 1 (fewer cells per surviving factor). Lands regardless of the disjoint/nested
-split.
+split. Measurement (§8.5) makes it **essential, not optional**: the all-coupled edge `100350`
+(`77 000`) is invisible to Fix 1 (`1×`), and only base-shrinking touches it — so Fix 2 goes first.
 
 ### 8.3 Alternative considered — sink-cell labeling (conditional)
 
@@ -491,18 +492,45 @@ redundant rows" — is exactly Fix 1 (§8.1) made rigorous, keyed on cone-indepe
 rather than shared sinks (safe only funnel-free). So the recommended shape is Fix 1 as the
 unconditional path, with sink-labeling available as a **per-target optimisation behind a funnel-free
 check** if the measurement shows the `B` windows satisfy it and it collapses meaningfully more rows.
+**Measured (§8.5): unsafe on this target** — funnels are present on nearly every merge (3/3 on three
+of four slow edges), so the funnel-free precondition fails. Shelved.
 
 ### 8.4 Plan and gate
 
-1. **Measure**, on line `102752` and a sample of the slow edges: (a) the disjoint/nested split of
-   concurrently-open merges (decides Fix 1's reach), and (b) whether the `B` windows are funnel-free
-   below every merge (decides whether §8.3's sink-labeling is available as a per-target key).
-2. **Fix 2** first — base-shrink, unconditional, small surface.
+1. **Measure** — **done (§8.5)**: Fix 1 gives 16–42× on 3 of 4 slow edges but **1×** on the
+   all-coupled tail (`100350`); funnels pervasive, so §8.3 is out.
+2. **Fix 2** first — base-shrink, unconditional, and the only lever for the all-coupled tail.
+   **In progress** (design + exactness verification before any code).
 3. **Fix 1** for the disjoint pairs; nested pairs stay on `pending`.
 4. **Gate** identical to the §7 integration: cost parity + refusals on the 164-case suite, the
    structured envelope 384/384 with `C(cell) ≤ C(join)`, and benchmark parity against
    `extract_cell_vertex`. Both fixes are exact, so parity must hold to the digit — any divergence is
    a bug in the fix, not a tolerance.
 
-Status: **proposed, not implemented** (2026-07-17). The wall is diagnosed and the repro
-(line 102752) is reproducible; no code changed yet.
+Status (2026-07-17): wall diagnosed, repro reproducible, **measurement done (§8.5)**; **Fix 2 in
+design** (exactness workflow), Fix 1 to follow, sink-labeling shelved (measured unsafe).
+
+### 8.5 Measurement (2026-07-17)
+
+On line `102752` and three other slow edges, with `prepare`+`forward` populating `D`, then per-merge
+cell counts, the disjoint/nested split of merge pairs, and a funnel check. **"Factored"** = the row
+count Fix 1 would leave: `∑` over the connected components of the merges' *coupling graph* (an edge
+joins two merges when one is reachable from the other in the line-graph) of `∏ |cand(m)|` within each
+component.
+
+| edge | merges (cells) | full `∏` | Fix 1 factored | reduction | funnel merges |
+|---|---|---|---|---|---|
+| 102752 | 45, 45, 14 | 28 350 | 675 | **42×** | 3/3 |
+| 100042 | 29, 17, 16 | 7 888 | 481 | **16×** | 1/3 |
+| 100341 | 20, 19, 19 | 7 220 | 399 | **18×** | 3/3 |
+| 100350 | 56, 55, 25 | 77 000 | 77 000 | **1×** | 3/3 |
+
+* **Fix 1 helps substantially on most edges (16–42×)** — one merge is genuinely cone-disjoint and
+  factors off. The hourglass merges are *not* all coupled; the independence is real.
+* **But Fix 1 is not universal.** Line `100350` (the largest, `77 000`) has all three merges
+  *transitively* coupled (two nested pairs chain them into one component), so factoring gives **1×** —
+  the worst case is exactly where Fix 1 does nothing.
+* **Fix 2 is therefore essential, not optional** — the only lever for the all-coupled tail, and it
+  composes with Fix 1 everywhere (shrinks each surviving factor).
+* **Sink-labeling (§8.3) is measured unsafe on this target.** Funnels are present on nearly every
+  merge (3/3 on three of four edges), so the funnel-free precondition fails.
