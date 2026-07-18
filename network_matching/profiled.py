@@ -204,16 +204,32 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
     # ---- own split cell (overwrite: v is a's run end so far), then discharge (docs §1.3).
     # Discharge is a MIN, not a forget: rows differing only in a dropped key collide and the cheaper
     # survives. That is the variable-elimination step.
+    in_S = a in S
+
+    def remap(pi, cell):
+        """The key a row lands on: own split cell overwritten, then discharged keys removed."""
+        d = dict(pi)
+        if in_S:
+            d[a] = cell
+        if drop_a:
+            d = {s: c for s, c in d.items() if s not in drop_a}
+        return frozenset(d.items())
+
     for v in cand:
         out: Dict[Profile, tuple] = {}
         for pi, (val, bp) in Dp[v].items():
-            if a in S:
-                pi = frozenset([(s, c) for (s, c) in pi if s != a] + [(a, v)])
-            if drop_a:
-                pi = frozenset((s, c) for (s, c) in pi if s not in drop_a)
-            cur = out.get(pi)
+            # A COVER back-pointer names a cell of THIS row, so its profile is an intermediate key
+            # that remap() is about to rewrite. Rewrite the reference too, or the reconstruction
+            # walk looks up a key that no longer exists, stops early, and leaves the rest of the
+            # branch uncovered (V4). Advance/stall pointers are unaffected: they name a parent's
+            # already-final keys.
+            if len(bp) == 1 and bp[0][0] == a:
+                _self, vsrc, pisrc = bp[0]
+                bp = [(a, vsrc, remap(pisrc, vsrc))]
+            npi = remap(pi, v)
+            cur = out.get(npi)
             if cur is None or val < cur[0] - 1e-12:
-                out[pi] = (val, bp)
+                out[npi] = (val, bp)
         cand[v]["Dp"] = out
 
 
