@@ -85,8 +85,24 @@ one run *globally*. Any definition of `S` requiring a reconvergence point misses
 
 ### 1.1a The format of a profile `π`
 
-A profile is a **`frozenset` of `(A_split, B_vertex)` pairs** — one pair per split still live at this
-cell. Each pair **is a cell**: it reads *"this split's run ends on that B-vertex"*.
+> **A profile is a set of cells — one cell per live split.**
+
+Each element `(J, v)` *is* a cell in the ordinary sense (§1.4: an A-vertex paired with a B-vertex), so
+a profile is a **set of cells**, restricted to cells whose A-vertex is a live split. It reads *"this
+split's run ends on that B-vertex"*. Concretely it is a `frozenset` of `(A_split, B_vertex)` pairs.
+
+Three properties, all of them consequences of *set*, not *list*:
+
+| | |
+|---|---|
+| **unordered** | `{(J₁,v), (J₂,x)}` and `{(J₂,x), (J₁,v)}` are the same profile — which is why two rows that agree collide correctly during contraction |
+| **at most one cell per split** | a vertex has one run in a matching, so `{(J₁,v), (J₁,w)}` is not a profile — that contradiction is exactly what §1.2's consistency test rejects when merging two arms |
+| **no duplicates** | free from set semantics |
+
+*Relation to the source-cell version this grew from:* structurally **identical** — a set of cells, at
+most one per keyed vertex. Only two things changed: **which** vertices are keyed (splits, not sources
+— §1.1b), and that a split's key **dies** at its post-dominator whereas a source's key would live to
+the sinks (§1.1d).
 
 Following the notation used throughout these docs — **`a, b, c, p, m, J, X` are A-vertices; `u, v, w,
 x` are B-vertices** (as in `D[a][v]`, `bpD`'s `(p, x)` pairs, and coverage's `[(a, v')]`) — a cell
