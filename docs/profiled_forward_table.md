@@ -88,12 +88,17 @@ one run *globally*. Any definition of `S` requiring a reconvergence point misses
 A profile is a **`frozenset` of `(A_split, B_vertex)` pairs** — one pair per split still live at this
 cell. Each pair **is a cell**: it reads *"this split's run ends on that B-vertex"*.
 
-Writing A-vertices as `J…` and B-vertices as `b…` to keep the two apart:
+Concretely, for a source `A` with two live splits — call them `Jup` and `Jdn` — matched against a
+target `B` whose vertices are named `b0, b1, b2, …`:
 
 ```python
-frozenset({ ('J1', 'b4'),     # split J1's run ends on B-vertex b4
-            ('J2', 'b9') })   # split J2's run ends on B-vertex b9
+frozenset({ ('Jup', 'b4'),     # the run of split Jup ends on B-vertex b4
+            ('Jdn', 'b9') })   # the run of split Jdn ends on B-vertex b9
 ```
+
+Every name here is an arbitrary identifier — `Jup`/`Jdn` are two distinct splits in `A`, `b4`/`b9`
+two distinct vertices in `B`. **Nothing is encoded in the names**; they carry no index, order or
+position. Real graphs use whatever identifiers their builder assigned (see the note below).
 
 | | |
 |---|---|
