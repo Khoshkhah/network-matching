@@ -144,7 +144,9 @@ Worked trace — split `a`, children `a₁, a₂`, `cand(a) = {v₁, v₂, v₃}
 
 **Invariant** (`check_split_exits(A, B)`): every surviving exit of every split is usable by every child, no child's row links a forbidden cell, survivors non-empty.
 
-*(Implemented as `forward(A, B, α, β)` — this IS the algorithm's forward pass; the name is historical. `forward()` is the uncoupled recurrence, kept only for the §6 diagnostics.)*
+*(Implemented as `forward(A, B, α, β)` — the production forward pass, recurrence and coupling fused: its loop is `refill(a)` then `_couple(A, B, a, built, refill)` for every vertex in layer order, and it owns the `forbidden` flags (reset first, set as it goes). There is no uncoupled variant.)*
+
+> **What the coupling does and does not settle.** The forbid is a **feasibility** intersection, so it removes only exits some child *cannot* use. Where several exits are usable by every child — the normal case — it keeps them all and each child's row independently links its own cheapest, so the forward table's own `bpD` trace **can place a split on two cells**: a V3 violation by design, reported by `check_forward_v3` and left for the extraction to resolve. Measured on the `map-conflation` hourglass: 0 violations on 10 synthetic cases and on lines `100042`/`100341`, but **2** on `102752` and **3** on `100350` — in every case a split with `outdeg = 2` whose 44–66 exits were all feasible for both children, so `check_split_exits` passes and the coupling has nothing to forbid. Choosing among *possible* exits needs the children's choices priced jointly — see `profiled_forward_table.md`.
 
 ---
 
