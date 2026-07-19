@@ -206,6 +206,37 @@ exists.
 | 100341 | 33.4 s · 215 MB | **0.10 s · 4.4 MB** | 0 → 0 |
 | **100350** | **687.7 s · 783 MB** | **0.48 s · 14.9 MB** | **3 → 0** |
 
+### Batch — 150 random `vancouver_city` edges
+
+The population the library actually runs on, rather than hand-picked hard edges. Reproducer:
+`report/probe_batch.py`.
+
+| | |
+|---|---|
+| solved | **149 / 150** |
+| radius used | `{41: 146, 60: 3}` |
+| engine chosen | `profiled` x150 — **zero** routed to `rebase` |
+| `(W, Mo)` shapes | `{(0,1): 3, (1,0): 3, (1,1): 142, (2,3): 2}` |
+| total time | `auto` **1.5 s** vs `extract_cell` **22.9 s** — **15x** |
+| cost disagreements · auto-only · cell-only | 0 · 0 · 0 |
+| unmatched at every radius | `2490258` (solves at `r=160`, above `rladder`'s top of 90) |
+
+Two things this settles.
+
+**Real edges are overwhelmingly trivial.** 142 of 150 are `W=1, Mo=1`; nothing sampled exceeded
+`W=2`. Line `100935` is an outlier, not the tip of a distribution — so the re-basing work buys
+robustness on rare junctions, not throughput. It is also why `report/gate_rebase.py` had to be
+written: real data would never have exercised that path, let alone caught a regression in it.
+
+**The ladder must be run to measure refusals.** `mapconflation.match.direction:201` escalates
+`hp.rladder` whenever a radius yields no result — including when *extraction* fails, not only
+`forward`. An earlier version of this probe broke out of the ladder as soon as `forward` succeeded
+and gave up after one extraction attempt; it reported **4** refusals instead of 1, and that was
+wrongly written up (commit `f1a556e`) as a defect in `match_task`. There is no such defect. Three of
+those four resolve at the ladder's own next rung, which the `{41: 146, 60: 3}` row shows directly.
+The 15x figure supersedes the 22x in that commit message for the same reason — the earlier run had
+`auto` doing less work than `extract_cell`.
+
 **Regression check through `match_dag(engine="auto")`** — every hourglass edge, against its known
 cost. `100935` is the fifth, and was refused by every engine until the extraction work:
 
