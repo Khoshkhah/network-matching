@@ -230,16 +230,23 @@ out-tree that exhausts memory while the forward table it reads is a few megabyte
 > group, sum" does nothing on an out-tree: every sink descends from the root split, which is never
 > discharged, so all sinks share that key and the grouping gives one component.
 
+The elimination in step 2 is the *same* operation the forward table already performs at every merge
+(§4): `_merge` for consistency, then the cheapest per key, then discharge. The forward pass stays
+small because a key dies at its immediate post-dominator, so no vertex ever holds more than `W` live
+keys. A sink has nothing downstream to discharge into, so it arrives holding its full live set and
+the join must reconcile every split at once — which is why the extraction, not the table, is the
+phase that runs out of memory.
+
 ### 5.3 The steps
 
 ```
   1. FACTORS      one per sink: its best cell for each profile it can carry
 
-  2. ELIMINATE    for each split J, DEEPEST FIRST:
+  2. ELIMINATE    for each split J, in MIN-FILL order:
                       collect the factors mentioning J
                       combine them          (consistent pairs, costs summed)
                       minimise J out        -> one factor over the remaining keys
-                      keep the `keep` cheapest rows per key
+                      one row per key: the cheapest
 
   3. COMBINE      join whatever factors remain (all keyless now) -> candidate list,
                   sorted by cost
@@ -251,9 +258,24 @@ out-tree that exhausts memory while the forward table it reads is a few megabyte
                   cover chains expand into the run cells
 ```
 
-**Deepest-first is what bounds it.** When `J` is eliminated the only key its factors still share is
-`J`'s **parent** split, so intermediate factors are bounded by the tree's **depth**, not its total
-split count.
+**The order is what bounds it.** Step 2 is variable elimination, so its cost is set by the **induced
+width** — the largest key set any single elimination step has to hold. Order chooses that width.
+Min-fill eliminates the split whose removal unions the fewest factor scopes; the obvious alternative,
+deepest-first, can force a step to hold every split at once:
+
+| line | splits | deepest-first | min-fill |
+|---|---|---|---|
+| 100350 | 2 | width 2, 3 072 rows | width 2, 3 072 rows |
+| 100935 | 5 | width 5, 1 300 068 000 rows | **width 4, 18 572 400 rows** |
+
+Row counts are upper bounds — the product of candidate cells over the step's keys. Joint reachability
+prunes them hard in practice (line 102752 carries 5 087 of a 28 350 product), so treat them as a
+ratio between orders, not an absolute.
+
+**Rows carry pick chains by reference.** A row is `(cost, picks)`, and a joined row's `picks` is the
+concatenation of its two parents'. Building that eagerly costs more than the cost it accompanies —
+measured ~16 KB per row, which is what turns a large factor into gigabytes. Rows therefore store a
+`(left, right)` pair and the chain is flattened only for the candidate the judge accepts.
 
 ### 5.4 Why step 4 exists
 

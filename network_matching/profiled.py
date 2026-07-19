@@ -553,10 +553,63 @@ def _join(f1: dict, f2: dict, max_rows: int) -> dict:
                 if len(out) >= max_rows:
                     raise ValueError(f"profiled join factor exceeded {max_rows} rows "
                                      f"-- raise max_rows")
-                out[m] = [(c, p1 + p2)]                      # concatenate only when it survives
+                out[m] = [(c, (p1, p2))]                     # by reference, flattened at the judge
             elif c < cur[0][0]:
-                out[m] = [(c, p1 + p2)]
+                out[m] = [(c, (p1, p2))]
     return out
+
+
+def _flatten(picks) -> list:
+    """Pick chains are stored as a binary tree of ``(left, right)`` pairs (docs §5.3) and flattened
+    only for the candidate the judge accepts.
+
+    A joined row's chain is the concatenation of its two parents'. Building that eagerly costs far
+    more than the cost it accompanies -- measured ~16 KB per row -- and every intermediate row pays
+    it, though only one is ever read. Leaves are LISTS of pick triples; internal nodes are 2-TUPLES.
+    """
+    out, stack = [], [picks]
+    while stack:
+        node = stack.pop()
+        if type(node) is tuple:                              # internal: (left, right)
+            stack.append(node[1])
+            stack.append(node[0])
+        else:
+            out.extend(node)
+    return out
+
+
+def _min_fill_order(factors: List[dict], splits) -> List[Hashable]:
+    """Elimination order for docs §5.3: repeatedly take the split whose removal unions the fewest
+    factor scopes.
+
+    Step 2's cost is set by the INDUCED WIDTH -- the largest key set one elimination step must hold --
+    and the order chooses that width. Deepest-first can force a step to hold every split at once: on
+    hourglass line 100935 it holds all 5 (a 1.3e9-row product) where min-fill holds 4 (1.9e7), a 70x
+    difference for the same answer. On line 100350 both give width 2, so this never costs anything.
+
+    Works on SCOPES only -- which splits a factor mentions -- so it is microseconds regardless of how
+    many rows the factors hold.
+    """
+    scopes = []
+    for f in factors:
+        sc = set()
+        for pi in f:
+            sc |= {s for s, _v in pi}
+        scopes.append(sc)
+    order, remaining = [], set(splits)
+    while remaining:
+        best, best_cost, best_union = None, None, None
+        for J in remaining:
+            union = set()
+            for sc in scopes:
+                if J in sc:
+                    union |= sc
+            if best_cost is None or len(union) < best_cost:
+                best, best_cost, best_union = J, len(union), union
+        scopes = [sc for sc in scopes if best not in sc] + [best_union - {best}]
+        order.append(best)
+        remaining.discard(best)
+    return order
 
 
 def _eliminate(factors: List[dict], order: List[Hashable], max_rows: int) -> List[dict]:
@@ -643,8 +696,7 @@ def _extract_rebased(A, B, alpha, beta, max_rows):
             raise ValueError(f"profiled join: sink {t!r} has no reachable profile")
         factors.append(f)
 
-    _o, L = layer_order(A)
-    factors = _eliminate(factors, sorted(profiled_splits(A), key=lambda s: -L[s]), max_rows)
+    factors = _eliminate(factors, _min_fill_order(factors, profiled_splits(A)), max_rows)
     joined = factors[0]
     for f in factors[1:]:
         joined = _join(joined, f, max_rows)
@@ -652,8 +704,9 @@ def _extract_rebased(A, B, alpha, beta, max_rows):
         raise ValueError("profiled join: no jointly reachable profile across sinks")
 
     verts = set(A.nodes)
-    for cost, picks in sorted((c, p) for rows in joined.values() for c, p in rows):
-        cells = _flood_rebased(A, picks)
+    for cost, picks in sorted(((c, p) for rows in joined.values() for c, p in rows),
+                              key=lambda r: r[0]):          # cost only: chains are not comparable
+        cells = _flood_rebased(A, _flatten(picks))
         M = {(a, v) for a, run in cells.items() for v in run}
         if {a for a, _ in M} != verts:
             continue
@@ -696,17 +749,16 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
             raise ValueError(f"profiled join: sink {t!r} has no reachable profile")
         factors.append({pi: [(cost, picks)] for pi, (cost, picks) in best.items()})
 
-    # eliminate the split keys, deepest first -- NOT a pairwise fold over sinks (docs §6.1)
-    _ord, L = layer_order(A)
-    elim = sorted(profiled_splits(A), key=lambda s: -L[s])
-    factors = _eliminate(factors, elim, max_rows)
+    # eliminate the split keys, min-fill order -- NOT a pairwise fold over sinks (docs §5.3)
+    factors = _eliminate(factors, _min_fill_order(factors, profiled_splits(A)), max_rows)
 
     joined: Dict[Profile, list] = factors[0]
     for f in factors[1:]:
         joined = _join(joined, f, max_rows)
     if not joined:
         raise ValueError("profiled join: no jointly reachable profile across sinks")
-    candidates = sorted((c, picks) for rows in joined.values() for c, picks in rows)
+    candidates = sorted(((c, picks) for rows in joined.values() for c, picks in rows),
+                        key=lambda r: r[0])                  # cost only: chains are not comparable
 
     # Terminal judge (docs §6.4). The profile enforces V3 and the recurrence enforces V2, but V1 is
     # NOT covered. V1 is the NON-CROSSING rule (dag_dtw_matching.md §3): for all (a,v) in M, all
@@ -720,7 +772,7 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     # cheapest-first gives the judge the other profiles as fallbacks.
     verts = set(A.nodes)
     for cost, picks in candidates:
-        cells = _flood(A, picks)
+        cells = _flood(A, _flatten(picks))
         M = {(a, v) for a, run in cells.items() for v in run}
         if {a for a, _ in M} != verts:                       # V4: every vertex must be placed
             continue
