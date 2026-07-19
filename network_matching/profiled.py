@@ -70,6 +70,51 @@ def postdom_drop(A: nx.DiGraph, S: set) -> Dict[Hashable, set]:
     return drop
 
 
+def profiled_width(A: nx.DiGraph) -> int:
+    """Max live keys at any vertex -- the structural predictor of whether this engine is worth using.
+
+    Pure topology, computable before any cell work. A split ``s`` is live at ``a`` iff ``s`` is an
+    ancestor and ``s``'s immediate post-dominator is NOT -- once a key is discharged it stays
+    discharged, so checking whether ``a`` itself post-dominates ``s`` is not enough.
+
+    Measured: width <= 2 is where the profiled engine wins (every real hourglass edge, and the
+    diamond families, at 3-3000x over extract_cell). Width >= 3 means splits nested with no merge
+    between them, where the key grows with depth and extract_cell is faster -- btree(3) at width 3
+    already is, and by width 5 the profiled engine cannot finish.
+    """
+    S = profiled_splits(A)
+    if not S:
+        return 0
+    R = nx.DiGraph()                                         # post-dominators = dominators on the
+    R.add_nodes_from(A.nodes)                                # reverse, from a virtual super-sink
+    R.add_edges_from((v, u) for u, v in A.edges)
+    root = ("__pd_root__",)
+    R.add_node(root)
+    for t in [n for n in A.nodes if A.out_degree(n) == 0]:
+        R.add_edge(root, t)
+    ipd = nx.immediate_dominators(R, root)
+    dies_at: Dict[Hashable, set] = {}
+    for x in S:
+        dies_at.setdefault(ipd.get(x), set()).add(x)
+
+    # One topological sweep, propagating the live set. A key is born at its split and removed at its
+    # immediate post-dominator; because post-domination is transitive it simply never reappears
+    # downstream. O(V + E) -- an ancestors() call per node was more expensive than the dispatch saved.
+    w = 0
+    live_out: Dict[Hashable, frozenset] = {}
+    for a in nx.topological_sort(A):
+        live = set()
+        for p in A.predecessors(a):
+            live |= live_out[p]
+        if a in S:
+            live.add(a)
+        live -= dies_at.get(a, frozenset())
+        live_out[a] = frozenset(live)
+        if len(live) > w:
+            w = len(live)
+    return w
+
+
 _MERGE_CACHE: Dict[tuple, object] = {}                   # (p0, p1) -> merged profile or None
 _ABSENT = object()                                       # cache miss marker: None is a real result
 
@@ -327,6 +372,24 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
         cand[v]["Dp"] = out
 
 
+def match_rebased(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
+                  keep: int = None, max_profiles: int = 50000, max_rows: int = 50000):
+    """Run the re-based variant explicitly (docs §8), regardless of ``PROFILED_REBASE``.
+
+    Costs mean "since the last split", so the key is the last split rather than every live ancestor.
+    That is width 1 on a pure out-tree, where the default variant's key grows with depth -- the only
+    shape where this wins. Everywhere else it is slower and heavier; see docs §8.4."""
+    global REBASE
+    was = REBASE
+    REBASE = True
+    try:
+        forward_profiled(A, B, alpha, beta, max_profiles)
+        M, com, _c = extract_profiled(A, B, alpha, beta, keep=keep, max_rows=max_rows)
+        return M, com
+    finally:
+        REBASE = was
+
+
 def forward_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
                      max_profiles: int = 50000) -> nx.DiGraph:
     """Fill ``cand[v]["Dp"]`` for every cell, in the §4.0 layer order.
@@ -509,14 +572,20 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     profile keys -- no product over sinks.
 
     Requires :func:`forward_profiled`. Raises ``ValueError`` if no profile is jointly reachable."""
-    # `keep` defaults differ by path. The cone path truncates once per sink factor and SATURATES at
-    # 32 (measured: 65 bonus answers at 32, 128 and 512 alike). Re-basing truncates at every SEG
-    # factor, every sink factor AND every elimination step, so the same 32 loses candidates the judge
-    # later needs for V1 on a cyclic B -- 56 bonus at 32, 64 at 128, 65 at 512. It is not free:
-    # on line 100350, keep=512 costs 0.62s/40MB -> 1.11s/80MB. Parity is 354/354 at every setting on
-    # both paths, so this only ever trades work for cases extract_cell refuses outright.
+    # `keep` buys the judge fallbacks, and the judge only ever rejects on V1 -- which needs a CYCLE
+    # in B to be reachable at all (docs §5.4). So:
+    #   B acyclic  -> keep=1. Measured 384/384 valid and exact on the envelope at keep=1, 2 and 32
+    #                 alike: with no cycle the cheapest candidate is always valid.
+    #   B cyclic   -> the cone path saturates at 32 (65 bonus answers at 32/128/512); re-basing
+    #                 truncates in more places (every segment factor, every sink factor, every
+    #                 elimination step) and needs 512 for the same 65.
+    # It is never free: keep=512 costs 47x on btree(5) under re-basing (0.71s -> 33.7s) and
+    # 0.62s/40MB -> 1.11s/80MB on hourglass line 100350, for identical costs.
     if keep is None:
-        keep = 512 if REBASE else 32
+        if nx.is_directed_acyclic_graph(B):
+            keep = 1
+        else:
+            keep = 512 if REBASE else 32
     if REBASE:
         return _extract_rebased(A, B, alpha, beta, keep, max_rows)
 

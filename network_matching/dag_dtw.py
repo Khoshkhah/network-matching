@@ -1195,17 +1195,23 @@ def parts_from_matching(M: set, LA: nx.DiGraph, LB: nx.DiGraph) -> List[dict]:
 # One-call pipeline entry point
 # ---------------------------------------------------------------------------------------
 def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
-              beta: float = 1.0, mode: str = "point", engine: str = "cell",
+              beta: float = 1.0, mode: str = "point", engine: str = "auto",
               bearing_weight: float = 1.0, k_min: int = 1):
     """One-call DAG-DTW pipeline (docs/dag_dtw_matching.md): ``prepare`` -> ``forward`` (the
     coupled pass) -> extraction, on ``A``/``B`` (``mode="point"``, ``M`` over vertices) or on their
     directed line graphs (``mode="segment"``, ``M`` over arcs — nodes are ``(u, v)`` edge tuples of
     the originals, so the result is self-describing).
 
-    ``engine``: ``"cell"`` (the cell-level join — THE extraction, exact over the full space;
-    default), ``"join"`` (the vertex-level junction join — the cross-validation engine, docs §10),
-    or ``"all"`` — run both and return the **cheapest valid** matching, the cross-validating
-    choice. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). The source may be any
+    ``engine``: ``"auto"`` (default) dispatches on the source's **profile width** — a pure-topology
+    number available before any cell work. Width ``<= 2`` uses ``"profiled"``
+    (docs/profiled_forward_table.md), which on real conflation sources is 60-3000x faster than
+    ``"cell"`` and fixes the V3 phantom the forward table leaves at splits; wider sources are nested
+    splits, where ``"cell"`` is faster and the profiled key grows with depth. Explicit choices:
+    ``"profiled"``, ``"rebase"`` (the re-based variant — costs measured *since the last split*, so
+    the key stays width 1 on pure out-trees where ``"profiled"`` grows with depth; slower elsewhere,
+    docs/profiled_forward_table.md §8), ``"cell"`` (the cell-level join — exact over the full
+    space), ``"join"`` (the vertex-level junction join — the cross-validation engine, docs §10), or
+    ``"all"`` — run both classic engines and return the **cheapest valid** matching. Weights: ``alpha ∈ (0, 1]``, ``beta ∈ [1, ∞)`` (docs §3). The source may be any
     **subdivided DAG** (a tree is the special case); on reconvergent sources only the ``"cell"``
     engine carries the exactness claim (docs/dag_dtw_matching.md §7, §10.2). Returns
     ``(M, committed)``; raises ``ValueError`` on infeasibility (increase ``r``)."""
@@ -1217,6 +1223,16 @@ def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
         raise ValueError(f"unknown mode {mode!r} (use 'point' or 'segment')")
     prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight)
     forward(A2, B2, alpha=alpha, beta=beta)
+    if engine in ("auto", "profiled", "rebase"):
+        from .profiled import (profiled_width, forward_profiled,                   # lazy: cycle
+                               extract_profiled, match_rebased)
+        if engine == "rebase":
+            return match_rebased(A2, B2, alpha, beta)
+        if engine == "profiled" or profiled_width(A2) <= 2:
+            forward_profiled(A2, B2, alpha, beta)
+            M, com, _cost = extract_profiled(A2, B2, alpha, beta)
+            return M, com
+        engine = "cell"                                         # nested splits: cell is faster
     engines = {"cell": extract_cell, "join": extract_join}
     if engine in engines:
         return engines[engine](A2, B2, alpha, beta)
@@ -1233,7 +1249,8 @@ def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
         if best is None:
             raise ValueError("both extraction engines infeasible -- increase match_radius_m")
         return best[1], best[2]
-    raise ValueError(f"unknown engine {engine!r} (use 'cell', 'join' or 'all')")
+    raise ValueError(f"unknown engine {engine!r} "
+                     "(use 'auto', 'profiled', 'rebase', 'cell', 'join' or 'all')")
 
 
 # ---------------------------------------------------------------------------------------
