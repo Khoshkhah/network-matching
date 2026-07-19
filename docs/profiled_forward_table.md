@@ -530,28 +530,44 @@ then, if that engine's estimate exceeds max_work:  take the cheapest-estimate en
                         if that one exceeds too:  refuse
 ```
 
-### 9.1 The refusal gate estimates the engine it chose
+### 9.1 The refusal gate estimates both phases of the engine it chose
 
-Three estimates, all read off the forward table in under a millisecond:
+An engine runs in **two phases with independent memory profiles**, and an estimate that models one
+says nothing about the other. `engine_costs(A)` returns `(forward_rows, extract_rows)` per engine,
+all from one sweep in under a millisecond:
 
-| | function | models |
+| engine | `forward_rows` | `extract_rows` |
 |---|---|---|
-| `cell_rows` | `predict_work(A)[0]` | the product `pending` enumerates over merges |
-| `profiled_rows` | `predict_work(A)[1]` | one cell's `Dp` — a product over the widest live split set |
-| `rebase_rows` | `rebase_work(A)` | same sweep, but a split **resets** the live set to `{itself}` |
+| `cell` | the classic table — one row per candidate cell | `pending`'s product over merges |
+| `profiled` | per-cell `Dp` — product over the widest live split set | the elimination peak, same product |
+| `rebase` | **`SEG`** — per split, parent profiles x own cells | parent-profile count only (§3.1a of `low_memory_extraction.md` streams `SEG`, so the cross product never reaches extraction) |
 
-The order matters: **pick the engine first, then gate on that engine's number.** Gating on
+The gate takes `max(forward_rows, extract_rows)` for the chosen engine — a phase that fits does not
+excuse one that does not.
+
+Re-basing is the case that forces the distinction. Its extraction is cheap *because* the forward pass
+already paid for `SEG`, so estimating only extraction understates it by an order of magnitude:
+
+| line 100935, `rebase` | rows | measured |
+|---|---|---|
+| forward | 59 274 (`SEG` entries) | 3.90 s · **+143.8 MB** |
+| extraction | 1 486 | 0.24 s · +27.5 MB |
+
+**Order matters too: pick the engine first, then gate on that engine's numbers.** Gating on
 `min(cell, profiled)` was wrong, because neither describes re-basing:
 
-| line 100935 | estimate | verdict |
+| line 100935 | extraction estimate | verdict |
 |---|---|---|
 | `cell` | 789 462 244 | hopeless |
 | `profiled` | 1 300 068 000 | hopeless |
 | **`rebase`** | **331 650** | answers in 0.24 s |
 
 `W = 5, Mo = 5` routes it to `rebase`, but the old gate refused it on the other two engines' numbers
-first — a 4 000x misjudgement of the engine it had just chosen. `rebase_work` is lower for exactly the
-reason §8 exists: the reset means no vertex carries splits from above it.
+first — a 4 000x misjudgement of the engine it had just chosen.
+
+> All of these are **upper bounds**, and reachability prunes them by orders of magnitude — `100935`'s
+> elimination peaks at 1 486 rows against a 331 650 bound. Use them to refuse the hopeless, never to
+> rank two engines that both fit.
 
 **The merge threshold scales with `W`; it is not a constant.** Re-basing wins exactly when **every**
 nested split's branch rejoins — then `cell`'s `pending` and this engine's key are *both* maximally

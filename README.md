@@ -278,8 +278,10 @@ engine = ("profiled" if W <= 2
           else "rebase" if Mo >= W
           else "cell")
 
-# then, if that engine's predicted table exceeds max_work: take the cheapest-estimate
-# engine instead; refuse only when all three exceed it.
+# then estimate BOTH PHASES of that engine -- engine_costs(A) gives
+# (forward_rows, extract_rows) per engine -- and gate on max(forward, extract).
+# If it exceeds max_work take the cheapest-estimate engine; refuse only when all
+# three exceed it.
 ```
 
 Both are `O(V+E)` topological sweeps. `W ≤ 2` means splits are disjoint or discharge quickly at a

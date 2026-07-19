@@ -196,6 +196,65 @@ def predict_work(A: nx.DiGraph, cap: float = 1e18) -> tuple:
     return cell_rows, prof_rows
 
 
+def engine_costs(A: nx.DiGraph, cap: float = 1e18) -> Dict[str, tuple]:
+    """``{engine: (forward_rows, extract_rows)}`` -- what each engine would hold in EACH PHASE.
+
+    An engine runs two phases with independent memory profiles, and an estimate that models one says
+    nothing about the other. Re-basing forces the distinction: its extraction is cheap *because* the
+    forward pass already paid for ``SEG``, so estimating extraction alone understates it 40x.
+
+        line 100935, rebase      forward 59 274 rows -> +143.8 MB     <- the real cost
+                                 extract  1 486 rows ->  +27.5 MB
+
+    ``cell``      forward: one row per candidate cell.  extract: ``pending``'s product over merges.
+    ``profiled``  forward: per-cell ``Dp``, a product over the widest live split set.  extract: the
+                  elimination peak over the same keys.
+    ``rebase``    forward: ``SEG`` -- per split, parent profiles x own cells.  extract: the
+                  parent-profile count alone, since ``_eliminate_fused`` streams ``SEG`` rather than
+                  building it (low_memory_extraction.md §3.1a).
+
+    All UPPER bounds; reachability prunes them by orders of magnitude. Use them to refuse the
+    hopeless, never to rank two engines that both fit.
+    """
+    fin = {n: (sum(1 for c in A.nodes[n]["cand"].values()
+                   if not c.get("forbidden") and c["D"] < INF) or 1)
+           for n in A.nodes}
+    cells = float(sum(fin.values()))
+    cell_ext, prof_fwd = predict_work(A, cap)
+
+    S = profiled_splits(A)
+    if not S:
+        return {"cell": (cells, cell_ext), "profiled": (cells, 1.0), "rebase": (cells, 1.0)}
+
+    # re-based live sets: a split RESETS to {itself}, so nothing above it survives (§8).
+    ipd = _immediate_postdom(A)
+    dies_at: Dict[Hashable, set] = {}
+    for x in S:
+        dies_at.setdefault(ipd.get(x), set()).add(x)
+    reb_ext, seg_rows, live_out = 1.0, 0.0, {}
+    for a in nx.topological_sort(A):
+        parent = set()
+        for p in A.predecessors(a):
+            parent |= live_out[p]
+        if a in S:
+            par = 1.0                                        # SEG[a] = parent profiles x own cells
+            for s in parent:
+                par = min(par * fin[s], cap)
+            seg_rows = min(seg_rows + par * fin[a], cap)
+            live = {a}
+        else:
+            live = parent - dies_at.get(a, frozenset())
+        live_out[a] = frozenset(live)
+        p = 1.0
+        for s in live:
+            p = min(p * fin[s], cap)
+        reb_ext = max(reb_ext, p)
+
+    return {"cell":     (cells, cell_ext),
+            "profiled": (min(prof_fwd * cells, cap), prof_fwd),
+            "rebase":   (max(cells, seg_rows), reb_ext)}
+
+
 def rebase_work(A: nx.DiGraph, cap: float = 1e18) -> float:
     """Upper bound on the RE-BASED engine's widest factor -- the third estimate ``predict_work``
     does not give, and the one ``auto`` needs when it routes to ``"rebase"``.

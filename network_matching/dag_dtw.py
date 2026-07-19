@@ -1259,7 +1259,7 @@ class _Budget:
 
 
 def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, engine: str,
-                      max_work: float = 1e7, max_seconds: float = 60.0,
+                      max_work: float = 5e7, max_seconds: float = 60.0,
                       max_memory_mb: float = 2000.0):
     """Run the chosen extraction on an already ``prepare``d + ``forward``ed pair. ``(M, committed)``.
 
@@ -1273,7 +1273,7 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
     """
     if engine in ("auto", "profiled", "rebase"):
         from .profiled import (profiled_width, merge_pressure, predict_work,       # lazy: cycle
-                               rebase_work, forward_profiled, extract_profiled, match_rebased)
+                               engine_costs, forward_profiled, extract_profiled, match_rebased)
         if engine == "auto":
             # TWO independent pressures, so the choice is 2-D, not a line:
             #   W  = nested-split pressure -- kills the PROFILED key (width grows with depth)
@@ -1301,17 +1301,28 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
             # when all three are. Bounds are UPPER -- reachability prunes them hard -- so the gate
             # sits well above the workable range, not at it.
             if max_work is not None:
-                cw, pw = predict_work(A)
-                est = {"cell": cw, "profiled": pw, "rebase": rebase_work(A)}
-                if est[engine] > max_work:
-                    engine = min(est, key=est.get)           # fall back to the cheapest estimate
-                if est[engine] > max_work:
+                # BOTH PHASES. An engine's forward table and its extraction have independent memory
+                # profiles, and a phase that fits does not excuse one that does not. Re-basing is why
+                # this matters: its extraction is cheap BECAUSE the forward pass already paid for
+                # SEG, so gating on extraction alone understates it 40x (docs §9.1).
+                #
+                # max_work must sit ABOVE the loosest workable prediction, not at it -- these are
+                # upper bounds and reachability prunes them 10-300x. Measured on the five real
+                # hourglass edges, the CHOSEN engine predicts up to 1.9e7 (100935: 18,572,678 rows
+                # against 59,274 actual SEG entries). Hence 5e7. The hopeless are still nowhere
+                # near: 100935's unchosen engines predict 7.9e8 (cell) and 2.6e12 (profiled).
+                costs = engine_costs(A)
+                worst = {e: max(f, x) for e, (f, x) in costs.items()}
+                if worst[engine] > max_work:
+                    engine = min(worst, key=worst.get)       # fall back to the cheapest estimate
+                if worst[engine] > max_work:
+                    detail = ", ".join(f"{e} ~{f:,.0f}/{x:,.0f}" for e, (f, x) in sorted(costs.items()))
                     raise ValueError(
                         f"source too complex for exact matching: cheapest engine "
-                        f"{min(est, key=est.get)!r} would enumerate ~{min(est.values()):,.0f} rows "
-                        f"(limit {max_work:,.0f}; cell ~{cw:,.0f}, profiled ~{pw:,.0f}, "
-                        f"rebase ~{est['rebase']:,.0f}). Reduce the source (fewer hops / shorter "
-                        "stubs) or raise max_work to try anyway.")
+                        f"{min(worst, key=worst.get)!r} would enumerate ~{min(worst.values()):,.0f} "
+                        f"rows (limit {max_work:,.0f}; forward/extract rows per engine: {detail}). "
+                        "Reduce the source (fewer hops / shorter stubs) or raise max_work to try "
+                        "anyway.")
         with _Budget(max_seconds, max_memory_mb):
             if engine == "rebase":
                 return match_rebased(A, B, alpha, beta)
@@ -1342,7 +1353,7 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
 
 def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
               beta: float = 1.0, mode: str = "point", engine: str = "auto",
-              bearing_weight: float = 1.0, k_min: int = 1, max_work: float = 1e7,
+              bearing_weight: float = 1.0, k_min: int = 1, max_work: float = 5e7,
               max_seconds: float = 60.0, max_memory_mb: float = 2000.0):
     """One-call DAG-DTW pipeline (docs/dag_dtw_matching.md): ``prepare`` -> ``forward`` (the
     coupled pass) -> extraction, on ``A``/``B`` (``mode="point"``, ``M`` over vertices) or on their
