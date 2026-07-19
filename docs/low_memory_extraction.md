@@ -71,6 +71,33 @@ rather than on the whole tuple.
 `max_rows` bounds one factor and `max_profiles` one cell. Both are checked **during** the build, not
 after it — a cap applied to an already-materialised product reports the peak instead of bounding it.
 
+## 3.4 Where collapsing to one row per profile is legal
+
+A factor keeps **one row per profile**, discarding which cell each row used. That is sound only where
+the profile is a sufficient key for everything that can still observe the row.
+
+| site | key sufficient? | why |
+|---|---|---|
+| a sink | yes | nothing continues from it; the cell cannot affect anything |
+| a split, re-based | yes | the reset makes the profile `{(J, v)}` — the cell **is** the key, and the cost resets |
+| an extraction factor | yes | a finished subproblem; only split placements are still observable |
+| an interior vertex | **no** | see below |
+
+The interior case fails because a row there still has a future. The recurrence admits a child cell `v`
+only from `v` itself or a B-predecessor of `v`:
+
+```python
+entries = [v] + list(B.predecessors(v))
+```
+
+Keep one cell per profile at the parent and the retained cell may not be in `entries` for a given `v`
+at all, so `v` loses its entry entirely. Measured on the 48-case envelope: table rows fall 1 078 164
+-> 96 921 (11x), but 5 cases become **infeasible** ("sink has no reachable profile") and 23 of the
+43 that still answer are costlier — up to 8x.
+
+The damage is worst where there are fewest splits. On a chain every profile is `frozenset()`, so
+"one cell per profile" means one cell per *vertex* and the alignment collapses outright: 15.0 -> 120.0.
+
 ## 4. Status
 
 | change | effect | state |
