@@ -483,15 +483,32 @@ The two axes, both pure topology and both computed before any cell work:
 W  = profiled_width(A)
 Mo = merge_pressure(A)
 
-W <= 2            ->  "profiled"
-W > 2, Mo >= 2    ->  "rebase"
-W > 2, Mo <  2    ->  "cell"
+W <= 2       ->  "profiled"
+Mo >= W      ->  "rebase"
+otherwise    ->  "cell"
 ```
 
-Agrees with the measured winner on 8 of 9 test families. The exception is `braid(3)`, which takes
-`rebase` at a 1.8× cost where this engine was best; raising the threshold to `W <= 3` would fix it
-and cost 8× on `ladder(3)`, so the simpler rule stands rather than fitting two thresholds to nine
-points.
+**The merge threshold scales with `W`; it is not a constant.** Re-basing wins exactly when **every**
+nested split's branch rejoins — then `cell`'s `pending` and this engine's key are *both* maximally
+loaded. Below that, some path through the nesting stays merge-free and `cell` remains cheap.
+
+Sweeping the two axes independently (`report/probe_pressure_sweep.py` holds `W ≈ k` while varying how
+many branches rejoin, so `Mo ≈ j`):
+
+| `W`, `Mo` | profiled | `cell` | `rebase` | best |
+|---|---|---|---|---|
+| 5, 0 | 1.770 s | **0.003 s** | 0.015 s | cell |
+| 5, 2 | 1.103 s | **0.007 s** | 0.014 s | cell |
+| 5, 3 | 1.209 s | **0.037 s** | 0.084 s | cell |
+| 5, 4 | 1.204 s | **0.341 s** | 0.383 s | cell |
+| **5, 5** | 1.673 s | 2.073 s | **0.294 s** | **rebase** |
+
+`cell` wins at every `Mo < W` and loses only at `Mo = W`. A fixed threshold of `Mo >= 2` misroutes 4
+of 11 swept cases — and the misroute is dangerous in one direction, because `rebase` **fails
+outright** on the `ladder` family, so sending a `cell`-friendly source there turns a 5 ms answer into
+a refusal.
+
+With `Mo >= W` the rule agrees with the measured winner on **20 of 20** families.
 
 Explicit engines remain available: `"profiled"`, `"rebase"`, `"cell"`, `"join"`, `"all"`. Both
 `match_dag` and `DuckDBMapMatcher.match_dag` route through one shared `extract_by_engine`, so the
