@@ -352,7 +352,7 @@ Measured on `btree` (`extract_cell` for comparison):
 | **6** | 253 | 63 | 0.072 s | — | **MemoryError** after 47 s |
 
 So the usable ceiling is **depth 4**. Before the §5.3 elimination it was depth 3, so that fix bought
-one level, not a cure.
+one level, not a cure. **§8 removes the limit outright** by changing what a cost means.
 
 **The "fake branch" idea does not transfer.** At a merge, `extract_cell` lets one arm absorb while the
 others merely *tag* the merge cell in `pending`, resolving the tag later at the discharge — it works
@@ -375,7 +375,87 @@ dropped from `S` outright. Measured: one such split per `btree` (the root, prune
 | **no global budget** | `max_profiles` bounds one cell, `max_rows` one factor; neither bounds the aggregate — which is what `btree(5)` exhausts |
 | **not adopted** | nothing calls `profiled.py` |
 
-## 8. Relation to Existing Machinery
+## 8. Re-basing — removing the depth limit
+
+`PROFILED_REBASE=1`. Default **off**; the path described above is unchanged when it is unset.
+
+### 8.1 The one change
+
+| | §1–§5 (default) | re-based |
+|---|---|---|
+| `Dp[a][v][π]` | cost of `a`'s **whole upstream cone** | cost **since the last split** |
+| the key `π` | **all** live ancestor splits | the **last** split only (a set at merges, one per arm) |
+| width on a tree | = depth | **1, at any depth** |
+| total | sum over sinks | sum over **segments** |
+
+### 8.2 Why it works
+
+The depth blow-up is not caused by the *screening* — given `J`'s cell, nothing below `J` depends on
+where `P` ended. It is caused by the *accounting*: `Dp` is cumulative, so `cost(P → J)` sits inside
+**both** of `J`'s children, and if the key for `P` is dropped they minimise that shared cost
+independently and can pick **different** cells of `P`. That is the phantom, one level up.
+
+Re-basing puts `cost(P → J)` in exactly one place — `J`'s own segment — so nothing below `J` contains
+it and there is no shared quantity left to disagree about. Last-split keying is then exact.
+
+### 8.3 What changes in the algorithm
+
+Only two steps differ; §5.3's elimination and judge are untouched.
+
+```
+PHASE 1, new step 6:   at a split, BANK (cost, advance-bp, run cells) as the split's own
+                       segment factor, then RESET the accumulator to 0.
+                       The cover run is walked at bank time, while this row's pre-reset
+                       profile keys are still valid.
+
+PHASE 2, step 1:       factors are one per SPLIT (parent-key x own cell) as well as one
+                       per sink.
+
+PHASE 2, step 5:       reconstruction REPLAYS the banked chain -- a pick carries
+                       ("SEG", split, run cells, advance-bp) and needs no lookup.
+```
+
+That last point is the one that took three attempts. Two earlier versions re-derived the chain by
+matching profiles against an assignment recovered from the elimination; both were ambiguous exactly
+where `B` has cycles, and each passed one corpus while collapsing the other. **Carry the
+back-pointer, never infer it** — the same rule the default path already follows.
+
+### 8.4 What it buys and what it costs
+
+| `btree` depth | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|
+| default: profiles/cell | 14 | 61 | 263 | — | — |
+| default | 0.03 s | 0.18 s | 25.7 s | `MemoryError` | `MemoryError` |
+| **re-based: profiles/cell** | **5** | **5** | **5** | **5** | **5** |
+| **re-based** | 0.03 s | 0.07 s | 0.73 s | 3.6 s | 15.9 s |
+
+Width **1 and 5 profiles per cell, flat from depth 3 to 7**, all costs exact. The depth exponential
+is gone.
+
+But re-based is still **16–40× slower than `extract_cell`** on this family and the gap widens with
+depth. The *memory* wall is removed; the constant factor is not. `extract_cell` remains the right
+engine for out-trees.
+
+**On the hourglass it changes nothing** — width 2 either way, all four edges exact. This buys
+out-trees and only out-trees.
+
+### 8.5 `keep` under re-basing
+
+Re-basing truncates in more places — every segment factor, every sink factor **and** every elimination
+step, where the default path truncates once per sink. The same `keep` therefore buys less, so the
+default is resolved per path: **32** by default, **512** under re-basing. Measured on cyclic `B`:
+
+| `keep` | 32 | 128 | 512 |
+|---|---|---|---|
+| default path | 65 | 65 | 65 |
+| re-based | 56 | 64 | **65** |
+
+Cost parity is unaffected at every value on both paths. Not free: on line `100350`, `keep=512` costs
+0.62 s / 40 MB → 1.11 s / 80 MB.
+
+---
+
+## 9. Relation to Existing Machinery
 
 | existing | relation |
 |---|---|
