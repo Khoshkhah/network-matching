@@ -155,7 +155,13 @@ def predict_work(A: nx.DiGraph, cap: float = 1e18) -> tuple:
       ``profiled_rows`` product over the widest live split set -- what one cell's ``Dp`` would hold
 
     Joint reachability prunes both heavily in practice (line 102752 carries 5 087 of a 28 350
-    product), so these are for refusing the hopeless, never for choosing between engines.
+    product, and 100935's elimination peaks at 1 486 rows against a 3.3e5 bound), so these are
+    ORDERS OF MAGNITUDE loose. Treat them as a refusal gate for the hopeless, and as a tie-break only
+    when the structural pick (W/Mo, docs §9) is already over budget -- never as a primary engine
+    choice, because a smaller bound does not imply a smaller table.
+
+    See :func:`rebase_work` for the third estimate; re-basing's key resets at each split, so neither
+    number here describes it.
     """
     fin = {n: (sum(1 for c in A.nodes[n]["cand"].values()
                    if not c.get("forbidden") and c["D"] < INF) or 1)

@@ -7,13 +7,16 @@ memory budget. Companion to `profiled_forward_table.md`, which specifies the pha
 
 ## 1. The problem
 
-The forward table is not the phase that runs out of memory. On hourglass line `100935` the re-based
-table builds in 3.7 s / 142 MB; the extraction that reads it then exhausts the machine.
+The forward table is not the phase that runs out of memory. The starting point for everything below —
+hourglass line `100935`, whose re-based table builds fine and whose extraction then exhausts the
+machine:
 
 | phase | line 100350 | line 100935 |
 |---|---|---|
 | `forward_profiled` | 0.20 s / 5 MB | 3.7 s / 142 MB |
 | `extract_profiled` | 0.10 s / 3 MB | **out of memory** |
+
+§4 has the current numbers.
 
 ## 2. Why the extraction is the wide phase
 
@@ -178,28 +181,17 @@ Every cost removed here was building something that was about to be discarded.
 > Under `ulimit -v` a large run can **segfault** rather than raise `MemoryError` — the allocation
 > fails inside a C path that does not check. Pick-chain nesting is not involved (max depth 5).
 
-## 5. If that is not enough — branch-and-bound
+## 5. What was not needed
 
-Elimination stores a frontier, and the frontier is the product. A depth-first search stores a path.
+An earlier draft of this document specified a **branch-and-bound** extraction — DFS over split
+assignments with an admissible bound, memory `O(#splits)` because it holds a path rather than a
+frontier — on the premise that the frontier was the cost and that only not storing it could help.
 
-- **Variables** the splits, in min-fill order.
-- **Bound** for a partial assignment, sum over remaining factors of each one's cheapest row consistent
-  with it. Precomputed per-factor minima indexed by `(split, cell)` — thousands of entries, not the
-  product.
-- **Search** DFS, cells in increasing local cost, prune when `g + h >= incumbent`.
-- **Leaf** reconstruct through `_flood`, run `check_rules`. Valid updates the incumbent; invalid keeps
-  searching.
+That premise was wrong, and the trace in §3.1a is what refuted it: the elimination frontier on
+`100935` peaks at **1 486 rows**, and every step's row count equals the number of profiles that
+vertex actually has. Induced width was never the problem. The memory was a leaked memo (§3.2a) and a
+materialised cross product (§3.1a) — both of them building something about to be discarded.
 
-Memory becomes `O(#splits)` instead of `O(#profiles)`. Two properties come free:
-
-- **The judge gets its fallbacks back.** Search regenerates alternates on demand, which is what the
-  removed `keep` parameter was buying with gigabytes — worth 168 cyclic-B cases.
-- **It is anytime.** The first valid leaf is a usable answer; continuing only proves optimality. A
-  time budget then yields a result rather than a refusal.
-
-Exactness is preserved: the bound is admissible and the search exhaustive under pruning. The risk is
-worst-case exponential time, so it needs `max_seconds` as the backstop, and on `100935` it may return
-a valid matching without proving it optimal.
-
-Best-first/A\* on the same bound expands fewer nodes but grows a frontier again, which is the thing
-being escaped — hence DFS.
+It is recorded here as a refuted design, not a backlog item. If a future source genuinely exhausts
+the elimination, measure *what* is large before reaching for it: on every case seen so far the answer
+was "something we didn't need to build".

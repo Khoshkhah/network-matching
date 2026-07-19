@@ -206,6 +206,20 @@ exists.
 | 100341 | 33.4 s · 215 MB | **0.10 s · 4.4 MB** | 0 → 0 |
 | **100350** | **687.7 s · 783 MB** | **0.48 s · 14.9 MB** | **3 → 0** |
 
+**Regression check through `match_dag(engine="auto")`** — every hourglass edge, against its known
+cost. `100935` is the fifth, and was refused by every engine until the extraction work:
+
+| edge | `W` | `Mo` | engine chosen | cost | `V1/V2/V3` | time |
+|---|---|---|---|---|---|---|
+| 102752 | 2 | 3 | `profiled` | 481.2006 | 0/0/0 | 0.38 s |
+| 100042 | 2 | 3 | `profiled` | 401.9108 | 0/0/0 | 0.03 s |
+| 100341 | 2 | 3 | `profiled` | 410.3994 | 0/0/0 | 0.03 s |
+| 100350 | 2 | 3 | `profiled` | 308.9236 | 0/0/0 | 0.23 s |
+| **100935** | **5** | **5** | **`rebase`** | **441.6883** | 0/0/0 | 4.21 s |
+
+**5/5 exact and valid.** This is the check to run after any extraction change — the gates cover
+synthetic populations, these are the real sources the library exists for.
+
 ---
 
 ## 7. Which engine wins on which shape
