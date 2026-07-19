@@ -1212,11 +1212,16 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
             # TWO independent pressures, so the choice is 2-D, not a line:
             #   W  = nested-split pressure -- kills the PROFILED key (width grows with depth)
             #   Mo = concurrently-open merges -- kills CELL's pending (its product)
-            # A source can trip both, and then neither of those two engines is usable; re-basing is,
-            # because its key is the LAST split only. Measured on the `braid` family (nested splits
-            # AND separate merges): braid(5) profiled 1.38s, cell 2.04s, rebase 0.23s.
-            engine = ("profiled" if profiled_width(A) <= 2
-                      else "rebase" if merge_pressure(A) >= 2
+            #
+            # Re-basing wins only when Mo >= W: when EVERY nested split's branch rejoins, so both
+            # other engines are maximally loaded at once. Below that there is always a merge-free
+            # path through the nesting and `cell` stays cheap -- measured by sweeping the two axes
+            # independently (report/probe_braid.py): at W=5, `cell` wins at Mo=0..4 (0.003-0.34s)
+            # and only loses at Mo=5 (2.07s vs rebase 0.29s). A fixed threshold such as Mo>=2
+            # misroutes 4 of 11 swept cases.
+            W = profiled_width(A)
+            engine = ("profiled" if W <= 2
+                      else "rebase" if merge_pressure(A) >= W
                       else "cell")
         if engine == "rebase":
             return match_rebased(A, B, alpha, beta)
