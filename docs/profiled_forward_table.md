@@ -254,8 +254,17 @@ split count.
 
 ### 5.4 Why step 2 keeps `keep` rows, and step 4 exists
 
-`π` enforces V3 and the recurrence enforces V2, but **V1 is not covered** — on a cyclic `B` a run can
-revisit a B-vertex. Keeping only the minimum per key lets a cheap V1-invalid row hide a valid costlier
+`π` enforces V3 and the recurrence enforces V2, but **V1 is not covered**. V1 is the *non-crossing*
+rule (`dag_dtw_matching.md` §3):
+
+$$\forall\,(a,v) \in M,\ \forall\,a^- \in \mathrm{Apred}(a),\ \forall\,v^+ \in \mathrm{Bsucc}(v):\quad (a^-, v^+) \notin M$$
+
+— a *predecessor* of `a` may not sit on a *successor* of `v`; the matching must not run backwards. A
+cyclic `B` is what makes it bite, because `Bsucc(v)` can wrap around, so a cell that looks earlier is
+reachable as a successor and crossing becomes possible. Nothing in the forward pass rules it out, so
+it is only detectable once a complete matching exists.
+
+Keeping only the minimum per key lets a cheap V1-invalid row hide a valid costlier
 one, so the elimination retains the `keep` cheapest and the judge picks the first that survives
 `check_rules`. This is the *"top-K contraction"* `scripts/repro_contraction_eviction/README.md` asks
 for. `keep` never affects cost parity — only how many otherwise-refused cases can be answered.
