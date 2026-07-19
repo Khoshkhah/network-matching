@@ -43,26 +43,27 @@ def braid(k, j, sp=12.0):
     Bn = {f"{v}'": (x, y+0.4) for v,(x,y) in n.items()}
     return A, digraph(Bn, [(f"{u}'", f"{v}'") for u,v in e])
 
-print(f"{'k,j':>6} {'W':>3} {'Mo':>3} | {'profiled':>10} {'cell':>10} {'rebase':>10} | {'best':>8} | rule picks")
-for k in (4, 5):
-    for j in range(0, k + 1):
-        A, B = braid(k, j)
-        W, Mo = profiled_width(A), merge_pressure(A)
-        res = {}
-        for eng in ("profiled", "cell", "rebase"):
-            ts = []
-            for _ in range(2):
-                Ax, Bx = copy.deepcopy(A), copy.deepcopy(B)
-                t = time.perf_counter()
-                try:
-                    match_dag(Ax, Bx, r=14.0, alpha=0.5, beta=1.0, engine=eng)
-                    ts.append(time.perf_counter()-t)
-                except BaseException:
-                    ts.append(float("inf")); break
-            res[eng] = statistics.median(ts)
-        best = min(res, key=res.get)
-        pick = "profiled" if W <= 2 else ("rebase" if Mo >= 2 else "cell")
-        f = lambda v: "     FAIL" if v == float("inf") else f"{v:9.3f}s"
-        flag = "" if pick == best else f"  <-- picks {pick}"
-        print(f"{k},{j:>3} {W:>3} {Mo:>3} | {f(res['profiled'])} {f(res['cell'])} {f(res['rebase'])} "
-              f"| {best:>8} |{flag}", flush=True)
+if __name__ == "__main__":
+    print(f"{'k,j':>6} {'W':>3} {'Mo':>3} | {'profiled':>10} {'cell':>10} {'rebase':>10} | {'best':>8} | rule picks")
+    for k in (4, 5):
+        for j in range(0, k + 1):
+            A, B = braid(k, j)
+            W, Mo = profiled_width(A), merge_pressure(A)
+            res = {}
+            for eng in ("profiled", "cell", "rebase"):
+                ts = []
+                for _ in range(2):
+                    Ax, Bx = copy.deepcopy(A), copy.deepcopy(B)
+                    t = time.perf_counter()
+                    try:
+                        match_dag(Ax, Bx, r=14.0, alpha=0.5, beta=1.0, engine=eng)
+                        ts.append(time.perf_counter()-t)
+                    except BaseException:
+                        ts.append(float("inf")); break
+                res[eng] = statistics.median(ts)
+            best = min(res, key=res.get)
+            pick = "profiled" if W <= 2 else ("rebase" if Mo >= 2 else "cell")
+            f = lambda v: "     FAIL" if v == float("inf") else f"{v:9.3f}s"
+            flag = "" if pick == best else f"  <-- picks {pick}"
+            print(f"{k},{j:>3} {W:>3} {Mo:>3} | {f(res['profiled'])} {f(res['cell'])} {f(res['rebase'])} "
+                  f"| {best:>8} |{flag}", flush=True)

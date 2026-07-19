@@ -181,10 +181,21 @@ The width histograms confirm the dispatch is exercised rather than falling throu
 cases at width 3** were routed to `"cell"`, everything else to `"profiled"`. Identical numbers before
 and after the dispatch was deduplicated into `extract_by_engine`.
 
-Reproducer: `report/gate_auto_dispatch.py`. It also reports merge pressure, and that exposes a
+Reproducer: `report/gate_auto_dispatch.py`. It also reports merge pressure, and that exposed a
 coverage gap — the generated population is **`Mo = 0` for all 600 cases**, so this gate never routes
-to `"rebase"` (which needs `Mo >= W`, §9). The re-based path is covered only by the hourglass edges
-and the `btree` family, not by the random population.
+to `"rebase"` (which needs `Mo >= W`, §9), and the other two gates take the cone branch. The re-based
+path therefore had **no automated coverage at all**.
+
+**Rebase gate** — `report/gate_rebase.py`, over `braid(k, j)` (`W ≈ k`, `Mo ≈ j` independently):
+
+| cases | shapes routed to rebase | parity vs `extract_cell` | invalid |
+|---|---|---|---|
+| 66 (`k=3..6`, `j=0..k`, × 3 weightings) | **4** | **63/63** | 0 |
+
+It asserts its own coverage — `rebase_cases > 0` is part of the GREEN condition — because a gate that
+silently stops exercising its target is worse than no gate. `braid(6, 6)` is the case worth watching:
+`extract_cell` **refuses** it and re-basing answers `16.800000`, which is the whole reason the engine
+exists.
 
 **Real hourglass edges, end-to-end through `match_dag`** — all four routed to `profiled` at width 2:
 
