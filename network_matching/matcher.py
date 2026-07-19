@@ -960,7 +960,7 @@ class DuckDBMapMatcher:
         routes_summary = self._apply_dtypes(routes_summary, self.ROUTES_SUMMARY_DTYPES)
         return routes_long, routes_summary
 
-    def match_dag(self, alpha: float = 1.0, beta: float = 1.0, engine: str = "cell",
+    def match_dag(self, alpha: float = 1.0, beta: float = 1.0, engine: str = "auto",
                   bearing_weight: float = 2.0, max_distance: Optional[float] = None,
                   step_meters: float = 5.0, snap_decimals: int = 3, parts: bool = False):
         """Mode 3 — DAG-to-network matching (DAG-DTW), on the SAME configured sources as the other
@@ -969,8 +969,13 @@ class DuckDBMapMatcher:
         edge tables are converted to ``networkx`` graphs internally (each polyline densified at
         ``step_meters`` — this supplies the subdivision; shared endpoints become junctions snapped
         at ``snap_decimals``). Runs the segment-mode pipeline (arc states with a ``bearing_weight``
-        heading term) and the chosen extraction engine (``"cell"`` exact / ``"join"``
-        cross-validation / ``"all"`` = cheapest valid of the two); ``alpha ∈ (0,1]`` discounts 1:N
+        heading term) and the chosen extraction engine. ``engine="auto"`` (default) dispatches on the
+        source's profile width -- pure topology, computed before any matching work: width <= 2 uses
+        the **profiled** engine (docs/profiled_forward_table.md), which on real conflation sources is
+        far faster than ``"cell"`` and fixes the V3 phantom the forward table leaves at splits; wider
+        sources are nested splits, routed to ``"cell"``. Explicit: ``"profiled"``, ``"rebase"``,
+        ``"cell"`` (exact), ``"join"`` (cross-validation), ``"all"`` (cheapest valid of the two
+        classic engines); ``alpha ∈ (0,1]`` discounts 1:N
         coverage, ``beta ∈ [1,∞)`` penalizes N:1 stalls (docs/dag_dtw_matching.md §3).
 
         Returns ``(dag_long, dag_summary)`` — the Mode-1-style pair — or, with ``parts=True``,
@@ -1020,9 +1025,21 @@ class DuckDBMapMatcher:
             LB.nodes[(u, v)]["seq"] = B[u][v]["seq"]
         prepare(LA, LB, r=r, bearing_weight=bearing_weight)
         forward(LA, LB, alpha=alpha, beta=beta)
+        if engine in ("auto", "profiled", "rebase"):            # docs/profiled_forward_table.md
+            from .profiled import (profiled_width, forward_profiled,
+                                   extract_profiled, match_rebased)
+            if engine == "rebase":
+                M, _ = match_rebased(LA, LB, alpha, beta)
+            elif engine == "profiled" or profiled_width(LA) <= 2:
+                forward_profiled(LA, LB, alpha, beta)
+                M = extract_profiled(LA, LB, alpha, beta)[0]
+            else:
+                engine = "cell"                                 # nested splits: cell is faster
         engines = {"cell": extract_cell, "join": extract_join}
         if engine in engines:
             M, _ = engines[engine](LA, LB, alpha, beta)
+        elif engine in ("auto", "profiled", "rebase"):
+            pass                                                # already handled above
         elif engine == "all":                                   # cheapest valid of the two
             best = None
             for fn in (extract_cell, extract_join):
@@ -1037,7 +1054,8 @@ class DuckDBMapMatcher:
                 raise ValueError("both extraction engines infeasible -- increase max_distance")
             M = best[1]
         else:
-            raise ValueError(f"unknown engine {engine!r} (use 'cell', 'join' or 'all')")
+            raise ValueError(f"unknown engine {engine!r} "
+                             "(use 'auto', 'profiled', 'rebase', 'cell', 'join' or 'all')")
 
         rows = []
         for (sa, sb) in M:                                      # arc pair -> input-edge pair + drift
