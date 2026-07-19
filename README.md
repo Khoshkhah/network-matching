@@ -254,13 +254,16 @@ once. Measured on a real conflation corpus, that happens on the two slowest edge
 Carrying a cost **per profile** — per placement of the upstream splits — prices a split's children
 jointly and blocks it at construction. On those four edges, against `extract_cell`:
 
-| edge | current | profiled | V3 violations |
+| edge | `extract_cell` | `auto` | V3 violations |
 |---|---|---|---|
-| 100042 | 4.8 s · 63 MB | 0.03 s · 3 MB | 0 → 0 |
-| 102752 | 30.0 s · 248 MB | 0.42 s · 16 MB | **2 → 0** |
-| 100341 | 33.4 s · 215 MB | 0.03 s · 4 MB | 0 → 0 |
-| 100350 | **687.7 s · 783 MB** | **0.24 s · 14 MB** | **3 → 0** |
-| **100935** | **refused by every engine** | **4.1 s · 27 MB** | — |
+| 102752 | 26.5 s | **0.07 s** | **2 → 0** |
+| 100042 | 0.02 s | 0.03 s | 1 → 0 |
+| 100341 | 0.23 s | 0.23 s | 1 → 0 |
+| 100350 | 0.02 s | 0.02 s | 1 → 0 |
+| 100935 | 1.15 s | **0.21 s** | **2 → 0** |
+
+All five costs agree with `extract_cell` to the digit (`report/gate_hourglass.py`). Pinned to
+map-conflation `d173727`; the hourglass sources are built upstream, so they change when it does.
 
 It also answers **166 of 900** random cyclic-target cases that `extract_cell` refuses with a
 spurious *"no valid root row"* — the open contraction-eviction defect in
@@ -293,10 +296,14 @@ The refusal gate estimates **the engine actually chosen**. Line `100935` is why 
 predicts 7.9e8 for `cell` and 1.3e9 for `profiled`, but only **3.3e5** for `rebase`, which is what
 `W=5, Mo=5` selects:
 
-| edge | `W` | `Mo` | engine | cost | time |
-|---|---|---|---|---|---|
-| 102752 · 100042 · 100341 · 100350 | 2 | 3 | `profiled` | exact | 0.02–0.42 s |
-| **100935** | **5** | **5** | **`rebase`** | **441.6883** | **4.1 s** |
+| source | `W` | `Mo` | engine |
+|---|---|---|---|
+| shallow splits, few merges | ≤ 2 | any | `profiled` |
+| nested splits, every branch rejoining | ≥ 3 | ≥ `W` | `rebase` |
+| nested splits, some branch merge-free | ≥ 3 | < `W` | `cell` |
+
+Line `100935` is the case that forced it: with an earlier hourglass geometry it was `W=5, Mo=5`,
+predicting 7.9e8 rows for `cell` and 1.3e9 for `profiled` but only **3.3e5** for `rebase`.
 
 ```python
 M, committed = match_dag(A, B, r=20.0, alpha=0.5, beta=1.5)                   # auto (default)

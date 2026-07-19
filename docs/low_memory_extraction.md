@@ -175,6 +175,11 @@ Line `100935` **solves at the shipped defaults**, no tuning:
 returning `cost = 441.6883`, `V1/V2/V3 = 0/0/0`, full cover. For scale, extraction was 80.4 s and
 8.4 GB three changes earlier.
 
+> Measured on the pre-`d72c09b` hourglass geometry, where `100935` was `W=5, Mo=5`. After
+> map-conflation flipped near-reversal stubs into the junction it is `W=1, Mo=1` and routes to
+> `profiled` at 0.21 s — most of its pathology was the stubs. The numbers here stand as the
+> measurement that drove these changes; `report/gate_hourglass.py` holds the live baseline.
+
 §5 remains unimplemented and, on the evidence, unnecessary: none of the memory was induced width.
 Every cost removed here was building something that was about to be discarded.
 

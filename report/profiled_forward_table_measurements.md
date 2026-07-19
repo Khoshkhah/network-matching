@@ -8,6 +8,10 @@ number below; nothing here is hand-copied from a run that cannot be repeated.
 §1–§5 were measured against the unmodified engine at `ddba616`, before the profiled
 engine existed; they are the *motivation*. §6–§7 are the final state.
 
+**Hourglass numbers in §1, §2 and §4 predate map-conflation `d72c09b`** (near-reversal stubs
+flipped into the junction), so their edge costs and split/merge counts describe the earlier
+source geometry. They are kept as the motivating measurement; §6's table is the live baseline.
+
 | probe | measures | needs `map-conflation` |
 |---|---|---|
 | `probe_v3.py` | V3 violation rate of today's forward table (§1) | optional — synthetic half runs alone |
@@ -197,7 +201,8 @@ silently stops exercising its target is worse than no gate. `braid(6, 6)` is the
 `extract_cell` **refuses** it and re-basing answers `16.800000`, which is the whole reason the engine
 exists.
 
-**Real hourglass edges, end-to-end through `match_dag`** — all four routed to `profiled` at width 2:
+**Real hourglass edges, end-to-end through `match_dag`** — all four routed to `profiled` at width 2.
+*Pre-`d72c09b` geometry; §6 has the live baseline.*
 
 | edge | `extract_cell` | profiled | V3 |
 |---|---|---|---|
@@ -237,20 +242,31 @@ those four resolve at the ladder's own next rung, which the `{41: 146, 60: 3}` r
 The 15x figure supersedes the 22x in that commit message for the same reason — the earlier run had
 `auto` doing less work than `extract_cell`.
 
-**Regression check through `match_dag(engine="auto")`** — every hourglass edge, against its known
-cost. `100935` is the fifth, and was refused by every engine until the extraction work:
+**Regression check through `match_dag(engine="auto")`** — reproducer `report/gate_hourglass.py`,
+which also cross-validates every cost against `extract_cell`:
 
-| edge | `W` | `Mo` | engine chosen | cost | `V1/V2/V3` | time |
-|---|---|---|---|---|---|---|
-| 102752 | 2 | 3 | `profiled` | 481.2006 | 0/0/0 | 0.38 s |
-| 100042 | 2 | 3 | `profiled` | 401.9108 | 0/0/0 | 0.03 s |
-| 100341 | 2 | 3 | `profiled` | 410.3994 | 0/0/0 | 0.03 s |
-| 100350 | 2 | 3 | `profiled` | 308.9236 | 0/0/0 | 0.23 s |
-| **100935** | **5** | **5** | **`rebase`** | **441.6883** | 0/0/0 | 4.21 s |
+| edge | `\|LA\|` | `W` | `Mo` | engine | cost | V3 in forward table | `auto` | `extract_cell` |
+|---|---|---|---|---|---|---|---|---|
+| **102752** | 29 | 2 | 3 | `profiled` | 496.2937 | **2** | **0.07 s** | 26.54 s |
+| 100042 | 26 | 3 | 2 | `cell` | 420.8484 | 1 | 0.03 s | 0.02 s |
+| 100341 | 29 | 3 | 2 | `cell` | 454.4490 | 1 | 0.23 s | 0.23 s |
+| 100350 | 21 | 1 | 1 | `profiled` | 304.2849 | 1 | 0.02 s | 0.02 s |
+| 100935 | 33 | 1 | 1 | `profiled` | 524.8200 | **2** | 0.21 s | 1.15 s |
 
-**5/5 exact and valid.** This is the check to run after any extraction change — the gates cover
-synthetic populations, these are the real sources the library exists for.
+**5/5 at baseline, 5/5 agreeing with `extract_cell`.** The V3 column is why this engine exists: the
+forward table still places a split on two cells on 102752 and 100935, and the profiled path resolves
+it — `V1/V2/V3 = 0/0/0` on all five.
 
+> **The sources are an external input, and they move.** `local_dag.build_hourglass` in map-conflation
+> constructs them, so a change there silently changes what this library is handed. Commit `d72c09b`
+> ("flip near-reversal stubs into the junction, `TURN_MAX = 160°`") reshaped all five: a stub doubling
+> back on the corridor is the opposing carriageway of a divided road, so flipping it makes the
+> junction read as merge-then-continue rather than a U-turn. The table above is pinned to `d173727`.
+>
+> The effect on this library is large and favourable. Line `100935` — the source that motivated the
+> whole extraction rewrite — went from `W=5, Mo=5` needing `rebase` at 4.21 s to `W=1, Mo=1` on
+> `profiled` at 0.21 s. Most of its pathology was near-reversal stubs. The re-basing work still
+> stands on `braid` (`report/gate_rebase.py`), which is now its only coverage.
 ---
 
 ## 7. Which engine wins on which shape
