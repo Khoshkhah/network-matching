@@ -3,8 +3,11 @@
 Every cell carries a cost **per profile** — per placement of the upstream splits — so a split's
 children are priced jointly instead of each choosing independently.
 
-Implemented as `network_matching/profiled.py`; **not wired into `match_dag`**. Measurements and gate
-results live in `report/profiled_forward_table_measurements.md`.
+Implemented as `network_matching/profiled.py`. **`match_dag` defaults to `engine="auto"`**, which
+dispatches to this engine, to `"cell"`, or to §8's re-based variant according to the source's shape
+(§9). All gates green: unit suite 198, envelope 384/384, cyclic-B 731/731 with 0 invalid and 168
+cases answered where `extract_cell` refuses. Measurements live in
+`report/profiled_forward_table_measurements.md`.
 
 ---
 
@@ -373,7 +376,7 @@ dropped from `S` outright. Measured: one such split per `btree` (the root, prune
 |---|---|
 | **`keep`** | a measured plateau, not a proven bound. Failure mode is a refusal, never a wrong answer |
 | **no global budget** | `max_profiles` bounds one cell, `max_rows` one factor; neither bounds the aggregate — which is what `btree(5)` exhausts |
-| **`rebase` is never automatic** | it only wins on nested splits, where `"cell"` still beats it — so it is opt-in via `engine="rebase"` |
+| **`rebase`'s quadrant is narrow** | it wins only when *both* pressures are high (§9) — nested splits **and** several concurrently-open merges. On either alone, `"cell"` or this engine beats it |
 
 ## 8. Re-basing — removing the depth limit
 
@@ -455,7 +458,48 @@ Cost parity is unaffected at every value on both paths. Not free: on line `10035
 
 ---
 
-## 9. Relation to Existing Machinery
+## 9. Choosing an Engine
+
+**`cell` and this engine are not complements.** They fail on *independent* pressures, so a source can
+trip both at once — and then neither is usable:
+
+| | few open merges | many open merges |
+|---|---|---|
+| **shallow splits** | all fast | **profiled** — the hourglass: `cell` 4.8–688 s, profiled 0.1–0.8 s |
+| **nested splits** | **cell** — `btree`, `ladder`: `cell` 5 ms, profiled 34 s or worse | **both bad → `rebase`** (§8) |
+
+The two axes, both pure topology and both computed before any cell work:
+
+| | what it measures | what it kills |
+|---|---|---|
+| `profiled_width(A)` | max **live profile keys** at any vertex (§2.4's discharge applied) | **this engine** — the key grows with nesting depth |
+| `merge_pressure(A)` | max **concurrently-open merges**, mirroring `extract_cell`'s own early-discharge rule | **`cell`** — `pending`'s product is over exactly these |
+
+> `merge_pressure` is **not** a merge's in-degree. One merge of in-degree 10 is still *one* open merge
+> and costs `pending` one factor. The wall that motivated all of this was **three** concurrently-open
+> merges at 45×45×14.
+
+```
+W  = profiled_width(A)
+Mo = merge_pressure(A)
+
+W <= 2            ->  "profiled"
+W > 2, Mo >= 2    ->  "rebase"
+W > 2, Mo <  2    ->  "cell"
+```
+
+Agrees with the measured winner on 8 of 9 test families. The exception is `braid(3)`, which takes
+`rebase` at a 1.8× cost where this engine was best; raising the threshold to `W <= 3` would fix it
+and cost 8× on `ladder(3)`, so the simpler rule stands rather than fitting two thresholds to nine
+points.
+
+Explicit engines remain available: `"profiled"`, `"rebase"`, `"cell"`, `"join"`, `"all"`. Both
+`match_dag` and `DuckDBMapMatcher.match_dag` route through one shared `extract_by_engine`, so the
+engine set cannot drift between them.
+
+---
+
+## 10. Relation to Existing Machinery
 
 | existing | relation |
 |---|---|
