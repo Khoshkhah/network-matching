@@ -188,6 +188,46 @@ def predict_work(A: nx.DiGraph, cap: float = 1e18) -> tuple:
     return cell_rows, prof_rows
 
 
+def rebase_work(A: nx.DiGraph, cap: float = 1e18) -> float:
+    """Upper bound on the RE-BASED engine's widest factor -- the third estimate ``predict_work``
+    does not give, and the one ``auto`` needs when it routes to ``"rebase"``.
+
+    Differs from ``profiled_rows`` in the one way re-basing differs: a split RESETS the key rather
+    than adding to it, so the live set at a split is ``{that split}`` and nothing above it survives.
+    On hourglass line 100935 that is the gap between refusing and answering -- the cone bound is
+    1.3e9 (all five splits live at one vertex) while re-basing never has more than three.
+
+    Excludes the segment cross product deliberately: ``_eliminate_fused`` streams ``SEG[J]`` instead
+    of building it (docs §3.1a), so the peak is the parent-profile count, not parent x cells.
+    """
+    S = profiled_splits(A)
+    if not S:
+        return 1.0
+    fin = {n: (sum(1 for c in A.nodes[n]["cand"].values()
+                   if not c.get("forbidden") and c["D"] < INF) or 1)
+           for n in A.nodes}
+    ipd = _immediate_postdom(A)
+    dies_at: Dict[Hashable, set] = {}
+    for x in S:
+        dies_at.setdefault(ipd.get(x), set()).add(x)
+
+    rows, live_out = 1.0, {}
+    for a in nx.topological_sort(A):
+        if a in S:
+            live = {a}                                       # THE reset: nothing above survives
+        else:
+            live = set()
+            for p in A.predecessors(a):
+                live |= live_out[p]
+            live -= dies_at.get(a, frozenset())
+        live_out[a] = frozenset(live)
+        p = 1.0
+        for s in live:
+            p = min(p * fin[s], cap)
+        rows = max(rows, p)
+    return rows
+
+
 def _immediate_postdom(A: nx.DiGraph) -> dict:
     """Immediate post-dominator per vertex: dominators on the reverse graph from a virtual sink."""
     R = nx.DiGraph()

@@ -521,7 +521,33 @@ Mo = merge_pressure(A)
 W <= 2       ->  "profiled"
 Mo >= W      ->  "rebase"
 otherwise    ->  "cell"
+
+then, if that engine's estimate exceeds max_work:  take the cheapest-estimate engine
+                        if that one exceeds too:  refuse
 ```
+
+### 9.1 The refusal gate estimates the engine it chose
+
+Three estimates, all read off the forward table in under a millisecond:
+
+| | function | models |
+|---|---|---|
+| `cell_rows` | `predict_work(A)[0]` | the product `pending` enumerates over merges |
+| `profiled_rows` | `predict_work(A)[1]` | one cell's `Dp` — a product over the widest live split set |
+| `rebase_rows` | `rebase_work(A)` | same sweep, but a split **resets** the live set to `{itself}` |
+
+The order matters: **pick the engine first, then gate on that engine's number.** Gating on
+`min(cell, profiled)` was wrong, because neither describes re-basing:
+
+| line 100935 | estimate | verdict |
+|---|---|---|
+| `cell` | 789 462 244 | hopeless |
+| `profiled` | 1 300 068 000 | hopeless |
+| **`rebase`** | **331 650** | answers in 0.24 s |
+
+`W = 5, Mo = 5` routes it to `rebase`, but the old gate refused it on the other two engines' numbers
+first — a 4 000x misjudgement of the engine it had just chosen. `rebase_work` is lower for exactly the
+reason §8 exists: the reset means no vertex carries splits from above it.
 
 **The merge threshold scales with `W`; it is not a constant.** Re-basing wins exactly when **every**
 nested split's branch rejoins — then `cell`'s `pending` and this engine's key are *both* maximally

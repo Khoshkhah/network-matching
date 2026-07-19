@@ -1273,21 +1273,7 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
     """
     if engine in ("auto", "profiled", "rebase"):
         from .profiled import (profiled_width, merge_pressure, predict_work,       # lazy: cycle
-                               forward_profiled, extract_profiled, match_rebased)
-        if engine == "auto" and max_work is not None:
-            # REFUSE FAST. Both engines' table sizes are readable off the forward table in <1 ms,
-            # and a source beyond them grinds for 30-70 s before dying of MemoryError -- useless in a
-            # pipeline over thousands of edges, where "no match for this one" in a millisecond is
-            # worth far more than a late crash. Measured on vancouver_city: the four workable edges
-            # predict 7e3-8e4 (cell) / 3e2-3e3 (profiled); line 100935 predicts 7.9e8 / 1.3e9 and
-            # kills every engine. Bounds are UPPER -- reachability prunes them -- so the gate is set
-            # well above the workable range, not at it.
-            cw, pw = predict_work(A)
-            if min(cw, pw) > max_work:
-                raise ValueError(
-                    f"source too complex for exact matching: pending would enumerate ~{cw:,.0f} rows "
-                    f"and the profile table ~{pw:,.0f} per cell (limit {max_work:,.0f}). "
-                    "Reduce the source (fewer hops / shorter stubs) or raise max_work to try anyway.")
+                               rebase_work, forward_profiled, extract_profiled, match_rebased)
         if engine == "auto":
             # TWO independent pressures, so the choice is 2-D, not a line:
             #   W  = nested-split pressure -- kills the PROFILED key (width grows with depth)
@@ -1303,6 +1289,29 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
             engine = ("profiled" if W <= 2
                       else "rebase" if merge_pressure(A) >= W
                       else "cell")
+
+            # REFUSE FAST -- but only on the estimate of the engine actually chosen. Every engine's
+            # table size is readable off the forward table in <1 ms, and a source beyond them grinds
+            # for 30-70 s before dying of MemoryError, useless in a pipeline over thousands of edges.
+            #
+            # Gating on min(cell, profiled) was WRONG: neither describes re-basing, whose key resets
+            # at every split. Hourglass line 100935 predicts 7.9e8 (cell) and 1.3e9 (profiled) and
+            # was refused for it -- while re-basing predicts 3.3e5 and answers in 0.24 s. If the
+            # structural pick is over budget but another engine is not, take that one; refuse only
+            # when all three are. Bounds are UPPER -- reachability prunes them hard -- so the gate
+            # sits well above the workable range, not at it.
+            if max_work is not None:
+                cw, pw = predict_work(A)
+                est = {"cell": cw, "profiled": pw, "rebase": rebase_work(A)}
+                if est[engine] > max_work:
+                    engine = min(est, key=est.get)           # fall back to the cheapest estimate
+                if est[engine] > max_work:
+                    raise ValueError(
+                        f"source too complex for exact matching: cheapest engine "
+                        f"{min(est, key=est.get)!r} would enumerate ~{min(est.values()):,.0f} rows "
+                        f"(limit {max_work:,.0f}; cell ~{cw:,.0f}, profiled ~{pw:,.0f}, "
+                        f"rebase ~{est['rebase']:,.0f}). Reduce the source (fewer hops / shorter "
+                        "stubs) or raise max_work to try anyway.")
         with _Budget(max_seconds, max_memory_mb):
             if engine == "rebase":
                 return match_rebased(A, B, alpha, beta)
