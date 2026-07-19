@@ -243,6 +243,46 @@ python scripts/test_dag_point.py                        # three-engine cross-val
 
 ---
 
+### Experimental — the profiled forward table
+
+`network_matching/profiled.py`. **Nothing calls it**; `match_dag` is unchanged. It exists because
+the Mode-3 forward table is *optimistic at splits*: where several exit cells are usable by every
+child, each child's row picks its own cheapest and the trace can place one split on two cells at
+once. Measured on a real conflation corpus, that happens on the two slowest edges of four.
+
+Carrying a cost **per profile** — per placement of the upstream splits — prices a split's children
+jointly and blocks it at construction. On those four edges, against `extract_cell`:
+
+| edge | current | profiled | V3 violations |
+|---|---|---|---|
+| 100042 | 4.8 s · 63 MB | 0.03 s · 3 MB | 0 → 0 |
+| 102752 | 30.0 s · 248 MB | 0.50 s · 16 MB | **2 → 0** |
+| 100341 | 33.4 s · 215 MB | 0.03 s · 4 MB | 0 → 0 |
+| 100350 | **687.7 s · 783 MB** | **0.21 s · 14 MB** | **3 → 0** |
+
+It also answers **168 of 900** random cyclic-target cases that `extract_cell` refuses with a
+spurious *"no valid root row"* — the open contraction-eviction defect in
+`scripts/repro_contraction_eviction/`, resolved as a side effect of keying rows on profiles rather
+than on merge signatures.
+
+```python
+from network_matching.profiled import forward_profiled, extract_profiled
+prepare(A, B, r=20.0); forward(A, B, alpha, beta)     # as usual — this owns the §4.1a flags
+forward_profiled(A, B, alpha, beta)                    # adds cand[v]["Dp"] = {profile: (cost, bp)}
+M, committed, cost = extract_profiled(A, B, alpha, beta)
+```
+
+**Where it is worse.** A pure out-tree (splits nested with no merges between them) makes the key
+grow with depth; the default variant is usable to depth 4. A second variant, `PROFILED_REBASE=1`,
+re-bases costs to *"since the last split"* and removes that limit (exact to depth 7+ at width 1) —
+but it is slower and heavier on every other shape, so it stays off by default. The predictor is
+purely structural: **nested splits → re-basing, disjoint splits → default.**
+
+Gates: unit suite 198, structured envelope 384/384 cost parity, cyclic-B 731/731 with 0 invalid,
+all four hourglass edges exact. Reproduce with the probes in `report/`.
+
+---
+
 ## Mode 4 — Point-to-edge matching
 
 The simple sibling of Mode 2 for **POINT** sources: assign each point (a sensor, a measurement
@@ -308,6 +348,7 @@ m.set_parameters(max_distance=25)
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
 | [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) | DAG-DTW (Mode 3) — the complete spec: forward table with the split (V3) coupling, the three extraction engines (§5 branching, §10 vertex & **cell-level joins** — exact over the full space), validity rules V1–V4, point & segment modes, DAG sources. |
+| [docs/profiled_forward_table.md](docs/profiled_forward_table.md) | **Experimental** — a forward table carrying a cost *per profile* (where the upstream splits are placed), so a split's children are priced jointly and the V3 phantom is blocked at construction. Not wired into `match_dag`; see below. |
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
@@ -322,10 +363,11 @@ m.set_parameters(max_distance=25)
 ## Project layout
 
 ```
-network_matching/   library — matcher, graph_dtw, dag_dtw (Mode 3), synthetic (test cases), bgraph_prep, dtw
+network_matching/   library — matcher, graph_dtw, dag_dtw (Mode 3), profiled (experimental, see docs), synthetic, bgraph_prep, dtw
 scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, dag_dtw_debug_viz.py + test_dag_point.py (Mode 3), ...
 notebooks/          playgrounds — graph_dtw_playground.ipynb (Mode 1), dag_dtw_playground.ipynb (Mode 3)
 docs/               documentation
+report/             measured results + the probes that reproduce them
 tests/              pytest suite
 data/               INPUT data only (osm_edges.csv, sweden_edges.csv, boundary)
 output/             generated maps + result CSVs (git-ignored)
