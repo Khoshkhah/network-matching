@@ -3,7 +3,10 @@
 Raw results backing `docs/profiled_forward_table.md`. The probes in this folder reproduce every
 number below; nothing here is hand-copied from a run that cannot be repeated.
 
-**Date:** 2026-07-18 · **Engine:** `network_matching.dag_dtw` at `ddba616` (unmodified)
+**Date:** 2026-07-18 · **Engine:** `network_matching.dag_dtw` + `profiled` at `7af3113`
+
+§1–§5 were measured against the unmodified engine at `ddba616`, before the profiled
+engine existed; they are the *motivation*. §6–§7 are the final state.
 
 | probe | measures | needs `map-conflation` |
 |---|---|---|
@@ -150,3 +153,68 @@ did not pick.
 
 **Retry only after** the forward table is V3-valid — the same experiment becomes sound once the table
 it reads stops lying, and the ~4× speedup is then worth reclaiming.
+
+
+---
+
+## 6. Gate — final, at `7af3113`
+
+Run twice: engines called directly, and again **through `match_dag(engine="auto")`** — the second
+form exercises the shared `extract_by_engine` dispatch that both the library and DuckDB APIs use.
+
+**Direct**
+
+| gate | result |
+|---|---|
+| unit suite (`tests/`) | **198 passed** |
+| structured envelope, 384 cases | **384/384** valid · **384/384** cost parity · **384/384** sink-sum identity |
+| cyclic-B, 900 cases | **731/731** parity · **0** invalid · **168** answered where `extract_cell` raises |
+
+**Through `match_dag(engine="auto")`**
+
+| gate | cases | parity | invalid | lost | bonus | width histogram |
+|---|---|---|---|---|---|---|
+| envelope | 384 | **384/384** | 0 | 0 | 0 | `{0:192, 1:96, 2:96}` |
+| cyclic-B | 600 | **487/487** | 0 | 0 | **109** | `{1:411, 2:183, 3:6}` |
+
+The width histograms confirm the dispatch is exercised rather than falling through: the **6 cyclic-B
+cases at width 3** were routed to `"cell"`, everything else to `"profiled"`. Identical numbers before
+and after the dispatch was deduplicated into `extract_by_engine`.
+
+**Real hourglass edges, end-to-end through `match_dag`** — all four routed to `profiled` at width 2:
+
+| edge | `extract_cell` | profiled | V3 |
+|---|---|---|---|
+| 100042 | 4.8 s · 63 MB | **0.10 s · 3.8 MB** | 0 → 0 |
+| 102752 | 30.0 s · 248 MB | **0.83 s · 16.8 MB** | **2 → 0** |
+| 100341 | 33.4 s · 215 MB | **0.10 s · 4.4 MB** | 0 → 0 |
+| **100350** | **687.7 s · 783 MB** | **0.48 s · 14.9 MB** | **3 → 0** |
+
+---
+
+## 7. Which engine wins on which shape
+
+Timed via `match_dag`, medians. `report/probe_engine_choice.py` reproduces the ladder rows.
+
+| shape | width | `profiled` | `cell` | `rebase` | best |
+|---|---|---|---|---|---|
+| dense_chain(400) | 0 | 0.045 s | 0.060 s | 0.035 s | ~tie |
+| diamond_chain(40) | 1 | **0.013 s** | 0.026 s | 0.018 s | **profiled** |
+| diamond_chain(120) | 1 | **0.053 s** | 0.125 s | 0.113 s | **profiled** |
+| diamond_chain(400) | 1 | **0.256 s** | 0.886 s | 0.411 s | **profiled** |
+| hourglass ×4 | 2 | **0.10–0.83 s** | 4.8–687.7 s | — | **profiled** |
+| btree(4) | 4 | 0.289 s | **0.008 s** | 0.014 s | **cell** |
+| btree(5) | 5 | 33.9 s | **0.048 s** | 0.066 s | **cell** |
+| ladder(3…9) | 3–9 | 0.026 s → FAIL | **0.003–0.006 s** | FAIL | **cell** |
+
+**`rebase` is never first.** The ladder family was built specifically to find its niche — deep nested
+splits *and* a wide merge — and it fails there while `cell` runs in 5 ms. Two assumptions behind that
+prediction were wrong:
+
+* *"a wide merge hurts `cell`"* — it does not. `pending` pays per **concurrently-open** merge; one
+  merge is one factor whatever its in-degree. The hourglass wall was **three** merges at 45×45×14.
+* *"re-basing holds width 1 under nesting"* — only when a merge's arms share a last split. A fan-in
+  merge gives each arm a **different** last split, so its frontier is as wide as the fan-in.
+
+Hence `auto`'s two-way rule — `profiled` at width ≤ 2, else `cell` — with `rebase` opt-in and its
+niche unproven.
