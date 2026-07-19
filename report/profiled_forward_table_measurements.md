@@ -3,7 +3,7 @@
 Raw results backing `docs/profiled_forward_table.md`. The probes in this folder reproduce every
 number below; nothing here is hand-copied from a run that cannot be repeated.
 
-**Date:** 2026-07-18 · **Engine:** `network_matching.dag_dtw` + `profiled` at `7af3113`
+**Date:** 2026-07-19 · **Engine:** `network_matching.dag_dtw` + `profiled` at `08c1cb8`
 
 §1–§5 were measured against the unmodified engine at `ddba616`, before the profiled
 engine existed; they are the *motivation*. §6–§7 are the final state.
