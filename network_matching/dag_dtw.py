@@ -1194,6 +1194,47 @@ def parts_from_matching(M: set, LA: nx.DiGraph, LB: nx.DiGraph) -> List[dict]:
 # ---------------------------------------------------------------------------------------
 # One-call pipeline entry point
 # ---------------------------------------------------------------------------------------
+def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, engine: str):
+    """Run the chosen extraction on an already ``prepare``d + ``forward``ed pair. ``(M, committed)``.
+
+    THE single dispatch point -- :func:`match_dag` and ``DuckDBMapMatcher.match_dag`` both call it,
+    so the engine set cannot drift between them (it did once: the matcher kept a stale copy that did
+    not know about ``"auto"``).
+
+    ``"auto"`` picks on the source's **profile width** (pure topology, no cell work): ``<= 2`` uses
+    the profiled engine, which is where it wins -- reconvergent sources, every real conflation edge;
+    wider means splits nested without merges between them, where ``"cell"`` is faster.
+    """
+    if engine in ("auto", "profiled", "rebase"):
+        from .profiled import (profiled_width, forward_profiled,                   # lazy: cycle
+                               extract_profiled, match_rebased)
+        if engine == "rebase":
+            return match_rebased(A, B, alpha, beta)
+        if engine == "profiled" or profiled_width(A) <= 2:
+            forward_profiled(A, B, alpha, beta)
+            M, com, _cost = extract_profiled(A, B, alpha, beta)
+            return M, com
+        engine = "cell"                                         # nested splits: cell is faster
+    engines = {"cell": extract_cell, "join": extract_join}
+    if engine in engines:
+        return engines[engine](A, B, alpha, beta)
+    if engine == "all":                                         # the cross-validating choice
+        best = None
+        for fn in (extract_cell, extract_join):
+            try:
+                M, com = fn(A, B, alpha, beta)
+            except ValueError:
+                continue
+            c = _cost_of(A, B, M, alpha, beta)
+            if best is None or c < best[0] - 1e-12:
+                best = (c, M, com)
+        if best is None:
+            raise ValueError("both extraction engines infeasible -- increase match_radius_m")
+        return best[1], best[2]
+    raise ValueError(f"unknown engine {engine!r} "
+                     "(use 'auto', 'profiled', 'rebase', 'cell', 'join' or 'all')")
+
+
 def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
               beta: float = 1.0, mode: str = "point", engine: str = "auto",
               bearing_weight: float = 1.0, k_min: int = 1):
@@ -1223,34 +1264,8 @@ def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
         raise ValueError(f"unknown mode {mode!r} (use 'point' or 'segment')")
     prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight)
     forward(A2, B2, alpha=alpha, beta=beta)
-    if engine in ("auto", "profiled", "rebase"):
-        from .profiled import (profiled_width, forward_profiled,                   # lazy: cycle
-                               extract_profiled, match_rebased)
-        if engine == "rebase":
-            return match_rebased(A2, B2, alpha, beta)
-        if engine == "profiled" or profiled_width(A2) <= 2:
-            forward_profiled(A2, B2, alpha, beta)
-            M, com, _cost = extract_profiled(A2, B2, alpha, beta)
-            return M, com
-        engine = "cell"                                         # nested splits: cell is faster
-    engines = {"cell": extract_cell, "join": extract_join}
-    if engine in engines:
-        return engines[engine](A2, B2, alpha, beta)
-    if engine == "all":                                         # the cross-validating choice
-        best = None
-        for fn in (extract_cell, extract_join):
-            try:
-                M, com = fn(A2, B2, alpha, beta)
-            except ValueError:
-                continue
-            c = _cost_of(A2, B2, M, alpha, beta)
-            if best is None or c < best[0] - 1e-12:
-                best = (c, M, com)
-        if best is None:
-            raise ValueError("both extraction engines infeasible -- increase match_radius_m")
-        return best[1], best[2]
-    raise ValueError(f"unknown engine {engine!r} "
-                     "(use 'auto', 'profiled', 'rebase', 'cell', 'join' or 'all')")
+    return extract_by_engine(A2, B2, alpha, beta, engine)
+
 
 
 # ---------------------------------------------------------------------------------------

@@ -999,8 +999,7 @@ class DuckDBMapMatcher:
         (increase ``max_distance``)."""
         from shapely import wkt as _shapely_wkt
         from .dag_dtw import (edges_to_digraph, line_digraph, prepare, forward,
-                              extract_join, extract_cell, _cost_of, check_rules,
-                              parts_from_matching)
+                              extract_by_engine, parts_from_matching)
         if not self.source_a or not self.source_b or not self.utm_srid:
             raise ValueError("Sources not configured. Call configure_sources() first.")
         r = float(max_distance if max_distance is not None else (self.max_distance or 30.0))
@@ -1025,37 +1024,7 @@ class DuckDBMapMatcher:
             LB.nodes[(u, v)]["seq"] = B[u][v]["seq"]
         prepare(LA, LB, r=r, bearing_weight=bearing_weight)
         forward(LA, LB, alpha=alpha, beta=beta)
-        if engine in ("auto", "profiled", "rebase"):            # docs/profiled_forward_table.md
-            from .profiled import (profiled_width, forward_profiled,
-                                   extract_profiled, match_rebased)
-            if engine == "rebase":
-                M, _ = match_rebased(LA, LB, alpha, beta)
-            elif engine == "profiled" or profiled_width(LA) <= 2:
-                forward_profiled(LA, LB, alpha, beta)
-                M = extract_profiled(LA, LB, alpha, beta)[0]
-            else:
-                engine = "cell"                                 # nested splits: cell is faster
-        engines = {"cell": extract_cell, "join": extract_join}
-        if engine in engines:
-            M, _ = engines[engine](LA, LB, alpha, beta)
-        elif engine in ("auto", "profiled", "rebase"):
-            pass                                                # already handled above
-        elif engine == "all":                                   # cheapest valid of the two
-            best = None
-            for fn in (extract_cell, extract_join):
-                try:
-                    Mx, _ = fn(LA, LB, alpha, beta)
-                except ValueError:
-                    continue
-                c = _cost_of(LA, LB, Mx, alpha, beta)
-                if best is None or c < best[0] - 1e-12:
-                    best = (c, Mx)
-            if best is None:
-                raise ValueError("both extraction engines infeasible -- increase max_distance")
-            M = best[1]
-        else:
-            raise ValueError(f"unknown engine {engine!r} "
-                             "(use 'auto', 'profiled', 'rebase', 'cell', 'join' or 'all')")
+        M, _ = extract_by_engine(LA, LB, alpha, beta, engine)   # THE shared dispatch (dag_dtw)
 
         rows = []
         for (sa, sb) in M:                                      # arc pair -> input-edge pair + drift
