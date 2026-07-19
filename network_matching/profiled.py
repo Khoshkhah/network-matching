@@ -201,6 +201,8 @@ def _immediate_postdom(A: nx.DiGraph) -> dict:
 
 
 _MERGE_CACHE: Dict[tuple, object] = {}                   # (p0, p1) -> merged profile or None
+_MERGE_CACHE_MAX = 200_000                               # ceiling: the forward pass needs ~2k; the
+                                                         # join would push it to millions (docs §3.2a)
 _ABSENT = object()                                       # cache miss marker: None is a real result
 
 
@@ -252,7 +254,12 @@ def _merge(p0: Profile, p1: Profile):
     this test **is** V3.
 
     Memoised: the profile universe is tiny (width <= 4, a few hundred distinct values) while the fold
-    calls this once per (combo, option) pair per cell, so the same pairs recur constantly."""
+    calls this once per (combo, option) pair per cell, so the same pairs recur constantly.
+
+    BOUNDED, because that only describes the forward pass. `_join` calls this on every key pair across
+    whole factors, and those pairs are mostly seen once -- on hourglass line 100935 the memo grew from
+    2 169 entries to 3 756 561, which was 484 MB of the extraction's 497 MB (docs §3.2a). Past the
+    ceiling we still compute and return the right answer, we just stop remembering it."""
     if not p0:
         return p1
     if not p1:
@@ -271,7 +278,8 @@ def _merge(p0: Profile, p1: Profile):
             break
     else:
         out = frozenset(d.items())
-    _MERGE_CACHE[key] = out
+    if len(_MERGE_CACHE) < _MERGE_CACHE_MAX:
+        _MERGE_CACHE[key] = out
     return out
 
 
@@ -670,21 +678,54 @@ def _flood_rebased(A, picks: list) -> Dict[Hashable, set]:
     return cells
 
 
-def _extract_rebased(A, B, alpha, beta, max_rows):
-    """The §5.3 join, on SEGMENT factors: one per split (parent-key x own cell) plus one per sink."""
-    sinks = [n for n in A.nodes if A.out_degree(n) == 0]
-    factors: List[dict] = []
-    for a, seg in SEG.items():
-        f: Dict[Profile, list] = {}
-        for (pi_par, v), (cost, adv, run) in seg.items():
-            key = _merge(pi_par, frozenset({(a, v)}))
+def _eliminate_fused(factors: List[dict], J, max_rows: int) -> List[dict]:
+    """Eliminate split ``J``, streaming ``SEG[J]`` in rather than materialising it (docs §3.1a).
+
+    A segment factor is keyed by ``(parent_profile, J's own cell)`` -- a cross product. On line 100935
+    that is 1 486 x 59 = 58 989 rows, the only factor above the shipped cap, and every row of it is
+    minimised away in this same step.
+
+    It need never exist: below ``J`` nothing carries a quantity from above ``J``, because the re-base
+    reset severs it (profiled_forward_table.md §8). So everything below is conditionally independent
+    of everything above **given ``J``'s cell**, and the answer for each parent profile is a min over
+    ``J``'s cells -- computable in one streaming pass. Peak becomes the parent-profile count.
+    """
+    idx = [i for i, f in enumerate(factors) if any(s == J for pi in f for s, _v in pi)]
+    comb: Dict[Profile, list] = {}
+    if idx:
+        comb = factors[idx[0]]
+        for i in idx[1:]:
+            comb = _join(comb, factors[i], max_rows)
+
+    by_cell: Dict[Hashable, list] = {}                       # comb rows indexed by J's cell
+    for pi, rows in comb.items():
+        cell = next((v for s, v in pi if s == J), None)
+        by_cell.setdefault(cell, []).append((frozenset((s, v) for s, v in pi if s != J), rows[0]))
+
+    out: Dict[Profile, list] = {}
+    for (pi_par, v), (cost, adv, run) in SEG.get(J, {}).items():
+        if comb and v not in by_cell:
+            continue                                         # no consistent completion below J
+        for rest, (c_below, p_below) in by_cell.get(v, ((frozenset(), (0.0, [])),)):
+            key = _merge(pi_par, rest)
             if key is None:
                 continue
-            cur = f.get(key)                                 # cheapest per key, built in place
-            if cur is None or cost < cur[0][0]:
-                f[key] = [(cost, [("SEG", a, run, adv)])]
-        if f:
-            factors.append(f)
+            tot = cost + c_below
+            cur = out.get(key)
+            if cur is None or tot < cur[0][0]:
+                if cur is None and len(out) >= max_rows:
+                    raise ValueError(f"profiled join factor exceeded {max_rows} rows "
+                                     f"-- raise max_rows")
+                seg_pick = [("SEG", J, run, adv)]
+                out[key] = [(tot, (p_below, seg_pick) if p_below else seg_pick)]
+    return [f for i, f in enumerate(factors) if i not in set(idx)] + [out]
+
+
+def _extract_rebased(A, B, alpha, beta, max_rows):
+    """The §5.3 join: one factor per sink, with each split's segment factor STREAMED into its own
+    elimination rather than built (docs §3.1a)."""
+    sinks = [n for n in A.nodes if A.out_degree(n) == 0]
+    factors: List[dict] = []
     for t in sinks:
         f = {}
         for v, c in A.nodes[t]["cand"].items():
@@ -696,7 +737,17 @@ def _extract_rebased(A, B, alpha, beta, max_rows):
             raise ValueError(f"profiled join: sink {t!r} has no reachable profile")
         factors.append(f)
 
-    factors = _eliminate(factors, _min_fill_order(factors, profiled_splits(A)), max_rows)
+    # min-fill must see the segment factors' SCOPES even though their rows are never built: a
+    # scope-only stand-in per split, one key naming the splits it would mention.
+    stand_ins = []
+    for a, seg in SEG.items():
+        sc = {a}
+        for (pi_par, _v) in seg:
+            sc |= {s for s, _c in pi_par}
+        stand_ins.append({frozenset((s, None) for s in sc): None})
+    for J in _min_fill_order(factors + stand_ins, profiled_splits(A)):
+        factors = _eliminate_fused(factors, J, max_rows)
+
     joined = factors[0]
     for f in factors[1:]:
         joined = _join(joined, f, max_rows)
