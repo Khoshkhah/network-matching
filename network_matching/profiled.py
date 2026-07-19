@@ -50,7 +50,9 @@ def postdom_drop(A: nx.DiGraph, S: set) -> Dict[Hashable, set]:
     through ``a``. From there one branch carries the key, so no later tuple can contradict it and it
     is dead weight (docs §1.3). Forward mirror of cell_dag_extraction.md §3.5's early discharge:
     *first common ancestor going backward* is *post-dominator going forward*."""
-    R = A.reverse(copy=True)
+    R = nx.DiGraph()                                         # topology only: A.reverse(copy=True)
+    R.add_nodes_from(A.nodes)                                # deep-copies every cand table for a
+    R.add_edges_from((v, u) for u, v in A.edges)             # computation that needs no attributes
     sink_root = ("__postdom_root__",)
     R.add_node(sink_root)
     for t in [n for n in A.nodes if A.out_degree(n) == 0]:
@@ -170,14 +172,19 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
             pc = A.nodes[p]["cand"]
             dp = 1.0 / deg[p]
             opts = []                                        # (entry cell, is_stall, profile, cost)
+            opts_append = opts.append
             for x in entries:
                 cx = pc.get(x)
                 if cx is None or cx.get("forbidden"):
                     continue                                 # §4.1a: not a valid run END
+                dpx = cx.get("Dp")
+                if not dpx:
+                    continue
                 stall = x == v
-                for pi, (cost, _bp) in cx.get("Dp", {}).items():
+                for pi, row in dpx.items():
+                    cost = row[0]
                     if cost < INF:
-                        opts.append((x, stall, pi, cost * dp))
+                        opts_append((x, stall, pi, cost * dp))
             if not opts:
                 dead = True
                 break
