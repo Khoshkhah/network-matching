@@ -243,9 +243,10 @@ python scripts/test_dag_point.py                        # three-engine cross-val
 
 ---
 
-### Experimental — the profiled forward table
+### The profiled forward table — `engine="auto"` (default)
 
-`network_matching/profiled.py`. **Nothing calls it**; `match_dag` is unchanged. It exists because
+`network_matching/profiled.py`. Since `engine="auto"` became the default, `match_dag` **dispatches to
+it automatically** on sources where it wins. It exists because
 the Mode-3 forward table is *optimistic at splits*: where several exit cells are usable by every
 child, each child's row picks its own cheapest and the trace can place one split on two cells at
 once. Measured on a real conflation corpus, that happens on the two slowest edges of four.
@@ -265,21 +266,31 @@ spurious *"no valid root row"* — the open contraction-eviction defect in
 `scripts/repro_contraction_eviction/`, resolved as a side effect of keying rows on profiles rather
 than on merge signatures.
 
+**How `auto` chooses.** Per call, from the source's shape, before any matching work:
+
 ```python
-from network_matching.profiled import forward_profiled, extract_profiled
-prepare(A, B, r=20.0); forward(A, B, alpha, beta)     # as usual — this owns the §4.1a flags
-forward_profiled(A, B, alpha, beta)                    # adds cand[v]["Dp"] = {profile: (cost, bp)}
-M, committed, cost = extract_profiled(A, B, alpha, beta)
+engine = "profiled" if profiled_width(A) <= 2 else "cell"
 ```
 
-**Where it is worse.** A pure out-tree (splits nested with no merges between them) makes the key
-grow with depth; the default variant is usable to depth 4. A second variant, `PROFILED_REBASE=1`,
-re-bases costs to *"since the last split"* and removes that limit (exact to depth 7+ at width 1) —
-but it is slower and heavier on every other shape, so it stays off by default. The predictor is
-purely structural: **nested splits → re-basing, disjoint splits → default.**
+`profiled_width` is the **maximum live profile keys at any vertex** — one `O(V+E)` topological
+sweep. Width ≤ 2 means splits are disjoint or discharge quickly at a merge, and the profiled engine
+wins; width ≥ 3 means splits nested with no merge between them, where its key grows with depth and
+`extract_cell` is faster. It predicts the engine's actual stored width exactly on every test family.
+Every real conflation edge measured is width 2.
 
-Gates: unit suite 198, structured envelope 384/384 cost parity, cyclic-B 731/731 with 0 invalid,
-all four hourglass edges exact. Reproduce with the probes in `report/`.
+```python
+M, committed = match_dag(A, B, r=20.0, alpha=0.5, beta=1.5)                   # auto (default)
+M, committed = match_dag(A, B, r=20.0, alpha=0.5, beta=1.5, engine="cell")    # force the classic
+```
+
+**Where it is worse, and the `rebase` variant.** On nested splits the key grows with depth
+(usable to depth 4), which is why `auto` routes those to `"cell"`. `engine="rebase"` re-bases costs
+to *"since the last split"*, holding width 1 to depth 7+ — but it is slower than `"cell"` there too,
+so it is never chosen automatically and exists for shapes that would otherwise fail.
+
+Gates: unit suite 198; structured envelope and cyclic-B both 384/384 and 487/487 cost parity
+**through `match_dag(engine="auto")`**, 0 invalid, 109 cases answered where the classic engine
+refuses; all four hourglass edges exact end-to-end. Reproduce with the probes in `report/`.
 
 ---
 
@@ -348,7 +359,7 @@ m.set_parameters(max_distance=25)
 | [docs/graph_dtw_pipeline.md](docs/graph_dtw_pipeline.md) | Route-based pipeline — init, steps, output tables, parameters (start here for Mode 1). |
 | [docs/graph_dtw_matching.md](docs/graph_dtw_matching.md) | Graph-DTW algorithm — DTW generalized to a directed graph. |
 | [docs/dag_dtw_matching.md](docs/dag_dtw_matching.md) | DAG-DTW (Mode 3) — the complete spec: forward table with the split (V3) coupling, the three extraction engines (§5 branching, §10 vertex & **cell-level joins** — exact over the full space), validity rules V1–V4, point & segment modes, DAG sources. |
-| [docs/profiled_forward_table.md](docs/profiled_forward_table.md) | **Experimental** — a forward table carrying a cost *per profile* (where the upstream splits are placed), so a split's children are priced jointly and the V3 phantom is blocked at construction. Not wired into `match_dag`; see below. |
+| [docs/profiled_forward_table.md](docs/profiled_forward_table.md) | The profiled forward table — a cost *per profile* (where the upstream splits are placed), so a split's children are priced jointly and the V3 phantom is blocked at construction. `match_dag`'s default engine on width ≤ 2 sources; §8 covers the `rebase` variant. |
 | [docs/weighted_emission.md](docs/weighted_emission.md) | Emission cost — point-to-point vs segment-to-segment (endpoint-average + optional bearing). |
 | [docs/graph_dtw_debugging.md](docs/graph_dtw_debugging.md) | Algorithm debugging — `debug=True` internals, synthetic cases, perturbation-robustness tests. |
 | [docs/dtw_matching.md](docs/dtw_matching.md) | DTW shape-alignment deep dive (Mode 2). |
@@ -363,7 +374,7 @@ m.set_parameters(max_distance=25)
 ## Project layout
 
 ```
-network_matching/   library — matcher, graph_dtw, dag_dtw (Mode 3), profiled (experimental, see docs), synthetic, bgraph_prep, dtw
+network_matching/   library — matcher, graph_dtw, dag_dtw (Mode 3), profiled (Mode 3 default engine), synthetic, bgraph_prep, dtw
 scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, dag_dtw_debug_viz.py + test_dag_point.py (Mode 3), ...
 notebooks/          playgrounds — graph_dtw_playground.ipynb (Mode 1), dag_dtw_playground.ipynb (Mode 3)
 docs/               documentation

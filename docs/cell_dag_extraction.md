@@ -612,6 +612,13 @@ of four slow edges), so the funnel-free precondition fails. Shelved.
    `extract_cell_vertex`. Both fixes are exact, so parity must hold to the digit — any divergence is
    a bug in the fix, not a tolerance.
 
+> **Superseded (2026-07-18).** Fixes 1–3 were not implemented. The wall was closed instead by
+> `docs/profiled_forward_table.md` — a forward table carrying a cost **per profile** (where the
+> upstream splits are placed), which prices a split's children jointly and blocks the V3 phantom at
+> construction. It is now `match_dag`'s default engine on width ≤ 2 sources. Measured on these same
+> four edges: `100350` **687.7 s / 783 MB → 0.48 s / 15 MB**, and V3 violations 2 → 0 and 3 → 0. The
+> per-merge analysis below stands as the diagnosis; only the proposed remedies are superseded.
+
 Status (2026-07-17): wall diagnosed, repro reproducible, **measurement done (§8.5)**; **Fix 2 in
 design** (exactness workflow), Fix 1 to follow, sink-labeling shelved (measured unsafe).
 

@@ -373,7 +373,7 @@ dropped from `S` outright. Measured: one such split per `btree` (the root, prune
 |---|---|
 | **`keep`** | a measured plateau, not a proven bound. Failure mode is a refusal, never a wrong answer |
 | **no global budget** | `max_profiles` bounds one cell, `max_rows` one factor; neither bounds the aggregate — which is what `btree(5)` exhausts |
-| **not adopted** | nothing calls `profiled.py` |
+| **`rebase` is never automatic** | it only wins on nested splits, where `"cell"` still beats it — so it is opt-in via `engine="rebase"` |
 
 ## 8. Re-basing — removing the depth limit
 
