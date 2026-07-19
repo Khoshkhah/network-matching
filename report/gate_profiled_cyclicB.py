@@ -1,7 +1,9 @@
 """The cyclic-B arm of the §7 gate: extract_profiled vs extract_cell on random trees over CYCLIC B.
 
 The point-mode envelope (gate_profiled.py) uses acyclic targets, so it never reaches V1 -- the rule
-that bites when a run can revisit a B-vertex. Real road networks always have B-cycles, and the known
+that bites when the matching CROSSES -- V1 forbids a predecessor of `a` sitting on a successor of
+`v`, and a cyclic B lets Bsucc(v) wrap so that becomes reachable. Real road networks always have
+B-cycles, and the known
 open defect lives exactly here: `extract_cell` keeps only the CHEAPEST row per pending signature, so
 a cheap-but-invalid row can evict the valid-but-costlier one sharing its signature
 (scripts/repro_contraction_eviction/README.md -- 18 spurious raises + 1 displaced optimum per 900).

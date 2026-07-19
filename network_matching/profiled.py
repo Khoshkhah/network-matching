@@ -296,8 +296,9 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
                 run, b, pcur = [v], bp, pi
                 while len(b) == 1 and b[0][0] == a:          # cover step: same vertex, earlier cell
                     nxt = b[0][1]
-                    if nxt in [c for c in run]:
-                        break                                # cyclic B: a run may revisit; stop
+                    if nxt in run:
+                        break            # cyclic B lets a cover chain close on itself; stop rather
+                                         # than loop (this is the WALK terminating, not a V1 test)
                     run.append(nxt)
                     r = Dp.get(nxt, {}).get(pcur)
                     if not r:
@@ -542,7 +543,11 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     candidates = sorted((c, picks) for rows in joined.values() for c, picks in rows)
 
     # Terminal judge (docs §6.4). The profile enforces V3 and the recurrence enforces V2, but V1 is
-    # NOT covered: on a cyclic B a run can revisit a B-vertex, and the per-profile contraction keeps
+    # NOT covered. V1 is the NON-CROSSING rule (dag_dtw_matching.md §3): for all (a,v) in M, all
+    # a- in Apred(a) and all v+ in Bsucc(v), (a-, v+) must not be in M -- the matching may not run
+    # backwards. A cyclic B is what makes it bite, since Bsucc(v) can wrap around so a cell that
+    # looks earlier is reachable as a successor. Nothing in the forward pass rules it out, so it is
+    # only detectable once a complete matching exists, and the per-profile contraction keeps
     # only the cheapest row, so a cheap-but-V1-invalid row can hide a valid costlier one -- the same
     # validity-blind contraction as scripts/repro_contraction_eviction. Taking the single minimum
     # returned an invalid matching on 169/900 random trees over cyclic B. Trying candidates
