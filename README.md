@@ -308,10 +308,42 @@ is the last split rather than every live ancestor — width 1 on a pure out-tree
 key grows with depth. `auto` selects it on `Mo >= W`; everywhere else it is slower, so it is not a
 general-purpose choice. See `docs/low_memory_extraction.md` for why its extraction is cheap.
 
+**When a source is too big — it raises, it does not return a sentinel.** Three ceilings, all
+`ValueError`, and *which* one fires tells you where the cost was:
+
+| parameter | default | when it fires | message |
+|---|---|---|---|
+| `max_work` | `5e7` | **before any allocation**, from the estimates | `source too complex for exact matching: … forward/extract rows per engine: …` |
+| `max_memory_mb` | `2000` | during extraction, RSS growth sampled every 0.25 s | `extraction exceeded max_memory_mb=2000 (used 2413 MB)` |
+| `max_seconds` | `60` | during extraction, wall clock | `extraction exceeded max_seconds=60s` |
+
+`max_work` is the one you want to hit — microseconds, nothing allocated. The other two are the
+backstop for when the estimates were optimistic, enforced by a repeating `SIGALRM` that raises in the
+main thread between bytecodes; that is the only mechanism covering every engine without
+instrumenting each one's inner loops. RSS is measured as **growth since the extraction started**, so
+an already-loaded network does not count against it.
+
+```python
+try:
+    M, committed = match_dag(A, B, r=20.0, max_work=5e7, max_seconds=60.0, max_memory_mb=2000.0)
+except ValueError as e:
+    ...                       # unmatched: the message says which ceiling and by how much
+```
+
+Two limitations, both measured:
+
+- **A ceiling, not a preventer.** Sampling every 0.25 s means one allocation that jumps past the
+  limit between ticks can still OOM. Under `ulimit -v` a failed allocation can **segfault** instead
+  of raising, in a C path that does not check (`docs/low_memory_extraction.md` §4).
+- **No-op in a worker *thread*.** CPython delivers signals only to the main thread. A worker
+  *process* is fine — verified firing at 3.07 s under joblib/loky — but a worker thread runs straight
+  past the budget (measured 25 s past a 3 s limit). `max_work` is the thread-safe guard.
+
 Gates: unit suite 198; structured envelope 384/384 and cyclic-B 487/487 cost parity **through
 `match_dag(engine="auto")`**, 0 invalid, 107 cases answered where the classic engine refuses;
 `gate_rebase` 63/63 over sources that actually route to `rebase`; **all five** hourglass edges exact
-end-to-end. Reproduce with the gates and probes in `report/`.
+end-to-end; batch of 150 real edges **149 solved, 15× faster than `extract_cell`, 0 cost
+disagreements**. Reproduce with the gates and probes in `report/`.
 
 ---
 
