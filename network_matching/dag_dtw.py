@@ -14,6 +14,10 @@ Segment mode = the same parts run on the directed line graphs ``L(A)``, ``L(B)``
 from __future__ import annotations
 
 import math
+import os
+import signal
+import threading
+import time
 from typing import Any, Dict, Hashable, List
 
 import networkx as nx
@@ -1194,7 +1198,69 @@ def parts_from_matching(M: set, LA: nx.DiGraph, LB: nx.DiGraph) -> List[dict]:
 # ---------------------------------------------------------------------------------------
 # One-call pipeline entry point
 # ---------------------------------------------------------------------------------------
-def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, engine: str):
+class _Budget:
+    """Wall-clock and RSS ceiling for one extraction, enforced by a repeating ``SIGALRM``.
+
+    A periodic signal is the only mechanism that covers EVERY engine without instrumenting each
+    one's inner loops -- the handler runs in the main thread between bytecodes and raises there.
+    Line 100935 of vancouver_city ground for 30 s (cell) and 67 s (profiled) before dying of
+    MemoryError; a pipeline over thousands of edges wants "no match for this one" in a second.
+
+    THREADING: works in any **process** -- a joblib/multiprocessing worker runs its task in that
+    process's own main thread, so SIGALRM is delivered normally, and RSS then measures that worker
+    alone. Verified on line 100935 with the loky backend: budget fired at 3.07 s. It does NOT work in
+    a worker **thread** -- CPython only ever delivers signals to the main thread, so the guard
+    degrades to a no-op there (measured: a worker thread ran 25 s past a 3 s budget). Making threads
+    work would need ctypes async-exception injection or cooperative checks inside every engine's
+    inner loops; `max_work` is thread-safe and already catches the hopeless cases, so neither is
+    implemented.
+    """
+
+    def __init__(self, seconds=None, memory_mb=None, tick=0.25):
+        self.seconds, self.memory_mb, self.tick = seconds, memory_mb, tick
+        self.t0 = self.rss0 = self.prev = None
+        self.armed = False
+
+    @staticmethod
+    def _rss_mb():
+        try:
+            with open("/proc/self/statm") as f:
+                return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1e6
+        except Exception:                                       # noqa: BLE001 - not Linux
+            return 0.0
+
+    def __enter__(self):
+        if (self.seconds is None and self.memory_mb is None) or \
+           threading.current_thread() is not threading.main_thread():
+            return self
+        self.t0, self.rss0 = time.monotonic(), self._rss_mb()
+        self.prev = signal.signal(signal.SIGALRM, self._check)
+        signal.setitimer(signal.ITIMER_REAL, self.tick, self.tick)
+        self.armed = True
+        return self
+
+    def __exit__(self, *exc):
+        if self.armed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, self.prev)
+            self.armed = False
+        return False
+
+    def _check(self, _sig, _frm):
+        if self.seconds is not None and time.monotonic() - self.t0 > self.seconds:
+            raise ValueError(f"extraction exceeded max_seconds={self.seconds:g}s -- source too "
+                             "complex; reduce it or raise max_seconds")
+        if self.memory_mb is not None:
+            used = self._rss_mb() - self.rss0
+            if used > self.memory_mb:
+                raise ValueError(f"extraction exceeded max_memory_mb={self.memory_mb:g} "
+                                 f"(used {used:.0f} MB) -- source too complex; reduce it or raise "
+                                 "max_memory_mb")
+
+
+def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, engine: str,
+                      max_work: float = 1e7, max_seconds: float = 60.0,
+                      max_memory_mb: float = 2000.0):
     """Run the chosen extraction on an already ``prepare``d + ``forward``ed pair. ``(M, committed)``.
 
     THE single dispatch point -- :func:`match_dag` and ``DuckDBMapMatcher.match_dag`` both call it,
@@ -1206,8 +1272,22 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
     wider means splits nested without merges between them, where ``"cell"`` is faster.
     """
     if engine in ("auto", "profiled", "rebase"):
-        from .profiled import (profiled_width, merge_pressure, forward_profiled,   # lazy: cycle
-                               extract_profiled, match_rebased)
+        from .profiled import (profiled_width, merge_pressure, predict_work,       # lazy: cycle
+                               forward_profiled, extract_profiled, match_rebased)
+        if engine == "auto" and max_work is not None:
+            # REFUSE FAST. Both engines' table sizes are readable off the forward table in <1 ms,
+            # and a source beyond them grinds for 30-70 s before dying of MemoryError -- useless in a
+            # pipeline over thousands of edges, where "no match for this one" in a millisecond is
+            # worth far more than a late crash. Measured on vancouver_city: the four workable edges
+            # predict 7e3-8e4 (cell) / 3e2-3e3 (profiled); line 100935 predicts 7.9e8 / 1.3e9 and
+            # kills every engine. Bounds are UPPER -- reachability prunes them -- so the gate is set
+            # well above the workable range, not at it.
+            cw, pw = predict_work(A)
+            if min(cw, pw) > max_work:
+                raise ValueError(
+                    f"source too complex for exact matching: pending would enumerate ~{cw:,.0f} rows "
+                    f"and the profile table ~{pw:,.0f} per cell (limit {max_work:,.0f}). "
+                    "Reduce the source (fewer hops / shorter stubs) or raise max_work to try anyway.")
         if engine == "auto":
             # TWO independent pressures, so the choice is 2-D, not a line:
             #   W  = nested-split pressure -- kills the PROFILED key (width grows with depth)
@@ -1223,15 +1303,17 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
             engine = ("profiled" if W <= 2
                       else "rebase" if merge_pressure(A) >= W
                       else "cell")
-        if engine == "rebase":
-            return match_rebased(A, B, alpha, beta)
-        if engine == "profiled":
-            forward_profiled(A, B, alpha, beta)
-            M, com, _cost = extract_profiled(A, B, alpha, beta)
-            return M, com
+        with _Budget(max_seconds, max_memory_mb):
+            if engine == "rebase":
+                return match_rebased(A, B, alpha, beta)
+            if engine == "profiled":
+                forward_profiled(A, B, alpha, beta)
+                M, com, _cost = extract_profiled(A, B, alpha, beta)
+                return M, com
     engines = {"cell": extract_cell, "join": extract_join}
     if engine in engines:
-        return engines[engine](A, B, alpha, beta)
+        with _Budget(max_seconds, max_memory_mb):
+            return engines[engine](A, B, alpha, beta)
     if engine == "all":                                         # the cross-validating choice
         best = None
         for fn in (extract_cell, extract_join):
@@ -1251,7 +1333,8 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
 
 def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
               beta: float = 1.0, mode: str = "point", engine: str = "auto",
-              bearing_weight: float = 1.0, k_min: int = 1):
+              bearing_weight: float = 1.0, k_min: int = 1, max_work: float = 1e7,
+              max_seconds: float = 60.0, max_memory_mb: float = 2000.0):
     """One-call DAG-DTW pipeline (docs/dag_dtw_matching.md): ``prepare`` -> ``forward`` (the
     coupled pass) -> extraction, on ``A``/``B`` (``mode="point"``, ``M`` over vertices) or on their
     directed line graphs (``mode="segment"``, ``M`` over arcs — nodes are ``(u, v)`` edge tuples of
@@ -1278,7 +1361,8 @@ def match_dag(A: nx.DiGraph, B: nx.DiGraph, r: float = 20.0, alpha: float = 1.0,
         raise ValueError(f"unknown mode {mode!r} (use 'point' or 'segment')")
     prepare(A2, B2, r=r, k_min=k_min, bearing_weight=bearing_weight)
     forward(A2, B2, alpha=alpha, beta=beta)
-    return extract_by_engine(A2, B2, alpha, beta, engine)
+    return extract_by_engine(A2, B2, alpha, beta, engine, max_work,
+                             max_seconds, max_memory_mb)
 
 
 

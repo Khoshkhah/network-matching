@@ -142,6 +142,63 @@ def merge_pressure(A: nx.DiGraph) -> int:
     return max(open_at.values(), default=0)
 
 
+def predict_work(A: nx.DiGraph, cap: float = 1e18) -> tuple:
+    """``(cell_rows, profiled_rows)`` -- an UPPER bound on what each engine's table would hold,
+    read off the forward table in one topological sweep.
+
+    Both are products over surviving candidate cells, so they are available in microseconds once
+    ``forward`` has run -- long before either engine allocates anything. That is the point: an
+    intractable source should be refused in milliseconds, not after 30-70 s and a MemoryError.
+
+      ``cell_rows``     product over merges of |finite cand| -- what ``pending`` enumerates
+      ``profiled_rows`` product over the widest live split set -- what one cell's ``Dp`` would hold
+
+    Joint reachability prunes both heavily in practice (line 102752 carries 5 087 of a 28 350
+    product), so these are for refusing the hopeless, never for choosing between engines.
+    """
+    fin = {n: (sum(1 for c in A.nodes[n]["cand"].values()
+                   if not c.get("forbidden") and c["D"] < INF) or 1)
+           for n in A.nodes}
+    cell_rows = 1.0
+    for m in A.nodes:
+        if A.in_degree(m) >= 2:
+            cell_rows = min(cell_rows * fin[m], cap)
+
+    S = profiled_splits(A)
+    if not S:
+        return cell_rows, 1.0
+    ipd = _immediate_postdom(A)
+    dies_at: Dict[Hashable, set] = {}
+    for x in S:
+        dies_at.setdefault(ipd.get(x), set()).add(x)
+    prof_rows, live_out = 1.0, {}
+    for a in nx.topological_sort(A):                         # same live-set sweep as profiled_width
+        live = set()
+        for pnode in A.predecessors(a):
+            live |= live_out[pnode]
+        if a in S:
+            live.add(a)
+        live -= dies_at.get(a, frozenset())
+        live_out[a] = frozenset(live)
+        p = 1.0
+        for s in live:
+            p = min(p * fin[s], cap)
+        prof_rows = max(prof_rows, p)
+    return cell_rows, prof_rows
+
+
+def _immediate_postdom(A: nx.DiGraph) -> dict:
+    """Immediate post-dominator per vertex: dominators on the reverse graph from a virtual sink."""
+    R = nx.DiGraph()
+    R.add_nodes_from(A.nodes)
+    R.add_edges_from((v, u) for u, v in A.edges)
+    root = ("__pd_root__",)
+    R.add_node(root)
+    for t in [n for n in A.nodes if A.out_degree(n) == 0]:
+        R.add_edge(root, t)
+    return nx.immediate_dominators(R, root)
+
+
 _MERGE_CACHE: Dict[tuple, object] = {}                   # (p0, p1) -> merged profile or None
 _ABSENT = object()                                       # cache miss marker: None is a real result
 
