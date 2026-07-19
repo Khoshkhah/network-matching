@@ -495,12 +495,20 @@ def _extract_rebased(A, B, alpha, beta, keep, max_rows):
 
 
 def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
-                     keep: int = 32, max_rows: int = 50000):
+                     keep: int = None, max_rows: int = 50000):
     """``(M, committed, cost)`` by the §6.1 join: pick one profile, let each sink take its own best cell
     under it, add up. For a fixed profile the sinks are **independent**, so this is a min over the
     profile keys -- no product over sinks.
 
     Requires :func:`forward_profiled`. Raises ``ValueError`` if no profile is jointly reachable."""
+    # `keep` defaults differ by path. The cone path truncates once per sink factor and SATURATES at
+    # 32 (measured: 65 bonus answers at 32, 128 and 512 alike). Re-basing truncates at every SEG
+    # factor, every sink factor AND every elimination step, so the same 32 loses candidates the judge
+    # later needs for V1 on a cyclic B -- 56 bonus at 32, 64 at 128, 65 at 512. It is not free:
+    # on line 100350, keep=512 costs 0.62s/40MB -> 1.11s/80MB. Parity is 354/354 at every setting on
+    # both paths, so this only ever trades work for cases extract_cell refuses outright.
+    if keep is None:
+        keep = 512 if REBASE else 32
     if REBASE:
         return _extract_rebased(A, B, alpha, beta, keep, max_rows)
 
