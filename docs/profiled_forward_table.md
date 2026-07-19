@@ -412,6 +412,33 @@ exists to do. The variant that *is* available — recompute the branch's subtree
 instead of carrying the key — trades the memory for `|cand(J)|` × subtree work, i.e. the same
 exponential paid in time.
 
+**Refuted — "shielding".** The most compelling wrong idea here, recorded because it *works* on the
+measurement you would naturally take. Premise: `s` is **shielded** at `a` when a nearer split `s'`
+lies on every path from `s` to `a`, so everything below `s'` depends on `s` only through `s'` and the
+key can be dropped. It does exactly what it promises to the width — profiles per cell go
+`14 → 61 → MemoryError` at `btree` depth 3/4/5 without it, and stay **flat at 5** with it
+(`btree(5)`: MemoryError → 82 ms).
+
+It is still wrong. `Dp` is **cumulative over the whole upstream cone**: `cost(s → a)` is already
+inside every descendant's value, scaled by the `1/outdeg` fractions. Dropping `s` at `a`'s children
+lets them minimise it out *independently*, so they can pick different cells of `s` while each carries
+half of the shared cost — the phantom, one level up.
+
+| 384-case envelope | with shielding |
+|---|---|
+| valid | **334** / 384 (was 384) |
+| cost parity | 329 / 334 |
+| §6.2 sink-sum identity | **333 / 334** — the identity itself breaks |
+| worst divergence | **+33 %** |
+
+Every failure is on `deep`, the only structure with a split below a split; `chain`/`ysplit`/`merge`
+all pass, which is why a handful of hand-picked cases looked clean. `btree` hides it too — its
+geometry is congruent and symmetric, so the independent minimisations happen to agree.
+
+Making it sound needs a different **recurrence**, one where `Dp` means *"cost since the nearest
+split"* so each segment's cost belongs to exactly one factor — which is §8. It is not a change to the
+drop rule.
+
 **Unexploited:** a split with exactly **one** surviving exit contributes a constant key and could be
 dropped from `S` outright. Measured: one such split per `btree` (the root, pruned to a single cell by
 §4.1a). A real width reduction, but worth one key out of `depth`.

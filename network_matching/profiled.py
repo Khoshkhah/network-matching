@@ -27,14 +27,10 @@ import networkx as nx
 from .dag_dtw import INF, _b_order, check_rules, layer_order
 
 Profile = frozenset          # frozenset of (split_vertex, cell) pairs
-BOUNDED = False              # EXPERIMENT: truncate to max_profiles instead of refusing
 REBASE = os.environ.get("PROFILED_REBASE") == "1"   # EXPERIMENT: cost SINCE THE LAST SPLIT
 SEG: Dict[Hashable, dict] = {}                     # REBASE only: split -> {(parent_key, own_cell): cost}
 JUDGE_FALLBACKS = 32                               # rows kept at the LAST elimination step only,
                                                    # as V1 fallbacks for the judge (docs §5.4)
-START_SEMANTICS = os.environ.get("PROFILED_START") == "1"   # key = run START not END
-SHIELD = os.environ.get("PROFILED_SHIELD") == "1"   # EXPERIMENT (docs §7.1): drop a key
-                                                   # once a nearer split shields it
 
 
 # ---------------------------------------------------------------------------------------
@@ -313,48 +309,6 @@ _MERGE_CACHE_MAX = 200_000                               # ceiling: the forward 
 _ABSENT = object()                                       # cache miss marker: None is a real result
 
 
-def shield_drop(A: nx.DiGraph, S: set) -> Dict[Hashable, set]:
-    """REFUTED experiment, kept because the idea is compelling (docs §7.1).
-
-    Premise: ``s`` is shielded at ``a`` when a nearer split ``s'`` lies on every path from ``s`` to
-    ``a``, so everything below ``s'`` depends on ``s`` only through ``s'`` and the key can be dropped.
-    That would make width 1 on a tree, and it does: profiles/cell go 14 -> 61 -> MemoryError at btree
-    depth 3/4/5 without it, and stay FLAT at 5 with it (btree(5): MemoryError -> 82 ms).
-
-    But it is WRONG, because ``Dp`` is cumulative over the whole upstream cone: cost(s -> a) is
-    already inside every descendant's value, scaled by the 1/outdeg fractions. Dropping ``s`` at
-    ``a``'s children lets them minimise it out INDEPENDENTLY, so they can pick different cells of
-    ``s`` while each carries half of the shared cost -- the phantom, one level up.
-
-    Measured on the 384-case envelope: 334/384 valid (was 384), parity 329/334, and the §6.2 sink-sum
-    identity itself breaks (333/334). Divergences up to +33%. EVERY failure is on the `deep`
-    structure, the only one with a split below a split; chain/ysplit/merge all pass, which is why a
-    handful of hand-picked cases looked clean. btree hides it too: its geometry is congruent and
-    symmetric, so independent minimisation happens to agree.
-
-    Making it sound needs a different recurrence -- one where ``Dp`` means "cost since the nearest
-    split" so each segment's cost belongs to exactly one factor -- not a change to the drop rule.
-    Enable with PROFILED_SHIELD=1 to reproduce the failure."""
-    out: Dict[Hashable, set] = {a: set() for a in A.nodes}
-    for s in S:
-        reach = nx.descendants(A, s) | {s}
-        H = A.subgraph(reach)
-        idom = nx.immediate_dominators(H, s)
-        for a in reach:
-            if a == s:
-                continue
-            x = idom.get(a)
-            while x is not None and x != s:
-                if x in S:
-                    out[a].add(s)
-                    break
-                nxt = idom.get(x)
-                if nxt is None or nxt == x:
-                    break
-                x = nxt
-    return out
-
-
 def _merge(p0: Profile, p1: Profile):
     """Union two profiles; ``None`` if they disagree on a shared split (docs §1.2). A vertex has one
     run in a matching, so disagreement means no matching realises the combination -- on split cells
@@ -363,7 +317,7 @@ def _merge(p0: Profile, p1: Profile):
     Memoised: the profile universe is tiny (width <= 4, a few hundred distinct values) while the fold
     calls this once per (combo, option) pair per cell, so the same pairs recur constantly.
 
-    BOUNDED, because that only describes the forward pass. `_join` calls this on every key pair across
+    Bounded, because that only describes the forward pass. `_join` calls this on every key pair across
     whole factors, and those pairs are mostly seen once -- on hourglass line 100935 the memo grew from
     2 169 entries to 3 756 561, which was 484 MB of the extraction's 497 MB (docs §3.2a). Past the
     ceiling we still compute and return the right answer, we just stop remembering it."""
@@ -454,12 +408,9 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
                         if cur is None or c < cur[0] - 1e-12:
                             nxt[key] = (c, bp0 + [(p, x, pip)])
             combos = nxt
-            if len(combos) > max_profiles:
-                if BOUNDED:                                  # approximate: keep the cheapest
-                    combos = dict(sorted(combos.items(), key=lambda kv: kv[1][0])[:max_profiles])
-                else:                                        # exact: loud, never a silent truncation
-                    raise ValueError(f"profiled fold at {a!r} cell {v!r} exceeded {max_profiles} "
-                                     f"profiles -- raise max_profiles")
+            if len(combos) > max_profiles:                   # exact: loud, never a silent truncation
+                raise ValueError(f"profiled fold at {a!r} cell {v!r} exceeded {max_profiles} "
+                                 f"profiles -- raise max_profiles")
             if not combos:
                 dead = True
                 break
@@ -501,12 +452,8 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
                         dw[pi] = (nw, [(a, v, pi)])          # same-vertex triple == COVER
                         changed = True
                 if len(dw) > max_profiles:
-                    if BOUNDED:
-                        keep_n = dict(sorted(dw.items(), key=lambda kv: kv[1][0])[:max_profiles])
-                        dw.clear(); dw.update(keep_n)
-                    else:
-                        raise ValueError(f"profiled coverage at {a!r} cell {w!r} exceeded "
-                                         f"{max_profiles} profiles -- raise max_profiles")
+                    raise ValueError(f"profiled coverage at {a!r} cell {w!r} exceeded "
+                                     f"{max_profiles} profiles -- raise max_profiles")
 
     # ---- own split cell (overwrite: v is a's run end so far), then discharge (docs §1.3).
     # Discharge is a MIN, not a forget: rows differing only in a dropped key collide and the cheaper
@@ -530,10 +477,7 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
             return hit
         d = dict(pi)
         if in_S:
-            if START_SEMANTICS:
-                d.setdefault(a, cell)      # run START: written once, never overwritten
-            else:
-                d[a] = cell                # run END: overwritten as the run extends
+            d[a] = cell                    # the run END: overwritten as the run extends
         if drop_a:
             d = {s: c for s, c in d.items() if s not in drop_a}
         out = frozenset(d.items())
@@ -613,9 +557,6 @@ def forward_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     S = profiled_splits(A)
     drop = postdom_drop(A, S)
     SEG.clear()
-    if SHIELD:
-        sh = shield_drop(A, S)
-        drop = {a: drop[a] | sh[a] for a in A.nodes}
     _MERGE_CACHE.clear()                                     # profiles are graph-local
     for a in order:
         _fill_row_profiled(A, B, a, S, drop[a], alpha, beta, border, deg, max_profiles)
