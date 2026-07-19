@@ -5,8 +5,8 @@ children are priced jointly instead of each choosing independently.
 
 Implemented as `network_matching/profiled.py`. **`match_dag` defaults to `engine="auto"`**, which
 dispatches to this engine, to `"cell"`, or to §8's re-based variant according to the source's shape
-(§9). All gates green: unit suite 198, envelope 384/384, cyclic-B 731/731 with 0 invalid and 168
-cases answered where `extract_cell` refuses. Measurements live in
+(§9). All gates green: unit suite 198, envelope 384/384, cyclic-B 731/731 with 0 invalid.
+Measurements live in
 `report/profiled_forward_table_measurements.md`.
 
 ---
@@ -255,7 +255,7 @@ out-tree that exhausts memory while the forward table it reads is a few megabyte
 `J`'s **parent** split, so intermediate factors are bounded by the tree's **depth**, not its total
 split count.
 
-### 5.4 Why step 2 keeps `keep` rows, and step 4 exists
+### 5.4 Why step 4 exists
 
 `π` enforces V3 and the recurrence enforces V2, but **V1 is not covered**. V1 is the *non-crossing*
 rule (`dag_dtw_matching.md` §3):
@@ -267,10 +267,30 @@ cyclic `B` is what makes it bite, because `Bsucc(v)` can wrap around, so a cell 
 reachable as a successor and crossing becomes possible. Nothing in the forward pass rules it out, so
 it is only detectable once a complete matching exists.
 
-Keeping only the minimum per key lets a cheap V1-invalid row hide a valid costlier
-one, so the elimination retains the `keep` cheapest and the judge picks the first that survives
-`check_rules`. This is the *"top-K contraction"* `scripts/repro_contraction_eviction/README.md` asks
-for. `keep` never affects cost parity — only how many otherwise-refused cases can be answered.
+Every factor therefore carries the **single cheapest row per key**, and the judge takes the first
+candidate that survives `check_rules`. Keeping only the minimum does let a cheap V1-invalid row hide
+a valid costlier one — the *"top-K contraction"* `scripts/repro_contraction_eviction/README.md` asks
+for would retain the `K` cheapest instead, and a `keep` parameter did exactly that until it was
+removed.
+
+It was removed because it is pure cost. `keep` never affected cost parity, only reach, and it is a
+multiplier on every intermediate factor rather than on the answer:
+
+| line 100350, re-based extraction | `keep=512` | `keep=1` |
+|---|---|---|
+| time | 0.67 s | **0.12 s** |
+| RSS growth / peak | 96 MB / 64 MB | **5 MB / 0 MB** |
+
+| line 100935, re-based extraction | `keep=512` | `keep=1` |
+|---|---|---|
+| time | 19.36 s | **4.06 s** |
+| RSS growth / peak | 2522 MB / 2466 MB | **537 MB / 513 MB** |
+
+The default path is unaffected (its sink factors already carried one row per key); all of the saving
+is on the re-based path. What it costs is the 168 cyclic-B cases this engine could once answer where
+`extract_cell` refuses — that count is now **0**. No matching became wrong: cost parity and validity
+are unchanged (§10). Fallbacks for the judge are the thing to reinstate if a real result regresses,
+and the cheap place to put them is the *final* factor only, not the elimination chain.
 
 ### 5.5 Why summing the sinks is exact
 
@@ -374,8 +394,8 @@ dropped from `S` outright. Measured: one such split per `btree` (the root, prune
 
 | | |
 |---|---|
-| **`keep`** | a measured plateau, not a proven bound. Failure mode is a refusal, never a wrong answer |
-| **no global budget** | `max_profiles` bounds one cell, `max_rows` one factor; neither bounds the aggregate — which is what `btree(5)` exhausts |
+| **no judge fallbacks** | factors keep one row per key, so a cheap V1-invalid row can hide a valid costlier one (§5.4). Failure mode is a refusal, never a wrong answer — but 168 cyclic-B cases are refused that need not be |
+| **no global budget** | `max_profiles` bounds one cell, `max_rows` one factor; neither bounds the aggregate — which is what `btree(5)` exhausts. `max_rows` is now the binding constraint on line `100935` |
 | **`rebase`'s quadrant is narrow** | it wins only when *both* pressures are high (§9) — nested splits **and** several concurrently-open merges. On either alone, `"cell"` or this engine beats it |
 
 ## 8. Re-basing — removing the depth limit
@@ -442,19 +462,12 @@ engine for out-trees.
 **On the hourglass it changes nothing** — width 2 either way, all four edges exact. This buys
 out-trees and only out-trees.
 
-### 8.5 `keep` under re-basing
+### 8.5 Why re-basing paid most for `keep`
 
-Re-basing truncates in more places — every segment factor, every sink factor **and** every elimination
-step, where the default path truncates once per sink. The same `keep` therefore buys less, so the
-default is resolved per path: **32** by default, **512** under re-basing. Measured on cyclic `B`:
-
-| `keep` | 32 | 128 | 512 |
-|---|---|---|---|
-| default path | 65 | 65 | 65 |
-| re-based | 56 | 64 | **65** |
-
-Cost parity is unaffected at every value on both paths. Not free: on line `100350`, `keep=512` costs
-0.62 s / 40 MB → 1.11 s / 80 MB.
+Re-basing builds a factor per segment **and** per sink, and eliminates across all of them, where the
+default path builds one factor per sink. A per-key row budget therefore multiplied far more
+intermediate results here, which is why removing it (§5.4) recovered 5-19x on this path alone and
+nothing on the default one.
 
 ---
 

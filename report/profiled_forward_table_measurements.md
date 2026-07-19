@@ -168,18 +168,23 @@ form exercises the shared `extract_by_engine` dispatch that both the library and
 |---|---|
 | unit suite (`tests/`) | **198 passed** |
 | structured envelope, 384 cases | **384/384** valid · **384/384** cost parity · **384/384** sink-sum identity |
-| cyclic-B, 900 cases | **731/731** parity · **0** invalid · **168** answered where `extract_cell` raises |
+| cyclic-B, 900 cases | **731/731** parity · **0** invalid · **0** answered where `extract_cell` raises (was 168 before `keep` was removed, docs §5.4) |
 
 **Through `match_dag(engine="auto")`**
 
 | gate | cases | parity | invalid | lost | bonus | width histogram |
 |---|---|---|---|---|---|---|
 | envelope | 384 | **384/384** | 0 | 0 | 0 | `{0:192, 1:96, 2:96}` |
-| cyclic-B | 600 | **487/487** | 0 | 0 | **109** | `{1:411, 2:183, 3:6}` |
+| cyclic-B | 600 | **487/487** | 0 | 0 | 0 | `{1:411, 2:183, 3:6}` |
 
 The width histograms confirm the dispatch is exercised rather than falling through: the **6 cyclic-B
 cases at width 3** were routed to `"cell"`, everything else to `"profiled"`. Identical numbers before
 and after the dispatch was deduplicated into `extract_by_engine`.
+
+Reproducer: `report/gate_auto_dispatch.py`. It also reports merge pressure, and that exposes a
+coverage gap — the generated population is **`Mo = 0` for all 600 cases**, so this gate never routes
+to `"rebase"` (which needs `Mo >= W`, §9). The re-based path is covered only by the hourglass edges
+and the `btree` family, not by the random population.
 
 **Real hourglass edges, end-to-end through `match_dag`** — all four routed to `profiled` at width 2:
 

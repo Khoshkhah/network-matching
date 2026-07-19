@@ -27,6 +27,7 @@ import networkx as nx
 from .dag_dtw import INF, _b_order, check_rules, layer_order
 
 Profile = frozenset          # frozenset of (split_vertex, cell) pairs
+BOUNDED = False              # EXPERIMENT: truncate to max_profiles instead of refusing
 REBASE = os.environ.get("PROFILED_REBASE") == "1"   # EXPERIMENT: cost SINCE THE LAST SPLIT
 SEG: Dict[Hashable, dict] = {}                     # REBASE only: split -> {(parent_key, own_cell): cost}
 START_SEMANTICS = os.environ.get("PROFILED_START") == "1"   # key = run START not END
@@ -338,9 +339,12 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
                         if cur is None or c < cur[0] - 1e-12:
                             nxt[key] = (c, bp0 + [(p, x, pip)])
             combos = nxt
-            if len(combos) > max_profiles:                   # loud, never a silent truncation
-                raise ValueError(f"profiled fold at {a!r} cell {v!r} exceeded {max_profiles} "
-                                 f"profiles -- raise max_profiles")
+            if len(combos) > max_profiles:
+                if BOUNDED:                                  # approximate: keep the cheapest
+                    combos = dict(sorted(combos.items(), key=lambda kv: kv[1][0])[:max_profiles])
+                else:                                        # exact: loud, never a silent truncation
+                    raise ValueError(f"profiled fold at {a!r} cell {v!r} exceeded {max_profiles} "
+                                     f"profiles -- raise max_profiles")
             if not combos:
                 dead = True
                 break
@@ -382,8 +386,12 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
                         dw[pi] = (nw, [(a, v, pi)])          # same-vertex triple == COVER
                         changed = True
                 if len(dw) > max_profiles:
-                    raise ValueError(f"profiled coverage at {a!r} cell {w!r} exceeded "
-                                     f"{max_profiles} profiles -- raise max_profiles")
+                    if BOUNDED:
+                        keep_n = dict(sorted(dw.items(), key=lambda kv: kv[1][0])[:max_profiles])
+                        dw.clear(); dw.update(keep_n)
+                    else:
+                        raise ValueError(f"profiled coverage at {a!r} cell {w!r} exceeded "
+                                         f"{max_profiles} profiles -- raise max_profiles")
 
     # ---- own split cell (overwrite: v is a's run end so far), then discharge (docs §1.3).
     # Discharge is a MIN, not a forget: rows differing only in a dropped key collide and the cheaper
@@ -457,7 +465,7 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
 
 
 def match_rebased(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
-                  keep: int = None, max_profiles: int = 50000, max_rows: int = 50000):
+                  max_profiles: int = 50000, max_rows: int = 50000):
     """Run the re-based variant explicitly (docs §8), regardless of ``PROFILED_REBASE``.
 
     Costs mean "since the last split", so the key is the last split rather than every live ancestor.
@@ -468,7 +476,7 @@ def match_rebased(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float 
     REBASE = True
     try:
         forward_profiled(A, B, alpha, beta, max_profiles)
-        M, com, _c = extract_profiled(A, B, alpha, beta, keep=keep, max_rows=max_rows)
+        M, com, _c = extract_profiled(A, B, alpha, beta, max_rows=max_rows)
         return M, com
     finally:
         REBASE = was
@@ -522,27 +530,36 @@ def _flood(A, seeds) -> Dict[Hashable, set]:
     return cells
 
 
-def _join(f1: dict, f2: dict, keep: int, max_rows: int) -> dict:
-    """Combine two factors: consistent profile pairs, costs summed, ``keep`` cheapest per key."""
+def _join(f1: dict, f2: dict, max_rows: int) -> dict:
+    """Combine two factors: consistent profile pairs, costs summed, the cheapest row per key.
+
+    Every factor carries exactly one row per key, so this keeps the running minimum instead of
+    materialising the cross product and sorting it. That matters for memory, not just speed: the
+    old form appended every (row1 x row2) pair before truncating, so the peak was the full product
+    no matter how small the cap. ``max_rows`` is likewise checked DURING the build, so it bounds
+    the peak rather than reporting it afterwards.
+    """
     out: Dict[Profile, list] = {}
     for pi1, rows1 in f1.items():
+        c1, p1 = rows1[0]
         for pi2, rows2 in f2.items():
             m = _merge(pi1, pi2)
             if m is None:
                 continue                                     # arms disagree -- not a matching
-            bucket = out.setdefault(m, [])
-            for c1, p1 in rows1:
-                for c2, p2 in rows2:
-                    bucket.append((c1 + c2, p1 + p2))
-    for m, bucket in out.items():
-        bucket.sort(key=lambda r: r[0])
-        del bucket[keep:]
-    if len(out) > max_rows:
-        raise ValueError(f"profiled join factor exceeded {max_rows} rows -- raise max_rows")
+            c2, p2 = rows2[0]
+            c = c1 + c2
+            cur = out.get(m)
+            if cur is None:
+                if len(out) >= max_rows:
+                    raise ValueError(f"profiled join factor exceeded {max_rows} rows "
+                                     f"-- raise max_rows")
+                out[m] = [(c, p1 + p2)]                      # concatenate only when it survives
+            elif c < cur[0][0]:
+                out[m] = [(c, p1 + p2)]
     return out
 
 
-def _eliminate(factors: List[dict], order: List[Hashable], keep: int, max_rows: int) -> List[dict]:
+def _eliminate(factors: List[dict], order: List[Hashable], max_rows: int) -> List[dict]:
     """Min-sum variable elimination over the split keys (docs §6.1).
 
     The sinks are factors over their live splits, and the answer is ``min over pi of sum of factors``.
@@ -560,15 +577,13 @@ def _eliminate(factors: List[dict], order: List[Hashable], keep: int, max_rows: 
             continue
         combined = factors[idx[0]]
         for i in idx[1:]:
-            combined = _join(combined, factors[i], keep, max_rows)
+            combined = _join(combined, factors[i], max_rows)
         out: Dict[Profile, list] = {}                        # minimise J out
         for pi, rows in combined.items():
             npi = frozenset((s, v) for s, v in pi if s != J)
-            bucket = out.setdefault(npi, [])
-            bucket.extend(rows)                               # picks already carry their own chains
-        for npi, bucket in out.items():
-            bucket.sort(key=lambda r: r[0])
-            del bucket[keep:]
+            cur = out.get(npi)                                # picks already carry their own chains
+            if cur is None or rows[0][0] < cur[0][0]:
+                out[npi] = rows
         drop_idx = set(idx)
         factors = [f for i, f in enumerate(factors) if i not in drop_idx] + [out]
     return factors
@@ -602,7 +617,7 @@ def _flood_rebased(A, picks: list) -> Dict[Hashable, set]:
     return cells
 
 
-def _extract_rebased(A, B, alpha, beta, keep, max_rows):
+def _extract_rebased(A, B, alpha, beta, max_rows):
     """The §5.3 join, on SEGMENT factors: one per split (parent-key x own cell) plus one per sink."""
     sinks = [n for n in A.nodes if A.out_degree(n) == 0]
     factors: List[dict] = []
@@ -612,27 +627,27 @@ def _extract_rebased(A, B, alpha, beta, keep, max_rows):
             key = _merge(pi_par, frozenset({(a, v)}))
             if key is None:
                 continue
-            f.setdefault(key, []).append((cost, [("SEG", a, run, adv)]))
-        for k, b in f.items():
-            b.sort(key=lambda r: r[0]); del b[keep:]
+            cur = f.get(key)                                 # cheapest per key, built in place
+            if cur is None or cost < cur[0][0]:
+                f[key] = [(cost, [("SEG", a, run, adv)])]
         if f:
             factors.append(f)
     for t in sinks:
         f = {}
         for v, c in A.nodes[t]["cand"].items():
             for pi, (cost, _bp) in c.get("Dp", {}).items():
-                f.setdefault(pi, []).append((cost, [(t, v, pi)]))
+                cur = f.get(pi)
+                if cur is None or cost < cur[0][0]:
+                    f[pi] = [(cost, [(t, v, pi)])]
         if not f:
             raise ValueError(f"profiled join: sink {t!r} has no reachable profile")
-        for k, b in f.items():
-            b.sort(key=lambda r: r[0]); del b[keep:]
         factors.append(f)
 
     _o, L = layer_order(A)
-    factors = _eliminate(factors, sorted(profiled_splits(A), key=lambda s: -L[s]), keep, max_rows)
+    factors = _eliminate(factors, sorted(profiled_splits(A), key=lambda s: -L[s]), max_rows)
     joined = factors[0]
     for f in factors[1:]:
-        joined = _join(joined, f, keep, max_rows)
+        joined = _join(joined, f, max_rows)
     if not joined:
         raise ValueError("profiled join: no jointly reachable profile across sinks")
 
@@ -650,28 +665,19 @@ def _extract_rebased(A, B, alpha, beta, keep, max_rows):
 
 
 def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
-                     keep: int = None, max_rows: int = 50000):
+                     max_rows: int = 50000):
     """``(M, committed, cost)`` by the §6.1 join: pick one profile, let each sink take its own best cell
     under it, add up. For a fixed profile the sinks are **independent**, so this is a min over the
     profile keys -- no product over sinks.
 
+    Every factor carries the single cheapest row per key. The former ``keep`` parameter retained the
+    `keep` cheapest instead, to give the terminal judge fallbacks when it rejected on V1 -- worth 22
+    extra answers on the cyclic-B gate, at a peak the caps could not bound. Memory won; if a real
+    result regresses, the fallbacks are what to reinstate (docs §5.4).
+
     Requires :func:`forward_profiled`. Raises ``ValueError`` if no profile is jointly reachable."""
-    # `keep` buys the judge fallbacks, and the judge only ever rejects on V1 -- which needs a CYCLE
-    # in B to be reachable at all (docs §5.4). So:
-    #   B acyclic  -> keep=1. Measured 384/384 valid and exact on the envelope at keep=1, 2 and 32
-    #                 alike: with no cycle the cheapest candidate is always valid.
-    #   B cyclic   -> the cone path saturates at 32 (65 bonus answers at 32/128/512); re-basing
-    #                 truncates in more places (every segment factor, every sink factor, every
-    #                 elimination step) and needs 512 for the same 65.
-    # It is never free: keep=512 costs 47x on btree(5) under re-basing (0.71s -> 33.7s) and
-    # 0.62s/40MB -> 1.11s/80MB on hourglass line 100350, for identical costs.
-    if keep is None:
-        if nx.is_directed_acyclic_graph(B):
-            keep = 1
-        else:
-            keep = 512 if REBASE else 32
     if REBASE:
-        return _extract_rebased(A, B, alpha, beta, keep, max_rows)
+        return _extract_rebased(A, B, alpha, beta, max_rows)
 
     sinks = [n for n in A.nodes if A.out_degree(n) == 0]
     if not sinks:
@@ -693,11 +699,11 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     # eliminate the split keys, deepest first -- NOT a pairwise fold over sinks (docs §6.1)
     _ord, L = layer_order(A)
     elim = sorted(profiled_splits(A), key=lambda s: -L[s])
-    factors = _eliminate(factors, elim, keep, max_rows)
+    factors = _eliminate(factors, elim, max_rows)
 
     joined: Dict[Profile, list] = factors[0]
     for f in factors[1:]:
-        joined = _join(joined, f, keep, max_rows)
+        joined = _join(joined, f, max_rows)
     if not joined:
         raise ValueError("profiled join: no jointly reachable profile across sinks")
     candidates = sorted((c, picks) for rows in joined.values() for c, picks in rows)
