@@ -1206,15 +1206,24 @@ def extract_by_engine(A: nx.DiGraph, B: nx.DiGraph, alpha: float, beta: float, e
     wider means splits nested without merges between them, where ``"cell"`` is faster.
     """
     if engine in ("auto", "profiled", "rebase"):
-        from .profiled import (profiled_width, forward_profiled,                   # lazy: cycle
+        from .profiled import (profiled_width, merge_pressure, forward_profiled,   # lazy: cycle
                                extract_profiled, match_rebased)
+        if engine == "auto":
+            # TWO independent pressures, so the choice is 2-D, not a line:
+            #   W  = nested-split pressure -- kills the PROFILED key (width grows with depth)
+            #   Mo = concurrently-open merges -- kills CELL's pending (its product)
+            # A source can trip both, and then neither of those two engines is usable; re-basing is,
+            # because its key is the LAST split only. Measured on the `braid` family (nested splits
+            # AND separate merges): braid(5) profiled 1.38s, cell 2.04s, rebase 0.23s.
+            engine = ("profiled" if profiled_width(A) <= 2
+                      else "rebase" if merge_pressure(A) >= 2
+                      else "cell")
         if engine == "rebase":
             return match_rebased(A, B, alpha, beta)
-        if engine == "profiled" or profiled_width(A) <= 2:
+        if engine == "profiled":
             forward_profiled(A, B, alpha, beta)
             M, com, _cost = extract_profiled(A, B, alpha, beta)
             return M, com
-        engine = "cell"                                         # nested splits: cell is faster
     engines = {"cell": extract_cell, "join": extract_join}
     if engine in engines:
         return engines[engine](A, B, alpha, beta)

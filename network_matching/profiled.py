@@ -115,6 +115,33 @@ def profiled_width(A: nx.DiGraph) -> int:
     return w
 
 
+def merge_pressure(A: nx.DiGraph) -> int:
+    """Max **concurrently-open merges** at any vertex -- what ``pending`` actually pays for.
+
+    Mirrors `extract_cell`'s own early-discharge rule (cell_dag_extraction.md §3.5): a merge's key is
+    live from the merge back up to the FIRST COMMON ANCESTOR of its arms, and is discharged there.
+    So merge ``m`` is open at ``X`` iff ``X`` can reach ``m`` and is not a common ancestor of all of
+    ``m``'s arms.
+
+    Note what this is NOT: a merge's in-degree. One merge of in-degree 10 is still ONE open merge and
+    costs `pending` one factor -- which is why the `ladder` family, built to stress `cell` with a wide
+    fan-in, does not stress it at all. The hourglass wall was THREE concurrently-open merges at
+    45x45x14.
+    """
+    open_at: Dict[Hashable, int] = {a: 0 for a in A.nodes}
+    for m in A.nodes:
+        arms = list(A.predecessors(m))
+        if len(arms) < 2:
+            continue
+        ca = None
+        for p in arms:
+            up = nx.ancestors(A, p) | {p}
+            ca = up if ca is None else ca & up
+        for X in (nx.ancestors(A, m) | {m}) - (ca or set()):
+            open_at[X] += 1
+    return max(open_at.values(), default=0)
+
+
 _MERGE_CACHE: Dict[tuple, object] = {}                   # (p0, p1) -> merged profile or None
 _ABSENT = object()                                       # cache miss marker: None is a real result
 
