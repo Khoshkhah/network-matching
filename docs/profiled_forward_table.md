@@ -289,30 +289,34 @@ cyclic `B` is what makes it bite, because `Bsucc(v)` can wrap around, so a cell 
 reachable as a successor and crossing becomes possible. Nothing in the forward pass rules it out, so
 it is only detectable once a complete matching exists.
 
-Every factor therefore carries the **single cheapest row per key**, and the judge takes the first
-candidate that survives `check_rules`. Keeping only the minimum does let a cheap V1-invalid row hide
-a valid costlier one — the *"top-K contraction"* `scripts/repro_contraction_eviction/README.md` asks
-for would retain the `K` cheapest instead, and a `keep` parameter did exactly that until it was
-removed.
+Keeping only the minimum per key lets a cheap V1-invalid row hide a valid costlier one, so the judge
+needs **fallbacks** — the *"top-K contraction"* `scripts/repro_contraction_eviction/README.md` asks
+for. Where they are kept decides whether they are affordable.
 
-It was removed because it is pure cost. `keep` never affected cost parity, only reach, and it is a
-multiplier on every intermediate factor rather than on the answer:
+> Factors carry one row per key throughout the elimination, **except the last step**, which retains
+> `JUDGE_FALLBACKS = 32`. `_judge_fallbacks(B)` returns 1 when `B` is acyclic, since V1 needs a
+> B-cycle to be reachable at all.
 
-| line 100350, re-based extraction | `keep=512` | `keep=1` |
+A `keep` parameter once applied the multiplier at *every* step, and that is what made it expensive —
+it compounds down the chain rather than being paid once:
+
+| re-based extraction | at every step (`keep=512`) | last step only |
 |---|---|---|
-| time | 0.67 s | **0.12 s** |
-| RSS growth / peak | 96 MB / 64 MB | **5 MB / 0 MB** |
+| line 100350 | 0.67 s · 96 MB | **0.24 s · ~4 MB** |
+| line 100935 | 19.36 s · 2522 MB | **4.14 s · 164 MB** |
 
-| line 100935, re-based extraction | `keep=512` | `keep=1` |
-|---|---|---|
-| time | 19.36 s | **4.06 s** |
-| RSS growth / peak | 2522 MB / 2466 MB | **537 MB / 513 MB** |
+Applied at the narrowest point the cost is unmeasurable against no fallbacks at all, and it recovers
+almost all the reach:
 
-The default path is unaffected (its sink factors already carried one row per key); all of the saving
-is on the re-based path. What it costs is the 168 cyclic-B cases this engine could once answer where
-`extract_cell` refuses — that count is now **0**. No matching became wrong: cost parity and validity
-are unchanged (§10). Fallbacks for the judge are the thing to reinstate if a real result regresses,
-and the cheap place to put them is the *final* factor only, not the elimination chain.
+| cyclic-B gate | answered where `extract_cell` refuses |
+|---|---|
+| fallbacks at every step | 168 |
+| **fallbacks at the last step** | **166** |
+| none | 0 |
+
+The two missing cases need alternates that a mid-chain step already discarded. Cost parity and
+validity are unaffected at every setting (§10) — fallbacks only ever change how many otherwise-refused
+cases can be answered, never what an answer is.
 
 ### 5.5 Why summing the sinks is exact
 

@@ -168,14 +168,14 @@ form exercises the shared `extract_by_engine` dispatch that both the library and
 |---|---|
 | unit suite (`tests/`) | **198 passed** |
 | structured envelope, 384 cases | **384/384** valid · **384/384** cost parity · **384/384** sink-sum identity |
-| cyclic-B, 900 cases | **731/731** parity · **0** invalid · **0** answered where `extract_cell` raises (was 168 before `keep` was removed, docs §5.4) |
+| cyclic-B, 900 cases | **731/731** parity · **0** invalid · **166** answered where `extract_cell` raises (judge fallbacks at the last elimination step, docs §5.4) |
 
 **Through `match_dag(engine="auto")`**
 
 | gate | cases | parity | invalid | lost | bonus | width histogram |
 |---|---|---|---|---|---|---|
 | envelope | 384 | **384/384** | 0 | 0 | 0 | `{0:192, 1:96, 2:96}` |
-| cyclic-B | 600 | **487/487** | 0 | 0 | 0 | `{1:411, 2:183, 3:6}` |
+| cyclic-B | 600 | **487/487** | 0 | 0 | **107** | `{1:411, 2:183, 3:6}` |
 
 The width histograms confirm the dispatch is exercised rather than falling through: the **6 cyclic-B
 cases at width 3** were routed to `"cell"`, everything else to `"profiled"`. Identical numbers before
