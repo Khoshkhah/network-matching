@@ -27,6 +27,9 @@ import networkx as nx
 from .dag_dtw import INF, _b_order, check_rules, layer_order
 
 Profile = frozenset          # frozenset of (split_vertex, cell) pairs
+REBASE = os.environ.get("PROFILED_REBASE") == "1"   # EXPERIMENT: cost SINCE THE LAST SPLIT
+SEG: Dict[Hashable, dict] = {}                     # REBASE only: split -> {(parent_key, own_cell): cost}
+START_SEMANTICS = os.environ.get("PROFILED_START") == "1"   # key = run START not END
 SHIELD = os.environ.get("PROFILED_SHIELD") == "1"   # EXPERIMENT (docs §7.1): drop a key
                                                    # once a nearer split shields it
 
@@ -268,7 +271,10 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
             return hit
         d = dict(pi)
         if in_S:
-            d[a] = cell
+            if START_SEMANTICS:
+                d.setdefault(a, cell)      # run START: written once, never overwritten
+            else:
+                d[a] = cell                # run END: overwritten as the run extends
         if drop_a:
             d = {s: c for s, c in d.items() if s not in drop_a}
         out = frozenset(d.items())
@@ -278,11 +284,31 @@ def _fill_row_profiled(A, B, a, S, drop_a, alpha, beta, border, deg, max_profile
     for v in cand:
         out: Dict[Profile, tuple] = {}
         for pi, (val, bp) in Dp[v].items():
-            # A COVER back-pointer names a cell of THIS row, so its profile is an intermediate key
-            # that remap() is about to rewrite. Rewrite the reference too, or the reconstruction
-            # walk looks up a key that no longer exists, stops early, and leaves the rest of the
-            # branch uncovered (V4). Advance/stall pointers are unaffected: they name a parent's
-            # already-final keys.
+            if REBASE and in_S:
+                # Bank the segment cost, then RESET the accumulator: nothing downstream carries the
+                # cost of getting here, so branches below `a` share no quantity to disagree about.
+                #
+                # Bank the CHAIN with it. Walk the cover run now, while this row's pre-reset profile
+                # keys are still valid, and store (cost, advance-bp, run cells). Reconstruction then
+                # replays it verbatim -- no assignment matching, no profile lookup, nothing to get
+                # wrong. Re-deriving the chain from the recovered assignment was tried twice and
+                # failed on one corpus or the other each time.
+                run, b, pcur = [v], bp, pi
+                while len(b) == 1 and b[0][0] == a:          # cover step: same vertex, earlier cell
+                    nxt = b[0][1]
+                    if nxt in [c for c in run]:
+                        break                                # cyclic B: a run may revisit; stop
+                    run.append(nxt)
+                    r = Dp.get(nxt, {}).get(pcur)
+                    if not r:
+                        break
+                    b = r[1]
+                seg = SEG.setdefault(a, {})
+                k = (pi, v)
+                if k not in seg or val < seg[k][0] - 1e-12:
+                    seg[k] = (val, tuple(b), tuple(run))      # b is now the advance into the PARENT
+                out[frozenset({(a, v)})] = (0.0, [])
+                continue
             if len(bp) == 1 and bp[0][0] == a:
                 _self, vsrc, pisrc = bp[0]
                 bp = [(a, vsrc, remap(pisrc, vsrc))]
@@ -308,6 +334,7 @@ def forward_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     deg = {n: max(1, len(list(A.successors(n)))) for n in A.nodes}
     S = profiled_splits(A)
     drop = postdom_drop(A, S)
+    SEG.clear()
     if SHIELD:
         sh = shield_drop(A, S)
         drop = {a: drop[a] | sh[a] for a in A.nodes}
@@ -383,13 +410,88 @@ def _eliminate(factors: List[dict], order: List[Hashable], keep: int, max_rows: 
         for pi, rows in combined.items():
             npi = frozenset((s, v) for s, v in pi if s != J)
             bucket = out.setdefault(npi, [])
-            bucket.extend(rows)
+            bucket.extend(rows)                               # picks already carry their own chains
         for npi, bucket in out.items():
             bucket.sort(key=lambda r: r[0])
             del bucket[keep:]
         drop_idx = set(idx)
         factors = [f for i, f in enumerate(factors) if i not in drop_idx] + [out]
     return factors
+
+
+def _flood_rebased(A, picks: list) -> Dict[Hashable, set]:
+    """Reconstruct under re-basing. Every pick already carries what to do, so nothing is looked up:
+
+        ("SEG", a, run, advance_bp)  -- a banked segment: take all of `a`'s run cells, then continue
+                                        from the advance into its parent
+        (a, v, profile)              -- an ordinary cell: continue from its back-pointers
+    """
+    cells: Dict[Hashable, set] = {}
+    stack, seen = [], set()
+    for q in picks:
+        if q[0] == "SEG":
+            _tag, a, run, adv = q
+            cells.setdefault(a, set()).update(run)
+            stack.extend(adv)
+        else:
+            stack.append(q)
+    while stack:
+        a, v, pi = stack.pop()
+        if (a, v, pi) in seen:
+            continue
+        seen.add((a, v, pi))
+        cells.setdefault(a, set()).add(v)
+        row = A.nodes[a]["cand"][v].get("Dp", {}).get(pi)
+        if row:
+            stack.extend(row[1])
+    return cells
+
+
+def _extract_rebased(A, B, alpha, beta, keep, max_rows):
+    """The §5.3 join, on SEGMENT factors: one per split (parent-key x own cell) plus one per sink."""
+    sinks = [n for n in A.nodes if A.out_degree(n) == 0]
+    factors: List[dict] = []
+    for a, seg in SEG.items():
+        f: Dict[Profile, list] = {}
+        for (pi_par, v), (cost, adv, run) in seg.items():
+            key = _merge(pi_par, frozenset({(a, v)}))
+            if key is None:
+                continue
+            f.setdefault(key, []).append((cost, [("SEG", a, run, adv)]))
+        for k, b in f.items():
+            b.sort(key=lambda r: r[0]); del b[keep:]
+        if f:
+            factors.append(f)
+    for t in sinks:
+        f = {}
+        for v, c in A.nodes[t]["cand"].items():
+            for pi, (cost, _bp) in c.get("Dp", {}).items():
+                f.setdefault(pi, []).append((cost, [(t, v, pi)]))
+        if not f:
+            raise ValueError(f"profiled join: sink {t!r} has no reachable profile")
+        for k, b in f.items():
+            b.sort(key=lambda r: r[0]); del b[keep:]
+        factors.append(f)
+
+    _o, L = layer_order(A)
+    factors = _eliminate(factors, sorted(profiled_splits(A), key=lambda s: -L[s]), keep, max_rows)
+    joined = factors[0]
+    for f in factors[1:]:
+        joined = _join(joined, f, keep, max_rows)
+    if not joined:
+        raise ValueError("profiled join: no jointly reachable profile across sinks")
+
+    verts = set(A.nodes)
+    for cost, picks in sorted((c, p) for rows in joined.values() for c, p in rows):
+        cells = _flood_rebased(A, picks)
+        M = {(a, v) for a, run in cells.items() for v in run}
+        if {a for a, _ in M} != verts:
+            continue
+        v1, v2, v3 = check_rules(M, A, B)
+        if v1 or v2 or v3:
+            continue
+        return M, {a: sorted(run, key=str)[0] for a, run in cells.items()}, cost
+    raise ValueError("profiled join: no valid root row -- increase match_radius_m")
 
 
 def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float = 1.0,
@@ -399,6 +501,9 @@ def extract_profiled(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: flo
     profile keys -- no product over sinks.
 
     Requires :func:`forward_profiled`. Raises ``ValueError`` if no profile is jointly reachable."""
+    if REBASE:
+        return _extract_rebased(A, B, alpha, beta, keep, max_rows)
+
     sinks = [n for n in A.nodes if A.out_degree(n) == 0]
     if not sinks:
         raise ValueError("A has no sink")
