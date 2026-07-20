@@ -460,15 +460,33 @@ surplus arcs (all but the geometrically true one) as their own rows with `part_t
 overhang pairs. On A-edges interior to a larger source DAG, a `head`/`tail` row means B did not
 advance across the edge boundary (an N:1 compression) rather than a true network overhang.
 
+**The B cells a part claims (`b_segs`) — no filtering.** A part reports **every** B cell the
+matching covered. `parts_from_matching` aggregates the matcher's pairs; it does not re-judge them,
+and applies no threshold of its own.
+
+One consequence is worth stating plainly, because it is visible in the output. (V4) matches every
+A-arc, so at a route hand-off the entry vertex of an edge **walks** onto its arc: a 1:N coverage run
+stretching from the junction cell to where the edge actually lies (observed on `vancouver_city`:
+emission falling `60.1 → 4.9` across five covered cells). Those cells are in the claim like any
+other, so **two source lines tiling one street can each report the whole arc**. That is not resolved
+here. Read `b_segs` and settle exclusivity downstream, where the competing claims on an arc are
+visible together and can be compared against each other — a decision this function cannot make from
+one part in isolation.
+
+Everything the row reports about the B side is computed over the same covered pairs: `b_segs`,
+`b_from_m`, `b_to_m`, `n_pairs`, `n_a_arcs`, `n_b_arcs`, `drift_m`, `drift_max_m`,
+`bearing_diff_deg`. So a walk's distances **do** enter that part's `drift_m`.
+
 | column | meaning |
 |---|---|
 | `source_id`, `part`, `part_type`, `dest_id` | A-edge, 1-based part order along it, `match`/`head`/`tail`, matched B-edge |
+| `b_segs` | the B cells this part **actually claimed** (post-trim), ascending. **This is the claim** — use it, not the extent, for anything per-cell (exclusivity, coverage, holes) |
 | `a_from_m`, `a_to_m`, `a_len_m`, `a_pct` | span of the A-edge covered by this part (meters along A / % of A's length) |
 | `n_pairs` | matched (A-arc, B-arc) pairs in the part |
 | `n_a_arcs`, `n_b_arcs` | distinct arcs on each side |
 | `drift_m`, `drift_max_m` | mean / max midpoint distance over the part's pairs (pure geometry — the `bearing_weight` term is never mixed in) |
 | `bearing_diff_deg` | mean circular bearing difference over the part's pairs |
-| `b_from_m`, `b_to_m`, `b_len_m` | used span along the B-edge, and the B-edge's total length |
+| `b_from_m`, `b_to_m`, `b_len_m` | the claim's **extent** along the B-edge (min/max station of `b_segs`), and the B-edge's total length. An extent is not a claim: a part that skips cells reads as covering everything between them — see `b_segs` |
 | `b_head_m`, `b_tail_m` | the **non-overlapping** begin/end of the B-edge: `b_from_m` and `b_len_m − b_to_m` — the parts of B before/after the used span |
 
 ### 11.2 Reading the table
@@ -477,6 +495,10 @@ advance across the edge boundary (an N:1 compression) rather than a true network
   `dag_summary.a_head_m`/`a_tail_m`); **B-side non-overlap** is in `b_head_m`/`b_tail_m` — for
   the route as a whole, the B network before the entry point is the first part's `b_head_m` and
   the B network after the exit is the last part's `b_tail_m`.
+- **Extent vs claim.** `b_from_m … b_to_m` is the min/max of `b_segs`, so `b_to_m − b_from_m`
+  **over-reports** whenever the trim (or a re-entry) leaves a hole inside it. Coverage, exclusivity
+  and gap questions must be answered from `b_segs`; the extent is only a bounding interval. A part
+  is hole-free iff `len(b_segs) == max(b_segs) − min(b_segs) + 1`.
 - **Whole-edge scores are yours to compose.** The natural aggregate over the `match` parts is
   the length-weighted mean, e.g. `edge_drift = Σ(a_len_m · drift_m) / Σ(a_len_m)` and likewise
   for `bearing_diff_deg`; or gate per part first (`drift_m ≤ τ`) and score

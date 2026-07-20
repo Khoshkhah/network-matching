@@ -1092,10 +1092,6 @@ def parts_from_matching(M: set, LA: nx.DiGraph, LB: nx.DiGraph) -> List[dict]:
 
     apos, atot = positions(LA)
     bpos, btot = positions(LB)
-    _bcell: Dict[Hashable, list] = {}                # per B road: its cell lengths → median = the
-    for (_rid, _seq), (_c0, _c1) in bpos.items():    # arc's own RESOLUTION (what one step is there)
-        _bcell.setdefault(_rid, []).append(_c1 - _c0)
-    bstep = {rid: sorted(v)[len(v) // 2] for rid, v in _bcell.items()}
 
     def circ(a, b):
         d = abs(float(a) - float(b)) % 360.0
@@ -1184,24 +1180,12 @@ def parts_from_matching(M: set, LA: nx.DiGraph, LB: nx.DiGraph) -> List[dict]:
             a_from = cursor
             a_to = max(cursor, max(apos[(rid, p["a_seq"])][1] for p in run))
             cursor = a_to
+            # NO FILTERING — a part reports every cell the matching covered (docs §11.1). The pairs
+            # are the matcher's answer; `parts_from_matching` aggregates them, it does not re-judge
+            # them. A cell reached only by an entry walk is therefore part of the claim, and two
+            # source lines tiling one street can each report the whole arc — read `b_segs` and
+            # settle exclusivity downstream, where the competing claims are visible together.
             claim = run
-            if ptype == "match":
-                # RESOLUTION TRIM — the B-side dual of the head/tail A-overhang (docs §11.1). At a
-                # route hand-off the entry vertex "walks" along the arc via a 1:N coverage run from
-                # the junction cell to where the edge actually lies; those walked-through cells are
-                # route CONNECTIVITY, not correspondence — leaving them in is exactly how two lines
-                # tiling one street both claimed the whole arc. Per A-vertex: a covered cell is a
-                # CLAIM only if dist² ≤ dmin² + step² (step = the arc's own median cell length) —
-                # along-track excess of at most one step over the vertex's nearest cell; the lateral
-                # offset (real A↔B displacement) cancels, so offset streets are untouched.
-                step2 = bstep[dest] ** 2
-                by_a: Dict[int, list] = {}
-                for p in run:
-                    by_a.setdefault(p["a_seq"], []).append(p)
-                claim = []
-                for cells in by_a.values():
-                    dmin = min(c["dist_m"] for c in cells)
-                    claim.extend(c for c in cells if c["dist_m"] ** 2 <= dmin * dmin + step2)
             b_segs = tuple(sorted({int(p["b_seq"]) for p in claim}))
             b_from = min(bpos[(dest, p["b_seq"])][0] for p in claim)
             b_to = max(bpos[(dest, p["b_seq"])][1] for p in claim)

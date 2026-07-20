@@ -242,12 +242,13 @@ def test_match_dag_default_return_unchanged(matcher):
         assert col in dag_summary.columns
 
 
-def test_parts_resolution_trim_drops_the_entry_walk():
-    """The B-side dual of the A-overhang: at a route hand-off the entry vertex 'walks' from the
-    junction cell to where the edge actually lies via a 1:N coverage run. Those cells are route
-    connectivity, not correspondence — per A-vertex, a covered cell is a CLAIM only within one
-    step (along-track) of the vertex's nearest cell. Two lines tiling one street both claimed the
-    whole arc through exactly this."""
+def test_parts_report_every_covered_cell_including_an_entry_walk():
+    """No filtering: a part reports every cell the matching covered. At a route hand-off the entry
+    vertex 'walks' from the junction cell to where the edge actually lies via a 1:N coverage run,
+    and those cells ARE in the claim — `parts_from_matching` aggregates the matcher's pairs, it
+    does not re-judge them. (A resolution trim that dropped the walk lived here until it was
+    removed as an undocumented rule; exclusivity is settled downstream instead, where the
+    competing claims on an arc are visible together.)"""
     A = edges_to_digraph([("e", [(30, 2), (60, 2)])], step_meters=5.0)
     B = edges_to_digraph([("b", [(0, 0), (60, 0)])], step_meters=5.0)
     LA, LB = line_digraph(A), line_digraph(B)
@@ -262,11 +263,11 @@ def test_parts_resolution_trim_drops_the_entry_walk():
     parts = [p for p in parts_from_matching(M, LA, LB) if p["part_type"] == "match"]
     assert len(parts) == 1
     p = parts[0]
-    assert p["b_segs"] == tuple(range(5, 12))                # walk cells gone; the ONE-step
-    assert p["b_from_m"] == pytest.approx(25.0, abs=1e-6)    # boundary cell is kept inclusively —
-    assert p["b_to_m"] == pytest.approx(60.0, abs=1e-6)      # a claim reaches at most one step
-    assert p["drift_m"] == pytest.approx(2.5, abs=0.3)       # past the vertex's nearest cell
-    assert p["n_pairs"] == 7
+    assert p["b_segs"] == tuple(range(0, 12))                # every covered cell, walk included
+    assert p["b_from_m"] == pytest.approx(0.0, abs=1e-6)     # so the extent spans the whole arc
+    assert p["b_to_m"] == pytest.approx(60.0, abs=1e-6)
+    assert p["n_pairs"] == 12                                # 6 true pairs + the 6-cell walk
+    assert p["n_b_arcs"] == 12
 
 
 def test_parts_resolution_trim_keeps_legit_adjacent_coverage():
