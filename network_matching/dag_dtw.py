@@ -976,8 +976,28 @@ def extract_cell(A: nx.DiGraph, B: nx.DiGraph, alpha: float = 1.0, beta: float =
 # ---------------------------------------------------------------------------------------
 # Edge-table -> DiGraph conversion (the Mode-1/2 input system, docs §9)
 # ---------------------------------------------------------------------------------------
-def _densify(coords, step_meters: float):
-    """Points along a polyline at ~``step_meters`` spacing (endpoints kept)."""
+def _densify(coords, step_meters: float, keep_vertices: bool = True):
+    """Points along a polyline at ~``step_meters`` spacing (endpoints always kept).
+
+    ``keep_vertices`` (default **True**) also keeps every **original vertex**, merged into the
+    uniform stations by arc position. Without it the samples are uniform but the input's own
+    vertices survive only by coincidence, so a cell can span a corner and the straight line between
+    its endpoints **cuts that corner**: the subdivision then measures shorter than the road. The
+    error is not a rounding artifact — it is concentrated entirely at the corners and is invisible
+    on straight edges. Measured on a 90° corner, ``[(0,0),(7,0),(7,8)]`` at ``step=15``: uniform-only
+    returns just the two endpoints and measures 10.63 against a true 15.0.
+
+    This matters because callers read the subdivision's cell lengths as **distances along the road**
+    (:func:`parts_from_matching`'s ``a_from_m``/``b_from_m`` stations and ``b_len_m``). With the
+    vertices kept, every cell lies inside one original segment, so it is straight and its chord IS
+    its arc — the stations become exact by construction.
+
+    The trade-off, and why it is a parameter: the DAG-DTW objective is **count-weighted** (§3, one
+    emission term per matched cell regardless of its length), so cell spacing is a matching decision,
+    not only a geometric one. Keeping vertices makes cells uneven, giving a finely-digitized bend
+    more terms than a coarsely-drawn straight of equal length. Pass ``keep_vertices=False`` for the
+    strictly uniform subdivision.
+    """
     pts = np.asarray(coords, float)
     if len(pts) < 2:
         return [tuple(map(float, p)) for p in pts]
@@ -985,8 +1005,17 @@ def _densify(coords, step_meters: float):
     slen = np.hypot(seg[:, 0], seg[:, 1])
     cum = np.concatenate([[0.0], np.cumsum(slen)])
     n = max(2, int(round(cum[-1] / max(step_meters, 1e-9))) + 1)
+    stations = list(np.linspace(0.0, cum[-1], n))
+    if keep_vertices:
+        # merge the vertices' own arc positions in; drop near-duplicates so a station landing on a
+        # vertex does not emit a zero-length cell (which would be a free emission term)
+        tol = max(step_meters * 1e-3, 1e-9)
+        merged, stations = sorted(stations + [float(c) for c in cum]), []
+        for t in merged:
+            if not stations or t - stations[-1] > tol:
+                stations.append(t)
     out = []
-    for t in np.linspace(0.0, cum[-1], n):
+    for t in stations:
         i = min(int(np.searchsorted(cum, t, side="right") - 1), len(seg) - 1)
         i = max(i, 0)
         f = (t - cum[i]) / (slen[i] if slen[i] > 0 else 1.0)
