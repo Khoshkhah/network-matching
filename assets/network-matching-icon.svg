@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Radial -->
+    <radialGradient id="iconBg" cx="50%" cy="35%" r="75%">
+      <stop offset="0%" stop-color="#141C30"/>
+      <stop offset="60%" stop-color="#0A0E1A"/>
+      <stop offset="100%" stop-color="#04060C"/>
+    </radialGradient>
+
+    <!-- Gradients -->
+    <linearGradient id="netA" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F2FE"/>
+      <stop offset="100%" stop-color="#4FACFE"/>
+    </linearGradient>
+
+    <linearGradient id="netB" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F472B6"/>
+      <stop offset="50%" stop-color="#EC4899"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+
+    <linearGradient id="dtwGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFF176"/>
+      <stop offset="100%" stop-color="#FFB300"/>
+    </linearGradient>
+
+    <!-- Glow Filters -->
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="ambientLight" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Container Squircle -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#iconBg)" stroke="#222D47" stroke-width="2.5"/>
+  <rect x="20" y="20" width="472" height="472" rx="104" fill="none" stroke="#00F2FE" stroke-width="1.2" opacity="0.3"/>
+
+  <!-- Radar / Spatial Coordinate Grid -->
+  <g opacity="0.08" stroke="#38BDF8" stroke-width="1.5" fill="none">
+    <circle cx="256" cy="235" r="160"/>
+    <circle cx="256" cy="235" r="110"/>
+    <circle cx="256" cy="235" r="60"/>
+    <line x1="96" y1="235" x2="416" y2="235"/>
+    <line x1="256" y1="75" x2="256" y2="395"/>
+    <line x1="142" y1="121" x2="370" y2="349"/>
+    <line x1="142" y1="349" x2="370" y2="121"/>
+  </g>
+
+  <!-- Ambient Light Center -->
+  <circle cx="230" cy="220" r="120" fill="#00F2FE" opacity="0.06" filter="url(#ambientLight)"/>
+  <circle cx="280" cy="240" r="110" fill="#EC4899" opacity="0.06" filter="url(#ambientLight)"/>
+
+  <!-- The Network Conflation Emblem (Centered) -->
+  <g id="conflation-knot" transform="translate(18, 0)">
+    <!-- DTW CORRESPONDENCE BRIDGES -->
+    <g id="dtw-bridges" stroke="url(#dtwGold)" stroke-width="3" stroke-dasharray="5 5" opacity="0.9" filter="url(#softGlow)">
+      <line x1="120" y1="140" x2="160" y2="185"/>
+      <line x1="165" y1="225" x2="215" y2="260"/>
+      <line x1="225" y1="130" x2="280" y2="175"/>
+      <line x1="280" y1="290" x2="320" y2="335"/>
+      <line x1="335" y1="175" x2="365" y2="230"/>
+    </g>
+
+    <!-- NETWORK A (Source Highway Curve - Cyan) -->
+    <g id="net-a">
+      <path d="M 80 170 C 130 110, 185 110, 225 130 C 280 160, 295 260, 350 295 C 380 315, 405 305, 420 285" 
+            fill="none" stroke="url(#netA)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+      <path d="M 80 170 L 120 240 L 165 225" 
+            fill="none" stroke="url(#netA)" stroke-width="5" stroke-linecap="round"/>
+
+      <!-- Direction Arrowheads A -->
+      <polygon points="190,118 206,124 194,136" fill="#00F2FE"/>
+      <polygon points="330,282 346,292 332,302" fill="#00F2FE"/>
+
+      <!-- Nodes A -->
+      <circle cx="80" cy="170" r="7.5" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="120" cy="140" r="6.5" fill="#00F2FE"/>
+      <circle cx="165" cy="225" r="6.5" fill="#00F2FE"/>
+      <circle cx="225" cy="130" r="9" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="335" cy="175" r="6.5" fill="#00F2FE"/>
+      <circle cx="350" cy="295" r="8" fill="#00F2FE" filter="url(#softGlow)"/>
+      <circle cx="420" cy="285" r="6.5" fill="#00F2FE"/>
+    </g>
+
+    <!-- NETWORK B (Target Highway Curve - Magenta) -->
+    <g id="net-b">
+      <path d="M 110 230 C 150 170, 210 180, 255 195 C 305 215, 315 305, 375 330 C 405 340, 425 325, 435 305" 
+            fill="none" stroke="url(#netB)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+      <path d="M 255 195 L 280 270 L 320 315" 
+            fill="none" stroke="url(#netB)" stroke-width="5" stroke-linecap="round"/>
+
+      <!-- Direction Arrowheads B -->
+      <polygon points="230,188 246,192 234,204" fill="#EC4899"/>
+      <polygon points="350,320 366,326 352,336" fill="#EC4899"/>
+
+      <!-- Nodes B -->
+      <circle cx="110" cy="230" r="6.5" fill="#EC4899"/>
+      <circle cx="160" cy="185" r="7.5" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="215" cy="260" r="6.5" fill="#EC4899"/>
+      <circle cx="255" cy="195" r="9" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="280" cy="175" r="6.5" fill="#EC4899"/>
+      <circle cx="280" cy="270" r="6.5" fill="#EC4899"/>
+      <circle cx="320" cy="315" r="6.5" fill="#EC4899"/>
+      <circle cx="365" cy="230" r="6.5" fill="#EC4899"/>
+      <circle cx="375" cy="330" r="8" fill="#EC4899" filter="url(#softGlow)"/>
+      <circle cx="435" cy="305" r="6.5" fill="#EC4899"/>
+    </g>
+
+    <!-- Golden Alignment Conflation Core -->
+    <circle cx="240" cy="162" r="20" fill="#FFD166" opacity="0.18" filter="url(#softGlow)"/>
+    <circle cx="240" cy="162" r="10" fill="#FFF" stroke="#FFB300" stroke-width="3.5" filter="url(#softGlow)"/>
+  </g>
+
+  <!-- Bottom Brand Typography: network-matching -->
+  <g transform="translate(256, 442)">
+    <text text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="32" font-weight="900" letter-spacing="-0.5">
+      <tspan fill="#F8FAFC">network</tspan><tspan fill="#64748B">-</tspan><tspan fill="url(#netB)">matching</tspan>
+    </text>
+  </g>
+</svg>
