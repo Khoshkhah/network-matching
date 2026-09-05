@@ -1,4 +1,11 @@
-# network-matching
+<p align="center">
+  <img src="assets/network-matching-banner.svg" alt="network-matching — directed road map-to-map conflation with DuckDB Spatial and Python DTW" width="886">
+</p>
+
+<p align="center">
+  <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Built on DuckDB Spatial" src="https://img.shields.io/badge/built%20on-DuckDB%20Spatial-FFF000?logo=duckdb&logoColor=black">
+</p>
 
 A reusable, high-performance library for **directed road map-to-map matching (conflation)** —
 aligning two road networks (for example OpenStreetMap against Sweden's NVDB), even when they are
@@ -17,6 +24,10 @@ inputs (WKT CSV / geofiles / DuckDB tables), same CRS handling, same output conv
 | **Edge-to-edge** | `m.match()` + `m.resolve()` | ranked A↔B candidate **pairs** + a cardinality decision | assigning edges to a single nearest segment; fine-grained control |
 | **DAG-to-network (DAG-DTW)** | `m.match_dag()` | an **exact**, validity-checked matching of the whole source DAG onto the target, as Mode-1-style tables | matching a DAG-shaped subnetwork (a route tree, a sensor cone, a divided road that rejoins) in one globally consistent pass |
 | **Point-to-edge** | `m.match_points()` + `m.resolve()` | each A-**point** → ranked nearby B-edges, with snap position and local road bearing | assigning sensors / stations / stops to the road they sit on |
+
+<p align="center">
+  <img src="assets/network-matching-dtw.svg" alt="One long source edge is gated to spatial candidates in DuckDB, scored by minimum DTW warp cost, and matched to a connected route of three target edges" width="750">
+</p>
 
 ---
 

@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 886 240" width="100%" height="100%">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="netA" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F2FE"/>
+      <stop offset="100%" stop-color="#4FACFE"/>
+    </linearGradient>
+
+    <linearGradient id="netB" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F472B6"/>
+      <stop offset="50%" stop-color="#EC4899"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+
+    <linearGradient id="dtwGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFF176"/>
+      <stop offset="100%" stop-color="#FFB300"/>
+    </linearGradient>
+
+    <linearGradient id="titleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00F2FE"/>
+      <stop offset="50%" stop-color="#E879F9"/>
+      <stop offset="100%" stop-color="#EC4899"/>
+    </linearGradient>
+
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#070A14"/>
+      <stop offset="50%" stop-color="#0D1222"/>
+      <stop offset="100%" stop-color="#060810"/>
+    </linearGradient>
+
+    <!-- Glow Filters -->
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="intenseGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background Card -->
+  <rect width="886" height="240" rx="16" fill="url(#bgGrad)" stroke="#1B2338" stroke-width="1.5"/>
+
+  <!-- Subtle Spatial Coordinate Mesh -->
+  <g opacity="0.06" stroke="#38BDF8" stroke-width="1" fill="none">
+    <circle cx="150" cy="120" r="100"/>
+    <circle cx="150" cy="120" r="60"/>
+    <line x1="50" y1="120" x2="250" y2="120"/>
+    <line x1="150" y1="20" x2="150" y2="220"/>
+    <line x1="80" y1="50" x2="220" y2="190"/>
+    <line x1="80" y1="190" x2="220" y2="50"/>
+  </g>
+
+  <!-- Ambient Glow Center -->
+  <circle cx="150" cy="120" r="85" fill="#38BDF8" opacity="0.05" filter="url(#intenseGlow)"/>
+  <circle cx="170" cy="130" r="75" fill="#EC4899" opacity="0.05" filter="url(#intenseGlow)"/>
+
+  <!-- Left Side: Dual-Network Conflation Emblem (Network A + Network B + DTW Correspondence) -->
+  <g transform="translate(18, 0)">
+    <!-- DTW CORRESPONDENCE / WARPING BRIDGES (Connecting Network A & B nodes) -->
+    <g id="dtw-bridges" stroke="url(#dtwGold)" stroke-width="2" stroke-dasharray="3 3" opacity="0.9" filter="url(#softGlow)">
+      <line x1="75" y1="65" x2="105" y2="90"/>
+      <line x1="105" y1="110" x2="135" y2="130"/>
+      <line x1="140" y1="60" x2="175" y2="85"/>
+      <line x1="175" y1="145" x2="200" y2="170"/>
+      <line x1="210" y1="85" x2="228" y2="115"/>
+    </g>
+
+    <!-- NETWORK A (Source Road Network - Cyan Gradient) -->
+    <g id="network-a">
+      <!-- Main Directed Highway Trajectory A -->
+      <path d="M 50 85 C 80 50, 115 50, 140 60 C 175 75, 185 130, 220 150 C 240 160, 255 155, 265 145" 
+            fill="none" stroke="url(#netA)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+      <!-- Parallel Secondary Branch A -->
+      <path d="M 50 85 L 75 125 L 105 110" 
+            fill="none" stroke="url(#netA)" stroke-width="3" stroke-linecap="round"/>
+
+      <!-- Direction Arrowheads A -->
+      <polygon points="120,54 130,57 122,64" fill="#00F2FE"/>
+      <polygon points="208,142 218,148 209,154" fill="#00F2FE"/>
+
+      <!-- Graph Nodes A -->
+      <circle cx="50" cy="85" r="5" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="75" cy="65" r="4.5" fill="#00F2FE"/>
+      <circle cx="105" cy="110" r="4.5" fill="#00F2FE"/>
+      <circle cx="140" cy="60" r="6" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="210" cy="85" r="4.5" fill="#00F2FE"/>
+      <circle cx="220" cy="150" r="5.5" fill="#00F2FE" filter="url(#softGlow)"/>
+      <circle cx="265" cy="145" r="4" fill="#00F2FE"/>
+    </g>
+
+    <!-- NETWORK B (Target Road Network - Magenta / Violet Gradient) -->
+    <g id="network-b">
+      <!-- Directed Highway Trajectory B (Aligned / Snapped via DTW) -->
+      <path d="M 68 120 C 95 85, 130 90, 160 100 C 190 110, 195 160, 235 175 C 255 180, 268 170, 275 158" 
+            fill="none" stroke="url(#netB)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+      <!-- Cross Connector B -->
+      <path d="M 160 100 L 175 145 L 200 170" 
+            fill="none" stroke="url(#netB)" stroke-width="3.2" stroke-linecap="round"/>
+
+      <!-- Direction Arrowheads B -->
+      <polygon points="145,96 155,98 147,105" fill="#EC4899"/>
+      <polygon points="220,169 230,173 222,179" fill="#EC4899"/>
+
+      <!-- Graph Nodes B -->
+      <circle cx="68" cy="120" r="4.5" fill="#EC4899"/>
+      <circle cx="105" cy="90" r="5" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="135" cy="130" r="4" fill="#EC4899"/>
+      <circle cx="160" cy="100" r="6" fill="#FFF" filter="url(#softGlow)"/>
+      <circle cx="175" cy="85" r="4.5" fill="#EC4899"/>
+      <circle cx="175" cy="145" r="4.5" fill="#EC4899"/>
+      <circle cx="200" cy="170" r="5" fill="#EC4899"/>
+      <circle cx="228" cy="115" r="4" fill="#EC4899"/>
+      <circle cx="235" cy="175" r="5.5" fill="#EC4899" filter="url(#softGlow)"/>
+      <circle cx="275" cy="158" r="4" fill="#EC4899"/>
+    </g>
+
+    <!-- Central Alignment Snapped Core (Golden Match Point) -->
+    <g id="conflation-node">
+      <circle cx="150" cy="80" r="14" fill="#FFD166" opacity="0.15" filter="url(#softGlow)"/>
+      <circle cx="150" cy="80" r="7" fill="#FFF" stroke="#FFB300" stroke-width="2.5" filter="url(#softGlow)"/>
+    </g>
+  </g>
+
+  <!-- Right Side: Typography & Badges -->
+  <g transform="translate(305, 52)">
+    <!-- Main Title: network-matching -->
+    <text x="0" y="56" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="48" font-weight="800" letter-spacing="-0.8">
+      <tspan fill="#F8FAFC">network</tspan><tspan fill="#64748B">-</tspan><tspan fill="url(#titleGrad)">matching</tspan>
+    </text>
+
+    <!-- Subtitle / Tagline -->
+    <text x="2" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="500" fill="#94A3B8" letter-spacing="0.2">
+      Directed road map-to-map conflation with DuckDB Spatial &amp; Python DTW
+    </text>
+
+    <!-- Badges / Tech Row -->
+    <g transform="translate(2, 114)">
+      <!-- Badge 1: DuckDB Spatial -->
+      <g transform="translate(0, 0)">
+        <rect width="124" height="26" rx="6" fill="#141B2D" stroke="#253252" stroke-width="1"/>
+        <circle cx="14" cy="13" r="4.5" fill="#FFD166"/>
+        <text x="25" y="17" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" font-weight="600" fill="#E2E8F0">DuckDB Spatial</text>
+      </g>
+
+      <!-- Badge 2: Graph-DTW -->
+      <g transform="translate(132, 0)">
+        <rect width="105" height="26" rx="6" fill="#141B2D" stroke="#253252" stroke-width="1"/>
+        <circle cx="14" cy="13" r="4.5" fill="#00F2FE"/>
+        <text x="25" y="17" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" font-weight="600" fill="#E2E8F0">Graph-DTW</text>
+      </g>
+
+      <!-- Badge 3: 1:N Conflation -->
+      <g transform="translate(245, 0)">
+        <rect width="118" height="26" rx="6" fill="#141B2D" stroke="#253252" stroke-width="1"/>
+        <circle cx="14" cy="13" r="4.5" fill="#EC4899"/>
+        <text x="25" y="17" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" font-weight="600" fill="#E2E8F0">1:N Conflation</text>
+      </g>
+
+      <!-- Badge 4: DAG-DTW -->
+      <g transform="translate(371, 0)">
+        <rect width="90" height="26" rx="6" fill="#141B2D" stroke="#253252" stroke-width="1"/>
+        <circle cx="14" cy="13" r="4.5" fill="#A855F7"/>
+        <text x="25" y="17" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" font-weight="600" fill="#E2E8F0">DAG-DTW</text>
+      </g>
+    </g>
+  </g>
+</svg>

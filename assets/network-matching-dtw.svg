@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 750 360" width="100%" height="100%">
+  <defs>
+    <linearGradient id="dtwBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#070914"/>
+      <stop offset="50%" stop-color="#0E1324"/>
+      <stop offset="100%" stop-color="#05070E"/>
+    </linearGradient>
+
+    <linearGradient id="netA" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F2FE"/>
+      <stop offset="100%" stop-color="#4FACFE"/>
+    </linearGradient>
+
+    <linearGradient id="netB" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F472B6"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="750" height="360" rx="16" fill="url(#dtwBg)" stroke="#1F2842" stroke-width="1.5"/>
+
+  <!-- Title Top -->
+  <g transform="translate(32, 38)">
+    <text font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="800" fill="#F8FAFC">
+      Graph-DTW Directed Map-to-Map Conflation
+    </text>
+    <text y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="500" fill="#94A3B8">
+      Aligning differently segmented road networks using DuckDB Spatial &amp; Python DTW
+    </text>
+  </g>
+
+  <!-- Visual Conflation Pipeline: Source A (1 edge) -> Conflation DTW -> Target B (N edges) -->
+  <g transform="translate(40, 95)">
+    <!-- CARD 1: SOURCE A -->
+    <rect x="0" y="0" width="160" height="180" rx="12" fill="#0F1629" stroke="#1E293B" stroke-width="1.2"/>
+    <text x="14" y="28" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700" fill="#38BDF8">SOURCE NETWORK A</text>
+    <text x="14" y="46" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#64748B">Single long edge (OSM)</text>
+
+    <!-- Edge A Representation -->
+    <path d="M 25 125 C 50 85, 110 85, 135 125" fill="none" stroke="url(#netA)" stroke-width="5" stroke-linecap="round" filter="url(#softGlow)"/>
+    <circle cx="25" cy="125" r="5" fill="#FFF"/>
+    <circle cx="80" cy="95" r="4.5" fill="#00F2FE"/>
+    <circle cx="135" cy="125" r="5" fill="#FFF"/>
+    <text x="80" y="155" text-anchor="middle" font-family="monospace" font-size="11" fill="#00F2FE">edge_id: 101</text>
+
+    <!-- MIDDLE: DUCKDB SPATIAL + DTW WARP MATRIX -->
+    <g transform="translate(180, 0)">
+      <rect x="0" y="0" width="200" height="180" rx="12" fill="#141930" stroke="#2B3658" stroke-width="1.2"/>
+      <text x="14" y="28" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700" fill="#FFD166">DUCKDB + DTW ENGINE</text>
+      <text x="14" y="46" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#94A3B8">Candidate Spatial Gating</text>
+
+      <!-- Mini Matrix Representation -->
+      <g transform="translate(25, 60)">
+        <rect x="0" y="0" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+        <rect x="35" y="0" width="30" height="30" fill="#3B82F6" opacity="0.4" stroke="#60A5FA"/>
+        <rect x="70" y="0" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+        <rect x="105" y="0" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+
+        <rect x="0" y="35" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+        <rect x="35" y="35" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+        <rect x="70" y="35" width="30" height="30" fill="#EC4899" opacity="0.6" stroke="#F472B6"/>
+        <rect x="105" y="35" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+
+        <rect x="0" y="70" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+        <rect x="35" y="70" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+        <rect x="70" y="70" width="30" height="30" fill="#1E293B" stroke="#334155"/>
+        <rect x="105" y="70" width="30" height="30" fill="#10B981" opacity="0.6" stroke="#34D399"/>
+      </g>
+      <text x="100" y="170" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#FFD166">min DTW warp cost</text>
+    </g>
+
+    <!-- CARD 3: TARGET B (1:N Route) -->
+    <g transform="translate(400, 0)">
+      <rect x="0" y="0" width="160" height="180" rx="12" fill="#0F1629" stroke="#1E293B" stroke-width="1.2"/>
+      <text x="14" y="28" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700" fill="#EC4899">TARGET NETWORK B</text>
+      <text x="14" y="46" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#64748B">Connected 1:N Route</text>
+
+      <!-- Route B Split into 3 segments -->
+      <path d="M 25 125 C 40 100, 55 90, 70 92" fill="none" stroke="#EC4899" stroke-width="5" stroke-linecap="round"/>
+      <path d="M 70 92 C 85 94, 95 98, 105 108" fill="none" stroke="#A855F7" stroke-width="5" stroke-linecap="round"/>
+      <path d="M 105 108 C 115 118, 125 125, 135 125" fill="none" stroke="#D946EF" stroke-width="5" stroke-linecap="round"/>
+
+      <circle cx="25" cy="125" r="4.5" fill="#FFF"/>
+      <circle cx="70" cy="92" r="4.5" fill="#EC4899"/>
+      <circle cx="105" cy="108" r="4.5" fill="#A855F7"/>
+      <circle cx="135" cy="125" r="4.5" fill="#FFF"/>
+
+      <text x="80" y="155" text-anchor="middle" font-family="monospace" font-size="10" fill="#EC4899">Route: [B1, B2, B3]</text>
+    </g>
+  </g>
+
+  <!-- Bottom Result Banner -->
+  <g transform="translate(40, 310)">
+    <text font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="600" fill="#64748B">
+      Supported Match Modes: <tspan fill="#38BDF8">Route-based (Graph-DTW)</tspan> • <tspan fill="#EC4899">Edge-to-Edge</tspan> • <tspan fill="#A855F7">DAG-to-Network</tspan> • <tspan fill="#10B981">Point-to-Edge</tspan>
+    </text>
+  </g>
+</svg>
