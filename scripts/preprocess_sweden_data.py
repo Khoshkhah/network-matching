@@ -57,5 +57,5 @@ def preprocess_sweden_data(db_path):
     conn.close()
 
 if __name__ == "__main__":
-    db_path = "/home/kaveh/projects/fetching-sweden-data/data/processed/sundbyberg.duckdb"
+    db_path = "/home/kaveh/projects/fetching-sweden-data/data/processed/sundbyberg_traffic.duckdb"
     preprocess_sweden_data(db_path)

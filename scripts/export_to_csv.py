@@ -14,7 +14,7 @@ def export_data_to_csv():
     
     # 3. Attach databases in READ_ONLY mode
     db_path_a = "/home/kaveh/projects/osm-traffic-enrichment/db/sundbyberg.duckdb"
-    db_path_b = "/home/kaveh/projects/fetching-sweden-data/data/processed/sundbyberg.duckdb"
+    db_path_b = "/home/kaveh/projects/fetching-sweden-data/data/processed/sundbyberg_traffic.duckdb"
     
     print(f"Attaching DB A (OSM) as read-only: {db_path_a}...")
     conn.execute(f"ATTACH '{db_path_a}' AS db_a (READ_ONLY);")
