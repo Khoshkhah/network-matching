@@ -15,7 +15,7 @@ logger = logging.getLogger("network_matching.matcher")
 
 
 def _graph_dtw_group(task, snap_tolerance_m, step_meters, trim_ends_m,
-                     emission="point", bearing_weight=0.0, alpha=1.0, beta=1.0):
+                     emission="point", bearing_weight=0.0, alpha=1.0, beta=1.0, engine=None):
     """Pure, picklable worker: run graph-DTW for one A-edge group.
 
     ``task`` is ``(id_a, coords_a, b_edges)`` where ``b_edges`` is a list of
@@ -28,7 +28,7 @@ def _graph_dtw_group(task, snap_tolerance_m, step_meters, trim_ends_m,
         coords_a, b_edges,
         snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
         trim_ends_m=trim_ends_m, emission=emission, bearing_weight=bearing_weight,
-        alpha=alpha, beta=beta,
+        alpha=alpha, beta=beta, engine=engine,
     )
     if not res["route"]:
         return id_a, None
@@ -810,7 +810,8 @@ class DuckDBMapMatcher:
                                  snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
                                  trim_ends_m: float = 0.0, n_jobs: int = 1,
                                  emission: str = "point", bearing_weight: float = 0.0,
-                                 alpha: float = 1.0, beta: float = 1.0):
+                                 alpha: float = 1.0, beta: float = 1.0,
+                                 engine: Optional[str] = None):
         """Route-based matching: align each Source-A edge to the local directed graph of its
         candidate B-edges (graph-DTW), returning one connected B-edge route per A-edge.
 
@@ -825,6 +826,10 @@ class DuckDBMapMatcher:
             both emission modes; defaults ``1``/``1`` = unweighted).
         n_jobs:
             >1 fans the per-A-edge work out with joblib (each A-edge is an independent unit).
+        engine:
+            ``"rust"``, ``"python"`` or ``"auto"`` (``None`` = environment variable
+            ``NETWORK_MATCHING_ENGINE``, else ``"auto"``); see
+            :func:`network_matching.graph_dtw.match_edge_to_bgraph`. Same result from both.
 
         Returns
         -------
@@ -875,7 +880,7 @@ class DuckDBMapMatcher:
             logger.info("graph-DTW: aligning in parallel (n_jobs=%d)...", n_jobs)
             outcomes = Parallel(n_jobs=n_jobs)(
                 delayed(_graph_dtw_group)(t, snap_tolerance_m, step_meters, trim_ends_m,
-                                          emission, bearing_weight, alpha, beta)
+                                          emission, bearing_weight, alpha, beta, engine)
                 for t in tasks
             )
         else:
@@ -885,7 +890,7 @@ class DuckDBMapMatcher:
             for k, t in enumerate(tasks):
                 outcomes.append(_graph_dtw_group(t, snap_tolerance_m, step_meters,
                                                  trim_ends_m, emission, bearing_weight,
-                                                 alpha, beta))
+                                                 alpha, beta, engine))
                 if (k + 1) % step == 0 or (k + 1) == n_tasks:
                     logger.info("graph-DTW: aligned %d/%d A-edges (%.0f%%)",
                                 k + 1, n_tasks, 100.0 * (k + 1) / max(1, n_tasks))
@@ -1070,7 +1075,7 @@ class DuckDBMapMatcher:
     def match_routes(self, snap_tolerance_m: float = 0.75, step_meters: float = 10.0,
                      trim_ends_m: float = 0.0, n_jobs: int = 1,
                      emission: str = "point", bearing_weight: float = 0.0,
-                     alpha: float = 1.0, beta: float = 1.0):
+                     alpha: float = 1.0, beta: float = 1.0, engine: Optional[str] = None):
         """Run the full route-based (graph-DTW) pipeline: generate candidates, then align each
         Source-A edge to the local B-graph. Returns ``(routes_long, routes_summary)`` -- the
         graph-DTW analogue of :meth:`match`. See :meth:`compute_graph_dtw_routes`.
@@ -1096,6 +1101,7 @@ class DuckDBMapMatcher:
             candidates_df, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
             trim_ends_m=trim_ends_m, n_jobs=n_jobs,
             emission=emission, bearing_weight=bearing_weight, alpha=alpha, beta=beta,
+            engine=engine,
         )
 
     def resolve_routes(self, routes_summary: pd.DataFrame, routes_long: Optional[pd.DataFrame] = None,

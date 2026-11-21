@@ -36,6 +36,7 @@ Coordinates are assumed to already be in a local projected CRS in **meters** (as
 """
 
 import heapq
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -937,6 +938,7 @@ def match_edge_to_bgraph(
     beta: float = 1.0,
     debug: bool = False,
     min_pool_gap_m: Optional[float] = None,
+    engine: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Map-match one A-edge to the local directed graph of nearby B-edges (continuous,
     projection-based DTW).
@@ -988,6 +990,12 @@ def match_edge_to_bgraph(
         segment states are genuinely segment-to-segment. Default ``None`` = ``0`` for
         ``emission="point"`` (unchanged behaviour) and ``step_meters / 2`` for ``"segment"``;
         pass an explicit value to override.
+    engine:
+        ``"rust"``, ``"python"`` or ``"auto"``. ``None`` (default) = the value of the environment
+        variable ``NETWORK_MATCHING_ENGINE``, else ``"auto"``. ``"auto"`` uses the Rust engine
+        (``network_matching._rust``) when it is installed, else this Python code. The two engines
+        give the same result. ``debug=True`` always uses the Python code, also with ``"rust"``:
+        the debug tables come only from the Python code.
 
     Returns
     -------
@@ -999,6 +1007,9 @@ def match_edge_to_bgraph(
         emission = "segment"
     if min_pool_gap_m is None:
         min_pool_gap_m = 0.0 if emission == "point" else 0.5 * step_meters
+    if _use_rust(engine, debug, emission, b_edges):
+        return _match_edge_rust(coords_a, b_edges, snap_tolerance_m, step_meters, trim_ends_m,
+                                emission, bearing_weight, alpha, beta, min_pool_gap_m)
     gb = build_local_digraph(
         b_edges, coords_a, snap_tolerance_m=snap_tolerance_m, step_meters=step_meters,
         min_gap_m=min_pool_gap_m,
@@ -1017,6 +1028,78 @@ def match_edge_to_bgraph(
     if debug:
         res["debug"] = metrics.get("debug")
     return res
+
+
+# --------------------------------------------------------------------------------------
+# Rust engine (network_matching._rust, crate rust/network-matching-py)
+# --------------------------------------------------------------------------------------
+try:
+    from . import _rust
+except ImportError:                          # not compiled: the Python code above is the engine
+    _rust = None
+
+ENGINES = ("auto", "rust", "python")
+
+
+def rust_available() -> bool:
+    """True when the compiled Rust engine ``network_matching._rust`` is installed."""
+    return _rust is not None
+
+
+def _use_rust(engine: Optional[str], debug: bool, emission: str, b_edges) -> bool:
+    engine = engine or os.environ.get("NETWORK_MATCHING_ENGINE") or "auto"
+    if engine not in ENGINES:
+        raise ValueError(f"engine must be one of {ENGINES}, not {engine!r}")
+    if engine == "python":
+        return False
+    if engine == "rust":
+        if _rust is None:
+            raise ImportError("engine='rust' but network_matching._rust is not installed "
+                              "(build it with `pip install -e .` or `maturin develop --release`)")
+    if _rust is None or debug or emission not in ("point", "segment"):
+        return False
+    ids = [eid for eid, _g in b_edges]
+    # the Python code keys the segment statistics by edge id; the Rust engine keys them by edge
+    return len(set(map(str, ids))) == len(ids)
+
+
+class _RustResult(dict):
+    """The result dict of the Rust engine. ``res["graph"]`` builds the :class:`LocalBGraph` with
+    the Python code the first time that it is read (the Rust engine does not send it back)."""
+
+    def __init__(self, data, graph_args):
+        super().__init__(data)
+        self._graph_args = graph_args
+
+    def __missing__(self, key):
+        if key != "graph":
+            raise KeyError(key)
+        b_edges, coords_a, snap, step, gap = self._graph_args
+        gb = build_local_digraph(b_edges, coords_a, snap_tolerance_m=snap, step_meters=step,
+                                 min_gap_m=gap)
+        self["graph"] = gb
+        return gb
+
+
+def _match_edge_rust(coords_a, b_edges, snap_tolerance_m, step_meters, trim_ends_m, emission,
+                     bearing_weight, alpha, beta, min_pool_gap_m) -> Dict[str, Any]:
+    edges = sorted(b_edges, key=lambda t: str(t[0]))     # the vertex numbering of build_local_digraph
+    import shapely
+    geoms = [g for _id, g in edges]
+    b_xy = shapely.get_coordinates(geoms)
+    counts = shapely.get_num_coordinates(geoms).astype(np.int64)
+    a_xy = np.ascontiguousarray(np.asarray(coords_a, dtype=float)[:, :2])
+    out = _rust.match_edge(
+        a_xy.tobytes(), np.ascontiguousarray(b_xy, dtype=float).tobytes(), counts.tobytes(),
+        [eid for eid, _g in edges],
+        snap_tolerance_m=float(snap_tolerance_m), step_meters=float(step_meters or 0.0),
+        trim_ends_m=float(trim_ends_m or 0.0), segment=(emission == "segment"),
+        bearing_weight=float(bearing_weight), alpha=float(alpha), beta=float(beta),
+        min_gap_m=float(min_pool_gap_m))
+    if out is None:
+        out = {"route": [], "warping_path": [], "metrics": _inf_metrics(),
+               "avg_distance": float("inf")}
+    return _RustResult(out, (b_edges, coords_a, snap_tolerance_m, step_meters, min_pool_gap_m))
 
 
 class GraphDTWMatcher:

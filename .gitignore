@@ -47,3 +47,7 @@ docs/tree-dtw-paper.html
 
 # Generated figure intermediates (regenerate via scripts/alpha_density_figure.py / beta_shift_figure.py)
 scripts/_*.svg
+
+# Rust build output (the compiled engine network_matching/_rust*.so)
+rust/target/
+network_matching/_rust*.so
