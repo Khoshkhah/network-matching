@@ -34,7 +34,7 @@ inputs (WKT CSV / geofiles / DuckDB tables), same CRS handling, same output conv
 ## Installation
 
 ```bash
-pip install -e .                 # core library
+pip install -e .                 # core library + the Rust engine of graph-DTW (needs a Rust toolchain)
 pip install -r requirements.txt  # core + visualization + notebook tooling
 # extras:  pip install -e ".[viz]"   (maps)     pip install -e ".[dev]"   (tests, notebooks)
 ```
@@ -43,6 +43,56 @@ pip install -r requirements.txt  # core + visualization + notebook tooling
 `geopandas`, `networkx` (Mode 3), `joblib` (parallel route matching). Visualization
 (scripts/notebooks): `folium`, `branca`, `matplotlib`, `plotly` (Mode 3 playground). Optional:
 `scipy` (faster candidate gating and endpoint validation; pure-numpy fallback).
+
+### The Rust engine of graph-DTW
+
+The graph-DTW of Mode 1 (`match_edge_to_bgraph`, thus `match_routes` and
+`compute_graph_dtw_routes`) has a Rust engine. It does all the work of one A-edge: the projection
+pools, the local directed B-graph, the dynamic table (point and segment emission, `alpha`/`beta`
+step weights, the Dijkstra row relaxation) and the route metrics. The Python API does not change.
+
+| Part | Where |
+|------|-------|
+| `rust/network-matching-core` | the algorithm, in plain Rust (other Rust programs, for example duckOSM, can use this crate) |
+| `rust/network-matching-py` | the Python module `network_matching._rust` (pyo3, abi3) |
+| `network_matching/graph_dtw.py` | calls the Rust engine when it is installed, else the Python code |
+
+`pip install -e .` builds the module (maturin, as in duckOSM). To build only the module:
+
+```bash
+pip install maturin
+CARGO_BUILD_JOBS=4 maturin develop --release
+```
+
+**Select the engine** with `engine="auto" | "rust" | "python"` on `match_edge_to_bgraph`,
+`match_routes` and `compute_graph_dtw_routes`, or with the environment variable
+`NETWORK_MATCHING_ENGINE` (default `auto` = Rust when installed). `debug=True` always uses the
+Python code, because only the Python code makes the debug tables. The Python code stays the
+reference.
+
+**Same result.** The Rust engine copies the GEOS line functions that shapely calls, the numpy
+pairwise mean, and the `heapq` tie order. `tests/test_rust_engine.py` runs both engines on all
+synthetic cases (each perturbation at each grid magnitude, five parameter sets) and on 300 real
+OSM → NVDB edges, and compares every field. The results are bit-for-bit equal (the test also
+passes with a tolerance of 0). The whole test suite passes with each engine
+(`NETWORK_MATCHING_ENGINE=rust pytest tests/`).
+
+**Speed** (`python scripts/bench_rust_engine.py --monaco <monaco.duckdb>`, one core, `n_jobs=1`;
+the output tables of the two engines are equal):
+
+| Data | Emission | Python | Rust | Faster |
+|------|----------|-------:|-----:|-------:|
+| `data/` OSM → NVDB, 3,611 A-edges, 32,561 candidate pairs | point | 25.8 s | 1.77 s | 14.6× |
+| | segment | 19.1 s | 1.61 s | 11.8× |
+| duckOSM Monaco `driving.edges` onto itself, 2,840 A-edges, 47,482 pairs | point | 18.8 s | 1.43 s | 13.2× |
+| | segment | 15.6 s | 1.29 s | 12.0× |
+
+These are the times of the whole `compute_graph_dtw_routes` call. The graph-DTW itself
+(`match_edge_to_bgraph`, all 3,611 `data/` edges) takes 21.6 s → 0.60 s (point) and
+17.8 s → 0.51 s (segment), about 35× faster. The remaining time of the call is the WKT parsing and
+the pandas output tables in `matcher.py`, which stay in Python.
+
+Not in Rust: Mode 2 (`dtw_align`), Mode 3 (DAG-DTW, a different algorithm) and Mode 4.
 
 ---
 
@@ -446,6 +496,7 @@ m.set_parameters(max_distance=25)
 
 ```
 network_matching/   library — matcher, graph_dtw, dag_dtw (Mode 3), profiled (Mode 3 default engine), synthetic, bgraph_prep, dtw
+rust/               the Rust engine of graph-DTW — network-matching-core (Rust crate), network-matching-py (module network_matching._rust)
 scripts/            CLI tools — graph_dtw_map.py, graph_dtw_debug_viz.py, dag_dtw_debug_viz.py + test_dag_point.py (Mode 3), ...
 notebooks/          playgrounds — graph_dtw_playground.ipynb (Mode 1), dag_dtw_playground.ipynb (Mode 3)
 docs/               documentation

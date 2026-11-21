@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+# The Rust engine of network-matching: the graph-DTW of network_matching/graph_dtw.py.
+# network-matching-core is plain Rust (other Rust programs, for example duckOSM, can use it); network-matching-py is the Python module.
+members = ["network-matching-core", "network-matching-py"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Kaveh Khoshkhah"]
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "thin"
+codegen-units = 16

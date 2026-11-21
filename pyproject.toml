@@ -1,6 +1,7 @@
 [build-system]
-requires = ["setuptools>=61.0.0", "wheel"]
-build-backend = "setuptools.build_meta"
+# one wheel with the Rust engine of graph-DTW in it: the module network_matching._rust (rust/network-matching-py, abi3)
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
 
 [project]
 name = "network-matching"
@@ -29,6 +30,11 @@ viz = ["folium>=0.14.0", "branca>=0.6.0", "matplotlib>=3.5.0", "plotly>=5.0", "i
 ml = ["scikit-learn>=1.0"]   # IsolationForest in suggest_thresholds (optional; guarded import)
 dev = ["pytest", "ipykernel", "nbconvert", "scipy>=1.7.0", "scikit-learn>=1.0"]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["network_matching*"]
+[tool.maturin]
+python-source = "."
+python-packages = ["network_matching"]
+module-name = "network_matching._rust"
+manifest-path = "rust/network-matching-py/Cargo.toml"
+profile = "release"    # a debug build of the engine is slow, also in pip install -e .
+include = [{ path = "rust/**/*", format = "sdist" }]
+exclude = [{ path = "rust/target/**", format = "sdist" }]
